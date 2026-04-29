@@ -1,0 +1,25 @@
+config: {}
+networks:
+- name: incusbr0
+  type: bridge
+  project: default
+  config:
+    ipv4.address: 10.20.30.1/24
+    ipv4.nat: "true"
+    ipv6.address: none
+storage_pools:
+- name: default
+  driver: dir
+profiles:
+- name: default
+  devices:
+    eth0:
+      name: eth0
+      network: incusbr0
+      type: nic
+    root:
+      path: /
+      pool: default
+      type: disk
+projects: []
+cluster: null

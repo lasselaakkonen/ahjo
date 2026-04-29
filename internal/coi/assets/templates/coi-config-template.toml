@@ -1,0 +1,23 @@
+[container]
+image = "{{.Image}}"
+alias = "{{.Slug}}"
+persistent = true
+
+[defaults]
+forward_env = [{{range $i, $e := .ForwardEnv}}{{if $i}}, {{end}}"{{$e}}"{{end}}]
+
+[network]
+mode = "open"
+
+[ssh]
+forward_agent = true
+
+[[mounts.default]]
+host      = "{{.HostKeysDir}}"
+container = "/etc/ssh/ahjo-host-keys"
+readonly  = true
+
+[[mounts.default]]
+host      = "{{.HostKeysDir}}/authorized_keys"
+container = "/home/code/.ssh/authorized_keys"
+readonly  = true
