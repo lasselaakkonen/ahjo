@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bufio"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -285,10 +286,99 @@ Signed-By: /etc/apt/keyrings/zabbly.asc
 				fmt.Fprintln(out, "  → saved to "+tokenstore.Path())
 				return nil
 			},
+		},
+		{
+			Title: "Mark Claude onboarding complete in ~/.claude.json",
+			Skip: func() (bool, string, error) {
+				ok, _, err := claudeOnboardingMarked()
+				if err != nil {
+					return false, "", err
+				}
+				if ok {
+					return true, "hasCompletedOnboarding already true", nil
+				}
+				return false, "", nil
+			},
+			Note: "COI copies the host's ~/.claude.json into every container at startup, " +
+				"overwriting whatever the ahjo-base image baked in. Without `hasCompletedOnboarding: true` " +
+				"on the host, every container greets the user with claude's first-run flow (theme + login picker). " +
+				"This step writes the marker once on the host so containers start post-onboarding. " +
+				"See CLAUDE-SETTING.md for the full picture.",
+			Show: `merge {"hasCompletedOnboarding": true, "lastOnboardingVersion": "` + claudeOnboardingVersion + `"} into ~/.claude.json`,
+			Action: func(out io.Writer) error {
+				p, err := claudeJSONPath()
+				if err != nil {
+					return err
+				}
+				if err := mergeClaudeOnboardingMarker(p); err != nil {
+					return err
+				}
+				fmt.Fprintln(out, "  → merged hasCompletedOnboarding=true into "+p)
+				return nil
+			},
 			Post: "\nDone. Try:\n  ahjo doctor                              # green check\n  ahjo repo add <name> <git-url>           # register a repo\n  ahjo new <name> <branch>                 # create a sandboxed worktree",
 		},
 	}...)
 	return steps
+}
+
+// claudeOnboardingVersion is the value written to ~/.claude.json's
+// `lastOnboardingVersion`. Bump this only if a future Claude release introduces
+// a new onboarding gate that re-prompts users above some version threshold.
+const claudeOnboardingVersion = "2.1.126"
+
+func claudeJSONPath() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(home, ".claude.json"), nil
+}
+
+// claudeOnboardingMarked reports whether ~/.claude.json exists and has
+// `hasCompletedOnboarding: true`. A missing file or parse error returns false
+// without an error so the caller treats it as "not marked yet".
+func claudeOnboardingMarked() (bool, string, error) {
+	p, err := claudeJSONPath()
+	if err != nil {
+		return false, "", err
+	}
+	b, err := os.ReadFile(p)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, p, nil
+		}
+		return false, p, err
+	}
+	var d map[string]any
+	if err := json.Unmarshal(b, &d); err != nil {
+		return false, p, nil
+	}
+	v, _ := d["hasCompletedOnboarding"].(bool)
+	return v, p, nil
+}
+
+// mergeClaudeOnboardingMarker reads ~/.claude.json (creating an empty object if
+// missing or unparseable), sets hasCompletedOnboarding/lastOnboardingVersion,
+// and writes the result back at mode 0600.
+func mergeClaudeOnboardingMarker(path string) error {
+	d := map[string]any{}
+	if b, err := os.ReadFile(path); err == nil {
+		_ = json.Unmarshal(b, &d)
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	if d == nil {
+		d = map[string]any{}
+	}
+	d["hasCompletedOnboarding"] = true
+	d["lastOnboardingVersion"] = claudeOnboardingVersion
+	out, err := json.MarshalIndent(d, "", "  ")
+	if err != nil {
+		return err
+	}
+	out = append(out, '\n')
+	return os.WriteFile(path, out, 0o600)
 }
 
 // coiInstallSteps returns the COI install (and, under Lima, open-mode config)
