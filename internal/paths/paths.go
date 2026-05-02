@@ -16,6 +16,7 @@ const (
 	ConfigFile        = "config.toml"
 	LockFile          = ".lock"
 	SSHConfigFile     = "ssh-config"
+	AliasesFile       = "aliases"
 	AhjoBaseProfile   = "ahjo-base"
 	CoiProfilesSubdir = "profiles"
 )
@@ -49,6 +50,7 @@ func PortsPath() string       { return filepath.Join(AhjoDir(), PortsFile) }
 func ConfigPath() string      { return filepath.Join(AhjoDir(), ConfigFile) }
 func LockPath() string        { return filepath.Join(AhjoDir(), LockFile) }
 func SSHConfigPath() string   { return filepath.Join(SharedDir(), SSHConfigFile) }
+func AliasesPath() string     { return filepath.Join(SharedDir(), AliasesFile) }
 func ReposDir() string        { return filepath.Join(AhjoDir(), "repos") }
 func WorktreesDir() string    { return filepath.Join(AhjoDir(), "worktrees") }
 func HostKeysDir() string     { return filepath.Join(AhjoDir(), "host-keys") }

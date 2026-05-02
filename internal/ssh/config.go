@@ -12,7 +12,8 @@ import (
 	"github.com/lasselaakkonen/ahjo/internal/registry"
 )
 
-// RegenerateConfig writes ~/.ahjo-shared/ssh-config from the registry atomically.
+// RegenerateConfig writes ~/.ahjo-shared/ssh-config and ~/.ahjo-shared/aliases
+// from the registry atomically.
 func RegenerateConfig(reg *registry.Registry) error {
 	if err := os.MkdirAll(paths.SharedDir(), 0o755); err != nil {
 		return fmt.Errorf("mkdir %s: %w", paths.SharedDir(), err)
@@ -35,21 +36,37 @@ func RegenerateConfig(reg *registry.Registry) error {
 		fmt.Fprintln(&b)
 	}
 
-	tmp, err := os.CreateTemp(paths.SharedDir(), ".ssh-config.tmp.*")
+	if err := writeAtomic(paths.SSHConfigPath(), b.String(), 0o644); err != nil {
+		return err
+	}
+
+	var amap strings.Builder
+	fmt.Fprintln(&amap, "# ahjo-managed: alias\tslug, do not edit")
+	for _, w := range wts {
+		for _, a := range w.Aliases {
+			fmt.Fprintf(&amap, "%s\t%s\n", a, w.Slug)
+		}
+	}
+	return writeAtomic(paths.AliasesPath(), amap.String(), 0o644)
+}
+
+func writeAtomic(dst, content string, mode os.FileMode) error {
+	dir := filepath.Dir(dst)
+	tmp, err := os.CreateTemp(dir, "."+filepath.Base(dst)+".tmp.*")
 	if err != nil {
 		return fmt.Errorf("tempfile: %w", err)
 	}
 	defer os.Remove(tmp.Name())
-	if _, err := tmp.WriteString(b.String()); err != nil {
+	if _, err := tmp.WriteString(content); err != nil {
 		tmp.Close()
 		return err
 	}
-	if err := tmp.Chmod(0o644); err != nil {
+	if err := tmp.Chmod(mode); err != nil {
 		tmp.Close()
 		return err
 	}
 	if err := tmp.Close(); err != nil {
 		return err
 	}
-	return os.Rename(tmp.Name(), paths.SSHConfigPath())
+	return os.Rename(tmp.Name(), dst)
 }

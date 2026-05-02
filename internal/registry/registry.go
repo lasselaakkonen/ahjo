@@ -4,6 +4,7 @@ package registry
 import (
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"regexp"
 	"strings"
@@ -23,14 +24,16 @@ type Registry struct {
 }
 
 type Repo struct {
-	Name        string `toml:"name"`
-	Remote      string `toml:"remote"`
-	BarePath    string `toml:"bare_path"`
-	DefaultBase string `toml:"default_base"`
+	Name        string   `toml:"name"`
+	Aliases     []string `toml:"aliases"`
+	Remote      string   `toml:"remote"`
+	BarePath    string   `toml:"bare_path"`
+	DefaultBase string   `toml:"default_base"`
 }
 
 type Worktree struct {
 	Repo            string    `toml:"repo"`
+	Aliases         []string  `toml:"aliases"`
 	Branch          string    `toml:"branch"`
 	Slug            string    `toml:"slug"`
 	WorktreePath    string    `toml:"worktree_path"`
@@ -41,8 +44,10 @@ type Worktree struct {
 }
 
 var (
-	repoNameRE = regexp.MustCompile(`^[a-z][a-z0-9-]{0,30}$`)
-	slugSafeRE = regexp.MustCompile(`[^a-z0-9-]+`)
+	slugSafeRE        = regexp.MustCompile(`[^a-z0-9-]+`)
+	repoAliasRE       = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._/-]{0,62}[a-zA-Z0-9]$|^[a-zA-Z0-9]$`)
+	scpLikeRE         = regexp.MustCompile(`^([^@]+@)?([^:]+):(.+)$`)
+	gitURLPathSegment = regexp.MustCompile(`[^a-zA-Z0-9._-]+`)
 )
 
 // Load reads the registry from disk. Missing file returns an empty Registry{Version: 1}.
@@ -89,6 +94,7 @@ func (r *Registry) Save() error {
 	return os.Rename(tmp.Name(), paths.RegistryPath())
 }
 
+// FindRepo returns the repo whose Name (slug) matches.
 func (r *Registry) FindRepo(name string) *Repo {
 	for i := range r.Repos {
 		if r.Repos[i].Name == name {
@@ -98,6 +104,36 @@ func (r *Registry) FindRepo(name string) *Repo {
 	return nil
 }
 
+// FindRepoByAlias resolves any alias (auto or manual) to a repo.
+func (r *Registry) FindRepoByAlias(alias string) *Repo {
+	for i := range r.Repos {
+		for _, a := range r.Repos[i].Aliases {
+			if a == alias {
+				return &r.Repos[i]
+			}
+		}
+	}
+	return nil
+}
+
+// FindWorktreeByAlias resolves any alias (auto or manual) to a worktree.
+func (r *Registry) FindWorktreeByAlias(alias string) *Worktree {
+	for i := range r.Worktrees {
+		for _, a := range r.Worktrees[i].Aliases {
+			if a == alias {
+				return &r.Worktrees[i]
+			}
+		}
+	}
+	return nil
+}
+
+// AliasInUse reports whether alias is registered on any repo or worktree.
+func (r *Registry) AliasInUse(alias string) bool {
+	return r.FindRepoByAlias(alias) != nil || r.FindWorktreeByAlias(alias) != nil
+}
+
+// FindWorktree returns a worktree by (repo-name, branch). Used internally.
 func (r *Registry) FindWorktree(repo, branch string) *Worktree {
 	for i := range r.Worktrees {
 		if r.Worktrees[i].Repo == repo && r.Worktrees[i].Branch == branch {
@@ -107,19 +143,19 @@ func (r *Registry) FindWorktree(repo, branch string) *Worktree {
 	return nil
 }
 
-func (r *Registry) RepoHasWorktrees(repo string) bool {
+func (r *Registry) RepoHasWorktrees(repoName string) bool {
 	for i := range r.Worktrees {
-		if r.Worktrees[i].Repo == repo {
+		if r.Worktrees[i].Repo == repoName {
 			return true
 		}
 	}
 	return false
 }
 
-func (r *Registry) RemoveWorktree(repo, branch string) {
+func (r *Registry) RemoveWorktree(repoName, branch string) {
 	out := r.Worktrees[:0]
 	for _, w := range r.Worktrees {
-		if w.Repo == repo && w.Branch == branch {
+		if w.Repo == repoName && w.Branch == branch {
 			continue
 		}
 		out = append(out, w)
@@ -138,17 +174,139 @@ func (r *Registry) RemoveRepo(name string) {
 	r.Repos = out
 }
 
-// ValidateRepoName returns an error if name doesn't match [a-z][a-z0-9-]{0,30}.
-func ValidateRepoName(name string) error {
-	if !repoNameRE.MatchString(name) {
-		return fmt.Errorf("invalid repo name %q: must match [a-z][a-z0-9-]{0,30}", name)
+// ValidateAlias enforces a conservative character set so aliases stay
+// safe in shell, paths, and SSH config without quoting.
+func ValidateAlias(alias string) error {
+	if alias == "" {
+		return fmt.Errorf("alias must not be empty")
+	}
+	if !repoAliasRE.MatchString(alias) {
+		return fmt.Errorf("invalid alias %q: use letters, digits, and any of . _ - / @", alias)
 	}
 	return nil
 }
 
-// MakeSlug builds a unique slug from (repo, branch), checking r for collisions.
-func (r *Registry) MakeSlug(repo, branch string) string {
-	base := repo + "-" + slugSafeRE.ReplaceAllString(strings.ToLower(branch), "-")
+// AliasToSlug sanitizes any alias into a slug suitable for Incus container
+// names and on-disk dirs: lowercase, [a-z0-9-] only, trimmed, capped at 50.
+func AliasToSlug(alias string) string {
+	s := slugSafeRE.ReplaceAllString(strings.ToLower(alias), "-")
+	s = strings.Trim(s, "-")
+	if len(s) > 50 {
+		s = s[:50]
+	}
+	return s
+}
+
+// DeriveRepoAlias parses a git URL (https://, ssh://, scp-like, or path) and
+// returns "<owner>/<repo>" with .git stripped and lowercased.
+func DeriveRepoAlias(gitURL string) (string, error) {
+	owner, repo, err := splitGitURL(gitURL)
+	if err != nil {
+		return "", err
+	}
+	owner = strings.ToLower(gitURLPathSegment.ReplaceAllString(owner, "-"))
+	repo = strings.ToLower(gitURLPathSegment.ReplaceAllString(repo, "-"))
+	owner = strings.Trim(owner, "-")
+	repo = strings.Trim(repo, "-")
+	if owner == "" || repo == "" {
+		return "", fmt.Errorf("cannot derive alias from %q", gitURL)
+	}
+	return owner + "/" + repo, nil
+}
+
+func splitGitURL(s string) (owner, repo string, err error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return "", "", fmt.Errorf("empty git URL")
+	}
+	var path string
+	switch {
+	case strings.Contains(s, "://"):
+		u, perr := url.Parse(s)
+		if perr != nil {
+			return "", "", fmt.Errorf("parse %q: %w", s, perr)
+		}
+		path = strings.TrimPrefix(u.Path, "/")
+	default:
+		if m := scpLikeRE.FindStringSubmatch(s); m != nil {
+			path = m[3]
+		} else {
+			// Local path or anything else: just use the basename(s).
+			path = s
+		}
+	}
+	path = strings.TrimSuffix(path, ".git")
+	path = strings.Trim(path, "/")
+	if path == "" {
+		return "", "", fmt.Errorf("cannot extract path from %q", s)
+	}
+	parts := strings.Split(path, "/")
+	if len(parts) < 2 {
+		return "", "", fmt.Errorf("cannot extract owner/repo from %q", s)
+	}
+	owner = parts[len(parts)-2]
+	repo = parts[len(parts)-1]
+	return owner, repo, nil
+}
+
+// AllocateRepoAlias returns an unused repo alias derived from gitURL,
+// suffixing -2/-3/... if the base alias collides with an existing alias.
+func (r *Registry) AllocateRepoAlias(gitURL string) (string, error) {
+	base, err := DeriveRepoAlias(gitURL)
+	if err != nil {
+		return "", err
+	}
+	if !r.AliasInUse(base) {
+		return base, nil
+	}
+	for i := 2; i < 1000; i++ {
+		cand := fmt.Sprintf("%s-%d", base, i)
+		if !r.AliasInUse(cand) {
+			return cand, nil
+		}
+	}
+	return "", fmt.Errorf("could not allocate a unique alias for %q", gitURL)
+}
+
+// AllocateRepoSlug returns an unused on-disk slug for a repo, derived from
+// its primary alias. Suffixes -2/-3/... on collision.
+func (r *Registry) AllocateRepoSlug(primaryAlias string) string {
+	base := AliasToSlug(primaryAlias)
+	if base == "" {
+		base = "repo"
+	}
+	if !r.repoSlugTaken(base) {
+		return base
+	}
+	for i := 2; i < 1000; i++ {
+		cand := fmt.Sprintf("%s-%d", base, i)
+		if len(cand) > 50 {
+			cand = cand[:50]
+		}
+		if !r.repoSlugTaken(cand) {
+			return cand
+		}
+	}
+	return base
+}
+
+func (r *Registry) repoSlugTaken(slug string) bool {
+	for i := range r.Repos {
+		if r.Repos[i].Name == slug {
+			return true
+		}
+	}
+	return false
+}
+
+// MakeWorktreeAlias builds the canonical worktree alias as "<repo-alias>@<branch>".
+func MakeWorktreeAlias(repoAlias, branch string) string {
+	return repoAlias + "@" + branch
+}
+
+// MakeSlug builds a unique container slug from (repoSlug, branch).
+func (r *Registry) MakeSlug(repoSlug, branch string) string {
+	base := repoSlug + "-" + slugSafeRE.ReplaceAllString(strings.ToLower(branch), "-")
 	base = strings.Trim(base, "-")
 	if len(base) > 50 {
 		base = base[:50]
@@ -165,7 +323,7 @@ func (r *Registry) MakeSlug(repo, branch string) string {
 			return cand
 		}
 	}
-	return base // give up; caller will likely error elsewhere
+	return base
 }
 
 func (r *Registry) slugTaken(slug string) bool {

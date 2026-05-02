@@ -34,15 +34,16 @@ func newGCCmd() *cobra.Command {
 				return nil
 			}
 			for _, w := range stale {
-				fmt.Printf("%s/%s  (created %s)\n", w.Repo, w.Branch, w.CreatedAt.Format(time.RFC3339))
+				fmt.Printf("%s  (created %s)\n", w.Aliases[0], w.CreatedAt.Format(time.RFC3339))
 			}
 			if dryRun || !prune {
 				fmt.Println("(dry run; pass --prune to delete)")
 				return nil
 			}
 			for _, w := range stale {
-				if err := runRm(w.Repo, w.Branch); err != nil {
-					fmt.Fprintf(cobraOutErr(), "warn: rm %s/%s: %v\n", w.Repo, w.Branch, err)
+				alias := w.Aliases[0]
+				if err := runRm(alias); err != nil {
+					fmt.Fprintf(cobraOutErr(), "warn: rm %s: %v\n", alias, err)
 				}
 			}
 			return nil

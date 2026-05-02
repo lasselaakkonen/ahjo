@@ -14,23 +14,23 @@ import (
 
 func newSSHCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "ssh <repo> <branch>",
+		Use:   "ssh <alias>",
 		Short: "exec ssh into the worktree's container via the generated ssh-config",
-		Args:  cobra.ExactArgs(2),
+		Args:  cobra.ExactArgs(1),
 		RunE: func(_ *cobra.Command, args []string) error {
-			return runSSH(args[0], args[1])
+			return runSSH(args[0])
 		},
 	}
 }
 
-func runSSH(repoName, branch string) error {
+func runSSH(alias string) error {
 	reg, err := registry.Load()
 	if err != nil {
 		return err
 	}
-	w := reg.FindWorktree(repoName, branch)
+	w := reg.FindWorktreeByAlias(alias)
 	if w == nil {
-		return fmt.Errorf("no worktree for %s/%s", repoName, branch)
+		return fmt.Errorf("no worktree with alias %q", alias)
 	}
 	bin, err := exec.LookPath("ssh")
 	if err != nil {

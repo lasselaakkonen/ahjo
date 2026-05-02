@@ -20,20 +20,24 @@ import (
 func newNewCmd() *cobra.Command {
 	var base string
 	var noFetch bool
+	var asAlias string
 	cmd := &cobra.Command{
-		Use:   "new <repo> <branch>",
+		Use:   "new <repo-alias> <branch>",
 		Short: "Create a worktree + .coi/config.toml for (repo, branch). Does not start the container.",
-		Args:  cobra.ExactArgs(2),
+		Long: `Create a new worktree. The auto alias is "<repo-primary-alias>@<branch>".
+Pass --as <alias> to register an additional alias for the worktree.`,
+		Args: cobra.ExactArgs(2),
 		RunE: func(_ *cobra.Command, args []string) error {
-			return runNew(args[0], args[1], base, noFetch)
+			return runNew(args[0], args[1], base, asAlias, noFetch)
 		},
 	}
 	cmd.Flags().StringVar(&base, "base", "", "branch/ref to create from (default: repo's default-base)")
 	cmd.Flags().BoolVar(&noFetch, "no-fetch", false, "skip `git fetch origin` on the bare clone")
+	cmd.Flags().StringVar(&asAlias, "as", "", "additional alias for this worktree (must not collide with any existing alias)")
 	return cmd
 }
 
-func runNew(repoName, branch, base string, noFetch bool) error {
+func runNew(repoAlias, branch, base, asAlias string, noFetch bool) error {
 	release, err := lockfile.Acquire()
 	if err != nil {
 		return err
@@ -48,11 +52,11 @@ func runNew(repoName, branch, base string, noFetch bool) error {
 	if err != nil {
 		return err
 	}
-	repo := reg.FindRepo(repoName)
+	repo := reg.FindRepoByAlias(repoAlias)
 	if repo == nil {
-		return fmt.Errorf("repo %q not registered (try `ahjo repo add`)", repoName)
+		return fmt.Errorf("no repo with alias %q (try `ahjo repo add` or `ahjo repo ls`)", repoAlias)
 	}
-	if existing := reg.FindWorktree(repoName, branch); existing != nil {
+	if existing := reg.FindWorktree(repo.Name, branch); existing != nil {
 		// Idempotent: re-render config.toml + ssh-config and exit OK.
 		if err := rerender(cfg, reg, existing, repo); err != nil {
 			return err
@@ -61,22 +65,36 @@ func runNew(repoName, branch, base string, noFetch bool) error {
 		return nil
 	}
 
+	primary := registry.MakeWorktreeAlias(repo.Aliases[0], branch)
+	if reg.AliasInUse(primary) {
+		return fmt.Errorf("auto alias %q is already taken by another repo or worktree; remove the conflicting one or pick a different branch name", primary)
+	}
+	aliases := []string{primary}
+	if asAlias != "" {
+		if err := registry.ValidateAlias(asAlias); err != nil {
+			return err
+		}
+		if asAlias != primary {
+			if reg.AliasInUse(asAlias) {
+				return fmt.Errorf("alias %q already in use; pick another --as value", asAlias)
+			}
+			aliases = append(aliases, asAlias)
+		}
+	}
+
 	if !noFetch {
 		if err := git.Fetch(repo.BarePath); err != nil {
 			return fmt.Errorf("fetch: %w", err)
 		}
 	}
 
-	slug := reg.MakeSlug(repoName, branch)
-	worktreePath := paths.WorktreePath(repoName, branch)
+	slug := reg.MakeSlug(repo.Name, branch)
+	worktreePath := paths.WorktreePath(repo.Name, branch)
 	hostKeysDir := paths.SlugHostKeysDir(slug)
 
-	from := base
-	if from == "" {
-		from = repo.DefaultBase
-	}
-	if from == "" {
-		from = "main"
+	from, err := resolveBase(repo, base)
+	if err != nil {
+		return err
 	}
 	if err := git.AddWorktree(repo.BarePath, worktreePath, branch, from); err != nil {
 		return fmt.Errorf("worktree add: %w", err)
@@ -118,7 +136,8 @@ func runNew(repoName, branch, base string, noFetch bool) error {
 	}
 
 	w := registry.Worktree{
-		Repo:           repoName,
+		Repo:           repo.Name,
+		Aliases:        aliases,
 		Branch:         branch,
 		Slug:           slug,
 		WorktreePath:   worktreePath,
@@ -135,8 +154,31 @@ func runNew(repoName, branch, base string, noFetch bool) error {
 		return err
 	}
 
-	fmt.Fprintf(os.Stdout, "ssh port %d; run: ahjo shell %s %s\n", port, repoName, branch)
+	fmt.Fprintf(os.Stdout, "ssh port %d; run: ahjo shell %s\n", port, primary)
 	return nil
+}
+
+// resolveBase picks the ref to base a new worktree on. Order: explicit
+// --base, then the repo's stored default, then a live lookup of the bare
+// repo's HEAD. The last step also kicks in when the stored default is stale
+// (e.g. registry says "main" but the actual default is "master") so the user
+// doesn't have to re-add the repo.
+func resolveBase(repo *registry.Repo, baseFlag string) (string, error) {
+	if baseFlag != "" {
+		return baseFlag, nil
+	}
+	if repo.DefaultBase != "" && git.RefExists(repo.BarePath, repo.DefaultBase) {
+		return repo.DefaultBase, nil
+	}
+	detected, err := git.DefaultBranch(repo.BarePath)
+	if err != nil {
+		return "", fmt.Errorf("detect default branch (pass --base to override): %w", err)
+	}
+	if repo.DefaultBase != "" && repo.DefaultBase != detected {
+		fmt.Fprintf(os.Stderr, "warning: registry default-base %q not found in %s; using detected %q. "+
+			"Edit ~/.ahjo/registry.toml to silence this.\n", repo.DefaultBase, repo.Name, detected)
+	}
+	return detected, nil
 }
 
 // rerender updates .coi/config.toml + known_hosts + ssh-config for an

@@ -14,20 +14,20 @@ import (
 
 func newExposeCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "expose <repo> <branch> <container-port>",
+		Use:   "expose <alias> <container-port>",
 		Short: "Add an Incus proxy device exposing a container port on 127.0.0.1",
-		Args:  cobra.ExactArgs(3),
+		Args:  cobra.ExactArgs(2),
 		RunE: func(_ *cobra.Command, args []string) error {
-			cport, err := strconv.Atoi(args[2])
+			cport, err := strconv.Atoi(args[1])
 			if err != nil || cport <= 0 || cport > 65535 {
-				return fmt.Errorf("invalid container port %q", args[2])
+				return fmt.Errorf("invalid container port %q", args[1])
 			}
-			return runExpose(args[0], args[1], cport)
+			return runExpose(args[0], cport)
 		},
 	}
 }
 
-func runExpose(repoName, branch string, cport int) error {
+func runExpose(alias string, cport int) error {
 	release, err := lockfile.Acquire()
 	if err != nil {
 		return err
@@ -38,9 +38,9 @@ func runExpose(repoName, branch string, cport int) error {
 	if err != nil {
 		return err
 	}
-	w := reg.FindWorktree(repoName, branch)
+	w := reg.FindWorktreeByAlias(alias)
 	if w == nil {
-		return fmt.Errorf("no worktree for %s/%s", repoName, branch)
+		return fmt.Errorf("no worktree with alias %q", alias)
 	}
 
 	pp, err := ports.Load()

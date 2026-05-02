@@ -9,8 +9,9 @@
 //     ahjo-linux-<arch> into the VM (resolved locally or fetched from the
 //     release that matches this binary's version) and runs the in-VM init
 //     transparently.
-//   - `ahjo ssh <repo> <branch>` — exec ssh on the Mac, using the generated
-//     ssh-config that the in-VM ahjo writes to the Lima 9p mount.
+//   - `ahjo ssh <alias>` — exec ssh on the Mac, using the generated
+//     ssh-config that the in-VM ahjo writes to the Lima 9p mount and the
+//     adjacent alias→slug map.
 package main
 
 import (
@@ -62,8 +63,8 @@ func main() {
 		}
 		return
 	case "ssh":
-		if len(args) >= 3 {
-			execSSHFromMac(args[1], args[2])
+		if len(args) >= 2 {
+			execSSHFromMac(args[1])
 			return
 		}
 	case "doctor":
@@ -107,7 +108,7 @@ Usage:
                                  one-time setup, host + VM, end-to-end
                                  (--build-coi: build COI from source instead of downloading)
   ahjo nuke [--yes]              tear down the VM + cache; keep ~/.ahjo configs
-  ahjo ssh <repo> <branch>       ssh into a worktree (resolves Mac-side via the generated config)
+  ahjo ssh <alias>               ssh into a worktree by alias (resolves Mac-side via the generated config)
   ahjo <subcommand> [args...]    relayed into the VM and run there
 `, vmName)
 }
@@ -149,7 +150,7 @@ func preflightLima() error {
 	return nil
 }
 
-func execSSHFromMac(repo, branch string) {
+func execSSHFromMac(alias string) {
 	bin, err := exec.LookPath("ssh")
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "ahjo: ssh not on PATH")
@@ -160,12 +161,17 @@ func execSSHFromMac(repo, branch string) {
 		fmt.Fprintln(os.Stderr, "ahjo:", err)
 		os.Exit(1)
 	}
-	cfg := filepath.Join(home, ".ahjo-shared", "ssh-config")
+	shared := filepath.Join(home, ".ahjo-shared")
+	cfg := filepath.Join(shared, "ssh-config")
 	if _, err := os.Stat(cfg); err != nil {
-		fmt.Fprintf(os.Stderr, "ahjo: %s missing; run `ahjo new %s %s` first\n", cfg, repo, branch)
+		fmt.Fprintf(os.Stderr, "ahjo: %s missing; run `ahjo new` first\n", cfg)
 		os.Exit(1)
 	}
-	slug := sanitizeSlug(repo, branch)
+	slug, err := lookupAlias(filepath.Join(shared, "aliases"), alias)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "ahjo:", err)
+		os.Exit(1)
+	}
 	host := "ahjo-" + slug
 	if err := syscall.Exec(bin, []string{"ssh", "-F", cfg, host}, os.Environ()); err != nil {
 		fmt.Fprintln(os.Stderr, "ahjo: exec ssh:", err)
@@ -173,22 +179,32 @@ func execSSHFromMac(repo, branch string) {
 	}
 }
 
-func sanitizeSlug(repo, branch string) string {
-	b := strings.ToLower(repo + "-" + branch)
-	out := make([]rune, 0, len(b))
-	for _, r := range b {
-		switch {
-		case r >= 'a' && r <= 'z', r >= '0' && r <= '9', r == '-':
-			out = append(out, r)
-		default:
-			out = append(out, '-')
+// lookupAlias scans the alias→slug map (one "alias\tslug" per line) and
+// returns the slug for alias. Lines starting with # are ignored.
+func lookupAlias(path, alias string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", fmt.Errorf("open %s: %w", path, err)
+	}
+	defer f.Close()
+	data, err := io.ReadAll(f)
+	if err != nil {
+		return "", err
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		parts := strings.SplitN(line, "\t", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		if parts[0] == alias {
+			return parts[1], nil
 		}
 	}
-	s := strings.Trim(string(out), "-")
-	if len(s) > 50 {
-		s = s[:50]
-	}
-	return s
+	return "", fmt.Errorf("no worktree with alias %q (try `ahjo ls` to see aliases)", alias)
 }
 
 // runMacInit drives the full host+VM setup. Each step detects its own
@@ -325,7 +341,7 @@ func macInitSteps(buildCOI bool) []initflow.Step {
 				}
 				return initflow.RunShell(out, "", argv...)
 			},
-			Post: "\nDone. Try:\n  ahjo doctor\n  ahjo repo add <name> <git-url>\n  ahjo new <name> <branch>",
+			Post: "\nDone. Try:\n  ahjo doctor\n  ahjo repo add <git-url>           # alias derived from URL, or pass --as <alias>\n  ahjo new <repo-alias> <branch>    # auto-aliased <repo-alias>@<branch>, or pass --as <alias>",
 		},
 	}
 }

@@ -12,23 +12,23 @@ import (
 
 func newShellCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "shell <repo> <branch>",
+		Use:   "shell <alias>",
 		Short: "Start (if needed) and attach to the worktree's container via `coi shell`",
-		Args:  cobra.ExactArgs(2),
+		Args:  cobra.ExactArgs(1),
 		RunE: func(_ *cobra.Command, args []string) error {
-			return runShell(args[0], args[1])
+			return runShell(args[0])
 		},
 	}
 }
 
-func runShell(repoName, branch string) error {
+func runShell(alias string) error {
 	reg, err := registry.Load()
 	if err != nil {
 		return err
 	}
-	w := reg.FindWorktree(repoName, branch)
+	w := reg.FindWorktreeByAlias(alias)
 	if w == nil {
-		return fmt.Errorf("no worktree for %s/%s; create with `ahjo new`", repoName, branch)
+		return fmt.Errorf("no worktree with alias %q; create with `ahjo new`", alias)
 	}
 
 	// Best-effort: if the COI-managed container exists by alias, ensure ssh proxy

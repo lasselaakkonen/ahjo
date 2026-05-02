@@ -76,6 +76,29 @@ func RemoveWorktree(barePath, worktreePath string) error {
 	return nil
 }
 
+// DefaultBranch returns the short ref name HEAD points at in the bare repo
+// (e.g. "main" or "master"). For bare clones, HEAD is set to the remote's
+// default branch at clone time, so this matches the upstream default without
+// a network round-trip.
+func DefaultBranch(barePath string) (string, error) {
+	out, err := runIn(barePath, "symbolic-ref", "--short", "HEAD")
+	if err != nil {
+		return "", err
+	}
+	name := strings.TrimSpace(string(out))
+	if name == "" {
+		return "", fmt.Errorf("git symbolic-ref HEAD in %s returned empty", barePath)
+	}
+	return name, nil
+}
+
+// RefExists reports whether ref resolves to an object in the bare repo.
+func RefExists(barePath, ref string) bool {
+	cmd := exec.Command("git", "rev-parse", "--verify", "--quiet", ref)
+	cmd.Dir = barePath
+	return cmd.Run() == nil
+}
+
 // ListWorktrees returns absolute paths of every worktree (excluding the bare).
 func ListWorktrees(barePath string) ([]string, error) {
 	out, err := runIn(barePath, "worktree", "list", "--porcelain")

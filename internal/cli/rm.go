@@ -16,16 +16,16 @@ import (
 
 func newRmCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "rm <repo> <branch>",
+		Use:   "rm <alias>",
 		Short: "Stop+delete the container, remove the worktree, free ports, drop the registry entry",
-		Args:  cobra.ExactArgs(2),
+		Args:  cobra.ExactArgs(1),
 		RunE: func(_ *cobra.Command, args []string) error {
-			return runRm(args[0], args[1])
+			return runRm(args[0])
 		},
 	}
 }
 
-func runRm(repoName, branch string) error {
+func runRm(alias string) error {
 	release, err := lockfile.Acquire()
 	if err != nil {
 		return err
@@ -36,12 +36,12 @@ func runRm(repoName, branch string) error {
 	if err != nil {
 		return err
 	}
-	w := reg.FindWorktree(repoName, branch)
+	w := reg.FindWorktreeByAlias(alias)
 	if w == nil {
-		fmt.Printf("no worktree for %s/%s; nothing to do\n", repoName, branch)
+		fmt.Printf("no worktree with alias %q; nothing to do\n", alias)
 		return nil
 	}
-	repo := reg.FindRepo(repoName)
+	repo := reg.FindRepo(w.Repo)
 	containerName := w.Slug + "-1"
 
 	if err := coi.Shutdown(containerName); err != nil {
@@ -69,13 +69,14 @@ func runRm(repoName, branch string) error {
 		return err
 	}
 
-	reg.RemoveWorktree(repoName, branch)
+	primary := w.Aliases[0]
+	reg.RemoveWorktree(w.Repo, w.Branch)
 	if err := reg.Save(); err != nil {
 		return err
 	}
 	if err := sshpkg.RegenerateConfig(reg); err != nil {
 		return err
 	}
-	fmt.Printf("removed %s/%s\n", repoName, branch)
+	fmt.Printf("removed %s\n", primary)
 	return nil
 }
