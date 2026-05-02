@@ -55,6 +55,13 @@ func main() {
 			os.Exit(1)
 		}
 		return
+	case "update":
+		yes := hasFlag(args[1:], "-y", "--yes")
+		if err := runMacUpdate(yes); err != nil {
+			fmt.Fprintln(os.Stderr, "ahjo:", err)
+			os.Exit(1)
+		}
+		return
 	case "nuke":
 		yes := hasFlag(args[1:], "-y", "--yes")
 		if err := runMacNuke(yes); err != nil {
@@ -107,6 +114,7 @@ Usage:
   ahjo init [--yes] [--build-coi]
                                  one-time setup, host + VM, end-to-end
                                  (--build-coi: build COI from source instead of downloading)
+  ahjo update [--yes]            push the current ahjo binary into the VM and rebuild the ahjo-base image
   ahjo nuke [--yes]              tear down the VM + cache; keep ~/.ahjo configs
   ahjo ssh <alias>               ssh into a worktree by alias (resolves Mac-side via the generated config)
   ahjo <subcommand> [args...]    relayed into the VM and run there
@@ -215,6 +223,108 @@ func runMacInit(yes, buildCOI bool) error {
 	}
 	r := initflow.Runner{Yes: yes, In: os.Stdin, Out: os.Stdout, Err: os.Stderr}
 	return r.Execute(macInitSteps(buildCOI))
+}
+
+// runMacUpdate is the macOS half of `ahjo update`: refresh the in-VM ahjo
+// binary (skipping the push if the VM already runs the same tagged version),
+// then relay `ahjo update` into the VM so it re-materializes the embedded
+// ahjo-base profile and rebuilds the image.
+func runMacUpdate(yes bool) error {
+	if _, err := exec.LookPath("limactl"); err != nil {
+		return fmt.Errorf("limactl not on PATH; run `ahjo init` first")
+	}
+	if !vmExists() {
+		return fmt.Errorf("VM %q does not exist; run `ahjo init` first", vmName)
+	}
+	r := initflow.Runner{Yes: yes, In: os.Stdin, Out: os.Stdout, Err: os.Stderr}
+	return r.Execute(macUpdateSteps())
+}
+
+// macUpdateSteps reuses init's "Ensure VM running" + binary-resolve +
+// binary-install steps, then relays `ahjo update -y` into the VM so the
+// embedded ahjo-base profile gets re-materialized and the image rebuilt.
+func macUpdateSteps() []initflow.Step {
+	var linuxBin string
+
+	return []initflow.Step{
+		{
+			Title: fmt.Sprintf("Ensure VM %q is running", vmName),
+			Skip: func() (bool, string, error) {
+				if vmRunning() {
+					return true, "VM running", nil
+				}
+				return false, "", nil
+			},
+			Show: "limactl start " + vmName,
+			Action: func(out io.Writer) error {
+				return initflow.RunShell(out, "", "limactl", "start", vmName)
+			},
+		},
+		{
+			Title: fmt.Sprintf("Resolve ahjo-linux-%s for the VM", runtime.GOARCH),
+			Skip: func() (bool, string, error) {
+				if p := resolveLinuxBinaryLocal(version, runtime.GOARCH); p != "" {
+					linuxBin = p
+					return true, p, nil
+				}
+				return false, "", nil
+			},
+			Show: fmt.Sprintf("download ahjo-linux-%s from release %s, verify SHA256, cache under ~/.ahjo/cache/", runtime.GOARCH, version),
+			Action: func(out io.Writer) error {
+				p, err := downloadLinuxBinary(out, version, runtime.GOARCH)
+				if err != nil {
+					return err
+				}
+				linuxBin = p
+				return nil
+			},
+		},
+		{
+			Title: "Install ahjo into VM at " + vmAhjoPath,
+			Skip: func() (bool, string, error) {
+				// dev/dirty builds always re-install (see init for rationale).
+				if version == "dev" || version == "" || strings.HasSuffix(version, "-dirty") {
+					return false, "", nil
+				}
+				out, err := exec.Command("limactl", "shell", vmName, "--", vmAhjoPath, "version").Output()
+				if err != nil {
+					return false, "", nil
+				}
+				if strings.TrimSpace(string(out)) == version {
+					return true, "in-VM ahjo " + version + " already installed", nil
+				}
+				return false, "", nil
+			},
+			Show: fmt.Sprintf("limactl shell %s -- sudo install -m 0755 /dev/stdin %s   (binary piped from %s)", vmName, vmAhjoPath, "<resolved local copy>"),
+			Action: func(out io.Writer) error {
+				if linuxBin == "" {
+					return fmt.Errorf("internal: linux binary path not set by Resolve step")
+				}
+				f, err := os.Open(linuxBin)
+				if err != nil {
+					return err
+				}
+				defer f.Close()
+				cmd := exec.Command("limactl", "shell", vmName, "--",
+					"sudo", "install", "-m", "0755", "/dev/stdin", vmAhjoPath)
+				cmd.Stdout = out
+				cmd.Stderr = out
+				cmd.Stdin = f
+				return cmd.Run()
+			},
+		},
+		{
+			// The in-VM `ahjo update` step prints its own Post message
+			// describing the next step (`ahjo shell <alias> --update`),
+			// and that output bubbles up through limactl. We deliberately
+			// don't add another Post here so the user sees it only once.
+			Title: "Rebuild ahjo-base in the VM",
+			Show:  fmt.Sprintf("limactl shell %s ahjo update -y", vmName),
+			Action: func(out io.Writer) error {
+				return initflow.RunShell(out, "", "limactl", "shell", vmName, "ahjo", "update", "-y")
+			},
+		},
+	}
 }
 
 func macInitSteps(buildCOI bool) []initflow.Step {

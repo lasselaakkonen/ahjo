@@ -77,6 +77,22 @@ func ImageAliasExists(alias string) (bool, error) {
 	return false, nil
 }
 
+// DeleteImageAlias deletes the image referenced by alias. Returns nil when the
+// alias didn't exist (so callers can use it as a "force-clean before rebuild"
+// step without first checking).
+func DeleteImageAlias(alias string) error {
+	cmd := exec.Command("incus", "image", "delete", alias)
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		return nil
+	}
+	low := strings.ToLower(string(out))
+	if strings.Contains(low, "not found") || strings.Contains(low, "no such") {
+		return nil
+	}
+	return fmt.Errorf("incus image delete %s: %w: %s", alias, err, strings.TrimSpace(string(out)))
+}
+
 // StoragePoolDriver returns the driver of the default storage pool, e.g. "btrfs".
 func StoragePoolDriver() (string, error) {
 	cmd := exec.Command("incus", "storage", "list", "--format=json")

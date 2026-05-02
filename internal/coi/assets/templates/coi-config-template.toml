@@ -6,6 +6,16 @@ persistent = true
 [defaults]
 forward_env = [{{range $i, $e := .ForwardEnv}}{{if $i}}, {{end}}"{{$e}}"{{end}}]
 
+# Note on effort: COI's claude integration writes `effortLevel` AND an
+# `env.CLAUDE_CODE_EFFORT_LEVEL` block into ~/.claude/settings.json on
+# session setup, defaulting to "medium" when [tool.claude] effort_level is
+# unset. The env block has the highest precedence in claude's effort
+# resolution, which would lock /effort to whatever value we configured
+# here. So we deliberately do *not* set [tool.claude] effort_level — we
+# let COI write its medium default, then ahjo-claude-prepare strips the
+# env block and replaces effortLevel with "high". That gives the user a
+# usable default that /effort can actually override.
+
 [network]
 mode = "open"
 

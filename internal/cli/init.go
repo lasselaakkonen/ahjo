@@ -44,7 +44,12 @@ func newInitCmd() *cobra.Command {
  11. claude setup-token (saves token to ~/.ahjo/.env)
 
 Each step detects whether it's already done and skips, so re-runs are safe.
-The flow runs end-to-end in a single invocation.`,
+The flow runs end-to-end in a single invocation.
+
+Use 'ahjo update' afterwards whenever you change the host binary or the
+embedded ahjo-base profile — it pushes the new binary into the VM (on macOS)
+and rebuilds the ahjo-base image without re-running the rest of the init
+pipeline.`,
 		Args: cobra.NoArgs,
 		RunE: func(_ *cobra.Command, _ []string) error {
 			if !insideLinuxVM() {

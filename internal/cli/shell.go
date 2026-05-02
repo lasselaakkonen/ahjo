@@ -11,17 +11,28 @@ import (
 )
 
 func newShellCmd() *cobra.Command {
-	return &cobra.Command{
+	var update bool
+	cmd := &cobra.Command{
 		Use:   "shell <alias>",
 		Short: "Start (if needed) and attach to the worktree's container via `coi shell`",
-		Args:  cobra.ExactArgs(1),
+		Long: `Start the container if needed, wire SSH proxy + sshd, attach via ` + "`coi shell`" + `.
+
+Pass --update to discard the existing container before attaching: ahjo shuts it
+down, deletes it, and the regular first-shell path then re-creates it from the
+current ahjo-base image (re-running ahjo-claude-prepare). The worktree, host
+keys, registry entry, and ssh port are preserved. Use this after 'ahjo update'
+or after editing the per-worktree .coi/config.toml (' ahjo new <repo> <branch>'
+re-renders that file in place).`,
+		Args: cobra.ExactArgs(1),
 		RunE: func(_ *cobra.Command, args []string) error {
-			return runShell(args[0])
+			return runShell(args[0], update)
 		},
 	}
+	cmd.Flags().BoolVar(&update, "update", false, "destroy the existing container before attaching so it picks up the current ahjo-base image (keeps the worktree)")
+	return cmd
 }
 
-func runShell(alias string) error {
+func runShell(alias string, update bool) error {
 	reg, err := registry.Load()
 	if err != nil {
 		return err
@@ -39,6 +50,22 @@ func runShell(alias string) error {
 	containerName, err := coi.ResolveContainer(w.Slug, slot)
 	if err != nil {
 		return err
+	}
+
+	if update && containerName != "" {
+		// `coi shutdown` is graceful-stop-and-delete (per `coi --help`), so a
+		// successful Shutdown leaves no container behind. Only fall through to
+		// `coi container delete -f` when Shutdown actually failed — otherwise
+		// we'd hit "instance not found" and surface it as an error.
+		fmt.Printf("→ coi shutdown %s\n", containerName)
+		if err := coi.Shutdown(containerName); err != nil {
+			fmt.Fprintf(cobraOutErr(), "warn: coi shutdown: %v; falling back to force-delete\n", err)
+			fmt.Printf("→ coi container delete -f %s\n", containerName)
+			if err := coi.ContainerDelete(containerName); err != nil {
+				return fmt.Errorf("container delete: %w", err)
+			}
+		}
+		containerName = ""
 	}
 
 	if containerName == "" {

@@ -61,6 +61,24 @@ COI **copies the host's `~/.claude.json` into every container at startup**, over
 
 `ahjo init` merges `hasCompletedOnboarding: true` and `lastOnboardingVersion` into the host VM's `~/.claude.json` once. See `internal/cli/init.go` (`mergeClaudeOnboardingMarker`).
 
+## Per-container defaults (model, effort, prompt suppressors)
+
+COI's claude integration writes `~/.claude/settings.json` and `~/.claude.json` during session setup. Among other things, it injects:
+
+- `effortLevel: "<level>"` (configured-tier setting)
+- `env: { CLAUDE_CODE_EFFORT_LEVEL: "<level>" }` (env-var override block)
+
+driven by `[tool.claude] effort_level` in the per-worktree `.coi/config.toml`, defaulting to `"medium"` when unset. Both fields are written to the same value. The env-var block is the problem: env-var values have the **highest precedence** in claude's effort resolution, so any value persisted there locks the user's `/effort` slider — every change shows "CLAUDE_CODE_EFFORT_LEVEL=… overrides this session". This is true regardless of which level COI was configured to write.
+
+**`ahjo-claude-prepare`** (baked into the `ahjo-base` image, run once per container by `ahjo shell` immediately after COI's first session-setup, before claude ever launches) repairs this. In a single pass it:
+
+1. Strips the `CLAUDE_CODE_EFFORT_LEVEL` key out of the `env` blocks in both `~/.claude/settings.json` and `~/.claude.json` (and removes the surrounding `env` object if that was its only key — but preserves any other env vars the user may have).
+2. Plants ahjo's defaults that the user *can* change later: `model: "opusplan"`, `effortLevel: "high"`, plus `skipDangerousModePermissionPrompt: true` and `projects["/workspace"].hasTrustDialogAccepted: true` to silence the two first-run prompts.
+
+After this runs, `/model` and `/effort` work cleanly from the TUI — no env-var override warning, the user can pick any level. Because ahjo containers are persistent, COI's session-setup pipeline only fires on first creation, so a one-shot strip via the `$HOME/.ahjo-claude-prepared` marker is sufficient — there's no resume path that would re-inject the env block.
+
+The reason ahjo doesn't try to set `[tool.claude] effort_level` in the COI config is that doing so still leaves the env block in place — COI writes it unconditionally. The only way to give the user a usable `/effort` slider is to delete the block after COI writes it.
+
 ## End-to-end
 
 ```

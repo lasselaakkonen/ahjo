@@ -107,13 +107,14 @@ State lives under `~/.ahjo/` (registry, ports, host keys, profiles). The Mac shi
 
 | Command | What it does |
 | --- | --- |
-| `ahjo init [-y]` | One-time setup. Mac: Lima + VM, then drop `ahjo-linux-<arch>` into the VM and relay the in-VM bring-up. In VM (or directly on Linux): Incus + COI + `ahjo-base` image + `~/.ahjo/` skeleton. Resumable. |
+| `ahjo init [-y] [--build-coi]` | One-time setup. Mac: Lima + VM, then drop `ahjo-linux-<arch>` into the VM and relay the in-VM bring-up. In VM (or directly on Linux): Incus + COI + `ahjo-base` image + `~/.ahjo/` skeleton. Resumable. `--build-coi` builds COI from source instead of downloading. |
+| `ahjo update [-y]` | Refresh in-place. Mac: push the current `ahjo-linux-<arch>` into the VM (no-op if the version already matches). VM: re-materialize the embedded `ahjo-base` profile and rebuild the `ahjo-base` image. Run after editing the host binary or any embedded asset. |
 | `ahjo doctor` | Read-only host check. Reports anything `init` would fix. |
 | `ahjo repo add <git-url> [--as <alias>] [--default-base <branch>]` | Register a repo and bare-clone it under `~/.ahjo/repos/`. Auto alias is `<owner>/<repo>` from the URL; `--as` adds a second alias. On collision (e.g. github vs gitlab `acme/api`), ahjo suffixes `-2`/`-3`/… |
 | `ahjo repo ls` | List registered repos with their aliases. |
 | `ahjo repo rm <alias> [--force]` | Drop a repo by any of its aliases. Refuses if worktrees still exist. |
 | `ahjo new <repo-alias> <branch> [--as <alias>] [--base <ref>] [--no-fetch]` | Create the worktree and render `.coi/config.toml`. Auto alias is `<repo-primary-alias>@<branch>`; `--as` adds a second alias. Idempotent. |
-| `ahjo shell <alias>` | Start the container if needed, wire SSH proxy + sshd, attach via `coi shell`. |
+| `ahjo shell <alias> [--update]` | Start the container if needed, wire SSH proxy + sshd, attach via `coi shell`. `--update` shuts down and deletes the existing container first so the next attach builds a fresh one from the current `ahjo-base` image; the worktree, host keys, registry entry, and ssh port are preserved. |
 | `ahjo ssh <alias>` | `exec ssh` into the container using the generated ssh-config (Mac-side or in-VM). |
 | `ahjo expose <alias> <container-port>` | Add an Incus proxy device exposing a container port on `127.0.0.1`. |
 | `ahjo ls` | Worktrees with aliases, slug, SSH port, container state, creation time. |
@@ -123,3 +124,20 @@ State lives under `~/.ahjo/` (registry, ports, host keys, profiles). The Mac shi
 | `ahjo version` | Print the version baked into the binary. |
 
 Global config: `~/.ahjo/config.toml` (optional). See [`internal/config/config.go`](internal/config/config.go) for fields — currently `forward_env` and `port_range`.
+
+## Rebuilding after a change
+
+ahjo has four state layers: the host binary, the `ahjo-base` Incus image, each worktree's `.coi/config.toml`, and the live containers. Three commands cover everything — pick the smallest one that covers your change.
+
+| Scenario | Command |
+| --- | --- |
+| Full reset (wipe everything, rebuild from scratch) | `ahjo nuke -y && ahjo init` |
+| Host binary or any embedded asset changed (`build.sh`, `ahjo-claude-prepare`, `coi-config-template.toml`, anything under `internal/coi/assets/`) | `ahjo update` |
+| Per-worktree `.coi/config.toml` is stale | `ahjo new <repo-alias> <branch>` (idempotent — re-renders for an existing worktree) |
+| Existing container should run on the new image | `ahjo shell <alias> --update` |
+
+`ahjo update` is the brew-style "bring everything to current" verb: on macOS it pushes the matching `ahjo-linux-<arch>` into the VM (no-op when versions match) and then runs `ahjo update` inside the VM, which re-materializes the embedded `ahjo-base` profile and rebuilds the image. On Linux it skips the binary push and goes straight to the rebuild.
+
+`ahjo shell --update` is granular by design — `ahjo update` rebuilds the image but leaves running containers alone, so you can decide per-worktree whether to recreate. The worktree, host keys, registry entry, and ssh port are preserved. Worktrees you don't recreate keep running on the old image until you do.
+
+`ahjo nuke` is for the rare case when state itself is wrong (mismatched aliases, corrupt registry, etc.). For ordinary "I changed the code" iteration, `ahjo update` is what you want.

@@ -25,9 +25,29 @@ install -d -m 0700 -o code -g code /home/code/.ssh
 rm -f /etc/ssh/ssh_host_*_key /etc/ssh/ssh_host_*_key.pub
 systemctl enable ssh
 
-# ahjo-claude-prepare: silences claude's two first-run prompts ("trust this
-# directory?" and the --dangerously-skip-permissions warning) inside the
-# container. Invoked once by `ahjo shell` immediately after COI's container
+# ahjo-claude-prepare: prepares a freshly-created container's claude config so
+# the user's first `claude` invocation is friction-free.
+#
+# It does two things:
+#
+#   1. Strips COI's `env.CLAUDE_CODE_EFFORT_LEVEL` injection. COI's claude
+#      integration writes that env-var block into both ~/.claude/settings.json
+#      and ~/.claude.json on session setup. Because env-var values take the
+#      highest precedence in claude's effort resolution, leaving the block in
+#      place would lock /effort to whatever value COI wrote — the user could
+#      not lower or raise it from the TUI without seeing "X overrides this
+#      session" forever. We delete just the CLAUDE_CODE_EFFORT_LEVEL key (not
+#      the surrounding env object — claude lets users put their own env vars
+#      there) and drop the env object entirely if it ends up empty.
+#
+#   2. Plants ahjo's defaults the user *can* change later: model "opusplan"
+#      (opus in plan mode, sonnet for execution) and effortLevel "high".
+#      Both are normal settings.json fields, so /model and /effort overwrite
+#      them cleanly. Also sets the prompt suppressors that silence the
+#      "trust this directory?" and "--dangerously-skip-permissions" prompts
+#      on first run.
+#
+# Invoked once by `ahjo shell` immediately after COI's first container
 # creation, via `coi container exec --user 1000`, before claude ever launches.
 # Idempotent via $HOME/.ahjo-claude-prepared. Mutates only files under the
 # invoking user's $HOME — never the host. /workspace is COI's hardcoded
@@ -44,12 +64,20 @@ marker="$HOME/.ahjo-claude-prepared"
 mkdir -p "$HOME/.claude"
 [ -f "$HOME/.claude/settings.json" ] || echo '{}' > "$HOME/.claude/settings.json"
 [ -f "$HOME/.claude.json" ]          || echo '{}' > "$HOME/.claude.json"
+
+# Strip COI's CLAUDE_CODE_EFFORT_LEVEL env-var injection from both files,
+# remove the env object if that key was the only one in it, then plant our
+# defaults. Two separate jq pipelines keep the merges readable.
+strip_env='del(.env.CLAUDE_CODE_EFFORT_LEVEL) | if (.env // {}) == {} then del(.env) else . end'
+
 tmp=$(mktemp)
-jq '. + {skipDangerousModePermissionPrompt: true}' \
+jq "$strip_env"' + {skipDangerousModePermissionPrompt: true, model: "opusplan", effortLevel: "high"}' \
     "$HOME/.claude/settings.json" > "$tmp" && mv "$tmp" "$HOME/.claude/settings.json"
+
 tmp=$(mktemp)
-jq '.projects["/workspace"] = ((.projects["/workspace"] // {}) + {hasTrustDialogAccepted: true})' \
+jq "$strip_env"' | .projects["/workspace"] = ((.projects["/workspace"] // {}) + {hasTrustDialogAccepted: true})' \
     "$HOME/.claude.json" > "$tmp" && mv "$tmp" "$HOME/.claude.json"
+
 touch "$marker"
 PREPARE
 chmod 0755 /usr/local/bin/ahjo-claude-prepare
