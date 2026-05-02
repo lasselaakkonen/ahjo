@@ -12,6 +12,43 @@ import (
 	"syscall"
 )
 
+// PinnedVersion is the COI release ahjo targets. ahjo passes VERSION=<this>
+// to COI's install.sh, which downloads exactly that release of the coi
+// binary. Because COI embeds profiles/default/build.sh into its binary, the
+// build script that `coi build` runs is also pinned — so an upstream change
+// to build.sh or the binary cannot silently break ahjo's pipeline.
+// (install.sh itself stays at master; it just reads $VERSION.)
+//
+// Bump after testing the new release end-to-end:
+//  1. set this to the new tag
+//  2. ahjo init        # fresh VM ideally, or `ahjo nuke -y && ahjo init`
+//  3. ahjo update      # exercises the in-VM rebuild path on an existing VM
+//  4. ahjo new <repo> <branch> && ahjo shell <alias>   # confirm a container
+//     builds and `claude` launches inside it
+//
+// History:
+//   - v0.8.0 (2026-04-16): pin established. Embeds the `npm:pnpm@latest`
+//     fix for mise's aqua backend, removing the need for ahjo's prior
+//     sed-patch on profiles/default/build.sh.
+const PinnedVersion = "v0.8.0"
+
+// InstalledVersion returns the version reported by `coi --version`, normalized
+// to a tag like "v0.8.0". Returns "" when coi isn't on PATH or the output
+// can't be parsed; callers should treat that as "unknown" rather than failure.
+func InstalledVersion() string {
+	out, err := exec.Command("coi", "--version").Output()
+	if err != nil {
+		return ""
+	}
+	// `coi --version` prints e.g. "coi version v0.8.0".
+	for _, f := range strings.Fields(strings.TrimSpace(string(out))) {
+		if strings.HasPrefix(f, "v") {
+			return f
+		}
+	}
+	return ""
+}
+
 // ExecShell replaces the current process with `coi shell --container <name>`
 // from worktreeDir. Stdio + signals + exit code passthrough is automatic via
 // execve. Pinning the container by name (not by --slot) is required because

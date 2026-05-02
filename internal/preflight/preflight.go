@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 
+	"github.com/lasselaakkonen/ahjo/internal/coi"
 	"github.com/lasselaakkonen/ahjo/internal/incus"
 	"github.com/lasselaakkonen/ahjo/internal/paths"
 )
@@ -31,6 +32,7 @@ type Problem struct {
 func Run() []Problem {
 	var ps []Problem
 	ps = append(ps, checkBinary("coi", "Install COI: see https://github.com/mensfeld/code-on-incus"))
+	ps = append(ps, checkCoiVersion())
 	ps = append(ps, checkBinary("incus", "sudo apt install incus"))
 	ps = append(ps, checkBinary("git", "sudo apt install git"))
 	ps = append(ps, checkBinary("ssh-keygen", "sudo apt install openssh-client"))
@@ -123,6 +125,25 @@ func checkAhjoBase() Problem {
 		}
 	}
 	return Problem{Severity: OK, Title: "ahjo-base image present"}
+}
+
+func checkCoiVersion() Problem {
+	if _, err := exec.LookPath("coi"); err != nil {
+		return Problem{Severity: Warn, Title: "skipped: coi version check (coi missing)"}
+	}
+	got := coi.InstalledVersion()
+	if got == "" {
+		return Problem{Severity: Warn, Title: "coi version unknown", Detail: "`coi --version` did not return a parseable tag"}
+	}
+	if got != coi.PinnedVersion {
+		return Problem{
+			Severity: Warn,
+			Title:    fmt.Sprintf("coi version drift: installed %s, pinned %s", got, coi.PinnedVersion),
+			Detail:   "`ahjo update` will re-pin to " + coi.PinnedVersion + "; this is informational only.",
+			Fix:      "ahjo update",
+		}
+	}
+	return Problem{Severity: OK, Title: "coi pinned to " + coi.PinnedVersion}
 }
 
 func checkCoiDefault() Problem {

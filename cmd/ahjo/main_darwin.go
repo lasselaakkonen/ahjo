@@ -57,7 +57,8 @@ func main() {
 		return
 	case "update":
 		yes := hasFlag(args[1:], "-y", "--yes")
-		if err := runMacUpdate(yes); err != nil {
+		buildCOI := hasFlag(args[1:], "--build-coi")
+		if err := runMacUpdate(yes, buildCOI); err != nil {
 			fmt.Fprintln(os.Stderr, "ahjo:", err)
 			os.Exit(1)
 		}
@@ -114,7 +115,10 @@ Usage:
   ahjo init [--yes] [--build-coi]
                                  one-time setup, host + VM, end-to-end
                                  (--build-coi: build COI from source instead of downloading)
-  ahjo update [--yes]            push the current ahjo binary into the VM and rebuild the ahjo-base image
+  ahjo update [--yes] [--build-coi]
+                                 push the current ahjo binary into the VM, then refresh
+                                 claude + COI + coi-default + ahjo-base inside the VM
+                                 (--build-coi: build COI from source)
   ahjo nuke [--yes]              tear down the VM + cache; keep ~/.ahjo configs
   ahjo ssh <alias>               ssh into a worktree by alias (resolves Mac-side via the generated config)
   ahjo <subcommand> [args...]    relayed into the VM and run there
@@ -227,9 +231,9 @@ func runMacInit(yes, buildCOI bool) error {
 
 // runMacUpdate is the macOS half of `ahjo update`: refresh the in-VM ahjo
 // binary (skipping the push if the VM already runs the same tagged version),
-// then relay `ahjo update` into the VM so it re-materializes the embedded
-// ahjo-base profile and rebuilds the image.
-func runMacUpdate(yes bool) error {
+// then relay `ahjo update` into the VM so it refreshes claude + COI +
+// coi-default + ahjo-base.
+func runMacUpdate(yes, buildCOI bool) error {
 	if _, err := exec.LookPath("limactl"); err != nil {
 		return fmt.Errorf("limactl not on PATH; run `ahjo init` first")
 	}
@@ -237,13 +241,13 @@ func runMacUpdate(yes bool) error {
 		return fmt.Errorf("VM %q does not exist; run `ahjo init` first", vmName)
 	}
 	r := initflow.Runner{Yes: yes, In: os.Stdin, Out: os.Stdout, Err: os.Stderr}
-	return r.Execute(macUpdateSteps())
+	return r.Execute(macUpdateSteps(buildCOI))
 }
 
 // macUpdateSteps reuses init's "Ensure VM running" + binary-resolve +
 // binary-install steps, then relays `ahjo update -y` into the VM so the
-// embedded ahjo-base profile gets re-materialized and the image rebuilt.
-func macUpdateSteps() []initflow.Step {
+// in-VM stack (claude, COI, coi-default, ahjo-base) gets refreshed.
+func macUpdateSteps(buildCOI bool) []initflow.Step {
 	var linuxBin string
 
 	return []initflow.Step{
@@ -318,10 +322,14 @@ func macUpdateSteps() []initflow.Step {
 			// describing the next step (`ahjo shell <alias> --update`),
 			// and that output bubbles up through limactl. We deliberately
 			// don't add another Post here so the user sees it only once.
-			Title: "Rebuild ahjo-base in the VM",
-			Show:  fmt.Sprintf("limactl shell %s ahjo update -y", vmName),
+			Title: "Refresh in-VM stack (claude + COI + coi-default + ahjo-base)",
+			Show:  fmt.Sprintf("limactl shell %s ahjo update -y%s", vmName, buildCOIArg(buildCOI)),
 			Action: func(out io.Writer) error {
-				return initflow.RunShell(out, "", "limactl", "shell", vmName, "ahjo", "update", "-y")
+				argv := []string{"limactl", "shell", vmName, "ahjo", "update", "-y"}
+				if buildCOI {
+					argv = append(argv, "--build-coi")
+				}
+				return initflow.RunShell(out, "", argv...)
 			},
 		},
 	}

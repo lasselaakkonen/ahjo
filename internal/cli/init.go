@@ -186,10 +186,9 @@ Signed-By: /etc/apt/keyrings/zabbly.asc
 				}
 				return false, "", nil
 			},
-			Note: "applies an in-flight workaround: COI's default build.sh runs `mise use --global ... pnpm@latest ...`, but mise's aqua backend can't fetch pnpm@latest because aqua-registry expects asset name pnpm-linux-arm64 while pnpm v11 only publishes pnpm-linux-arm64.tar.gz. ahjo fetches COI's build.sh, rewrites pnpm@latest → npm:pnpm@latest, drops it into a CWD-relative profiles/default/build.sh (which COI prefers over its embedded copy), and runs `coi build` from there. Drop this when aqua-registry's pnpm mapping catches up.",
-			Show: "patch profiles/default/build.sh in a temp dir (mise pnpm@latest → npm:pnpm@latest), then `coi build` with that as CWD",
+			Show: "coi build",
 			Action: func(out io.Writer) error {
-				return buildCOIDefaultWithMisePatch(out)
+				return runCoiBuildDefault(out)
 			},
 		},
 		{
@@ -399,14 +398,7 @@ func mergeClaudeOnboardingMarker(path string) error {
 // the script's default from "1" to "2" before piping to bash; in interactive
 // mode the same patch flips which choice gets picked when the user hits enter.
 func coiInstallSteps(onLima, buildCOI bool) []initflow.Step {
-	curl := "curl -fsSL https://raw.githubusercontent.com/mensfeld/code-on-incus/master/install.sh"
-	patch := `sed 's|prompt_choice "Choose \[1/2\] (default: 1): " "1"|prompt_choice "Choose [1/2] (default: 2): " "2"|'`
-	pipeline := func(env string) string {
-		if buildCOI {
-			return curl + " | " + patch + " | " + env + "bash"
-		}
-		return curl + " | " + env + "bash"
-	}
+	pipeline := func(env string) string { return coiInstallPipeline(env, buildCOI) }
 
 	if onLima {
 		return []initflow.Step{
@@ -481,48 +473,73 @@ func coiNote(onLima, buildCOI bool) string {
 	if buildCOI {
 		source = "build from source (--build-coi)"
 	}
+	pin := "pinned to " + coi.PinnedVersion + " (install.sh URL + VERSION env)"
 	if onLima {
-		return "ufw is disabled first (Lima/vzNAT already firewalls the VM and ahjo runs COI in `mode = \"open\"`), then install.sh runs with NONINTERACTIVE=1 so ufw/firewalld prompts flow through defaults. Install method: " + source + "."
+		return pin + ". ufw is disabled first (Lima/vzNAT already firewalls the VM and ahjo runs COI in `mode = \"open\"`), then install.sh runs with NONINTERACTIVE=1 so ufw/firewalld prompts flow through defaults. Install method: " + source + "."
 	}
-	return "interactive: COI's installer prompts for ufw vs firewalld. Install method: " + source + " (you can still hit enter to accept it). ahjo does not write `mode = \"open\"` on bare-metal Linux — if you keep ufw and skip firewalld you may want to set it manually in ~/.coi/config.toml afterwards."
+	return pin + ". Interactive: COI's installer prompts for ufw vs firewalld. Install method: " + source + " (you can still hit enter to accept it). ahjo does not write `mode = \"open\"` on bare-metal Linux — if you keep ufw and skip firewalld you may want to set it manually in ~/.coi/config.toml afterwards."
 }
 
-// coiDefaultBuildScriptURL is the upstream COI default profile's build.sh.
-// We fetch and patch it at init time as a workaround for the aqua-registry
-// vs. pnpm release-format mismatch (see step Note in vmInitSteps).
-const coiDefaultBuildScriptURL = "https://raw.githubusercontent.com/mensfeld/code-on-incus/master/profiles/default/build.sh"
+// coiInstallPipeline returns the bash one-liner that fetches COI's install.sh
+// and runs it with VERSION=<coi.PinnedVersion>. install.sh itself is fetched
+// from master (it defaults VERSION to "latest", so pinning only the URL
+// would NOT pin the downloaded binary — the binary version is what matters
+// because the build script for `coi build` is embedded in the binary).
+// envPrefix is "NONINTERACTIVE=1 " under Lima (so the script's ufw/firewalld
+// prompts flow through defaults), "" on bare-metal Linux. When buildCOI is
+// true we sed-patch the install-method default from "1" (pre-built binary)
+// to "2" (build from source) before piping to bash.
+func coiInstallPipeline(envPrefix string, buildCOI bool) string {
+	curl := "curl -fsSL https://raw.githubusercontent.com/mensfeld/code-on-incus/master/install.sh"
+	patch := `sed 's|prompt_choice "Choose \[1/2\] (default: 1): " "1"|prompt_choice "Choose [1/2] (default: 2): " "2"|'`
+	env := "VERSION=" + coi.PinnedVersion + " " + envPrefix
+	if buildCOI {
+		return curl + " | " + patch + " | " + env + "bash"
+	}
+	return curl + " | " + env + "bash"
+}
 
-// buildCOIDefaultWithMisePatch builds the coi-default image with a patched
-// build.sh that swaps mise's `pnpm@latest` (aqua backend, broken) for
-// `npm:pnpm@latest` (npm backend, working). COI's resolveAsset prefers a
-// CWD-relative profiles/default/build.sh over its embedded copy, so we run
-// `coi build` from a temp dir containing only that one patched file.
-func buildCOIDefaultWithMisePatch(out io.Writer) error {
+// coiReinstallStep is the always-run variant used by `ahjo update`. Unlike
+// coiInstallSteps' install step, this has no Skip — the entire point of
+// `ahjo update` is to (re-)pin COI to coi.PinnedVersion. Under Lima we still
+// pre-disable ufw and run NONINTERACTIVE so the re-run is non-blocking.
+func coiReinstallStep(onLima, buildCOI bool) initflow.Step {
+	note := "always runs — re-pins COI to " + coi.PinnedVersion + ". Bump the pin in internal/cli/init.go to track upstream after vetting a new release."
+	if onLima {
+		return initflow.Step{
+			Title: "Reinstall COI " + coi.PinnedVersion + " (Lima: non-interactive)",
+			Note:  note + " ufw is disabled first; NONINTERACTIVE=1 keeps install.sh from prompting.",
+			Show:  "sudo systemctl disable --now ufw\n" + coiInstallPipeline("NONINTERACTIVE=1 ", buildCOI),
+			Action: func(out io.Writer) error {
+				_ = initflow.RunShell(out, "", "sudo", "systemctl", "disable", "--now", "ufw")
+				return initflow.RunBash(out, "", coiInstallPipeline("NONINTERACTIVE=1 ", buildCOI))
+			},
+		}
+	}
+	return initflow.Step{
+		Title: "Reinstall COI " + coi.PinnedVersion + " (Linux: interactive)",
+		Note:  note + " install.sh will prompt for ufw/firewalld; hit enter to keep your current choice.",
+		Show:  coiInstallPipeline("", buildCOI),
+		Action: func(out io.Writer) error {
+			return initflow.RunBash(out, "", coiInstallPipeline("", buildCOI))
+		},
+	}
+}
+
+// runCoiBuildDefault runs `coi build` for the default profile. We deliberately
+// run from an empty temp dir so COI's resolveAsset cannot find a stray
+// CWD-relative profiles/default/build.sh and falls through to its embedded
+// copy. (Earlier ahjo wrote a patched script here to work around upstream's
+// broken `mise use … pnpm@latest …` line; upstream now uses `npm:pnpm@latest`
+// directly so the patch is no longer needed and was actually corrupting the
+// script — sed turned `npm:pnpm@latest` into `npm:npm:pnpm@latest`, which
+// fails npm with E404.)
+func runCoiBuildDefault(out io.Writer) error {
 	tmpdir, err := os.MkdirTemp("", "ahjo-coi-build-")
 	if err != nil {
 		return fmt.Errorf("mktemp: %w", err)
 	}
 	defer os.RemoveAll(tmpdir)
-
-	body, err := exec.Command("curl", "-fsSL", coiDefaultBuildScriptURL).Output()
-	if err != nil {
-		return fmt.Errorf("fetch %s: %w", coiDefaultBuildScriptURL, err)
-	}
-	const needle = "pnpm@latest"
-	if !strings.Contains(string(body), needle) {
-		return fmt.Errorf("upstream build.sh no longer contains %q — review ahjo's COI mise workaround in internal/cli/init.go", needle)
-	}
-	patched := strings.Replace(string(body), needle, "npm:pnpm@latest", 1)
-
-	profilesDir := filepath.Join(tmpdir, "profiles", "default")
-	if err := os.MkdirAll(profilesDir, 0o755); err != nil {
-		return err
-	}
-	scriptPath := filepath.Join(profilesDir, "build.sh")
-	if err := os.WriteFile(scriptPath, []byte(patched), 0o755); err != nil {
-		return err
-	}
-	fmt.Fprintf(out, "  → patched %s (mise pnpm@latest → npm:pnpm@latest)\n", scriptPath)
 
 	cmd := exec.Command("coi", "build")
 	cmd.Dir = tmpdir
