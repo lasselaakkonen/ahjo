@@ -7,6 +7,8 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/lasselaakkonen/ahjo/internal/ahjoconfig"
+	"github.com/lasselaakkonen/ahjo/internal/coi"
 	"github.com/lasselaakkonen/ahjo/internal/git"
 	"github.com/lasselaakkonen/ahjo/internal/lima"
 	"github.com/lasselaakkonen/ahjo/internal/lockfile"
@@ -44,50 +46,60 @@ ahjo appends -2/-3/... to keep aliases unique.`,
 }
 
 func runRepoAdd(url, asAlias, defaultBase string) error {
-	release, err := lockfile.Acquire()
+	slug, primary, base, err := repoAddRegister(url, asAlias, defaultBase)
 	if err != nil {
 		return err
+	}
+	return repoAddSetup(slug, primary, base)
+}
+
+// repoAddRegister clones the bare repo and writes the initial registry entry.
+// It holds the lockfile only for this phase so runNew can acquire it independently.
+func repoAddRegister(url, asAlias, defaultBase string) (slug, primary, base string, err error) {
+	release, err := lockfile.Acquire()
+	if err != nil {
+		return "", "", "", err
 	}
 	defer release()
 
 	reg, err := registry.Load()
 	if err != nil {
-		return err
+		return "", "", "", err
 	}
 
-	primary, err := reg.AllocateRepoAlias(url)
+	primary, err = reg.AllocateRepoAlias(url)
 	if err != nil {
-		return err
+		return "", "", "", err
 	}
 	aliases := []string{primary}
 	if asAlias != "" {
 		if err := registry.ValidateAlias(asAlias); err != nil {
-			return err
+			return "", "", "", err
 		}
 		if asAlias == primary {
 			// Already covered; silently de-dupe.
 		} else if reg.AliasInUse(asAlias) {
-			return fmt.Errorf("alias %q already in use; pick another --as value", asAlias)
+			return "", "", "", fmt.Errorf("alias %q already in use; pick another --as value", asAlias)
 		} else {
 			aliases = append(aliases, asAlias)
 		}
 	}
 
-	slug := reg.AllocateRepoSlug(primary)
+	slug = reg.AllocateRepoSlug(primary)
 	bare := paths.RepoBarePath(slug)
 	if err := os.MkdirAll(paths.ReposDir(), 0o755); err != nil {
-		return err
+		return "", "", "", err
 	}
 	if _, err := os.Stat(bare); err == nil {
-		return fmt.Errorf("%s already exists; remove it before re-adding", bare)
+		return "", "", "", fmt.Errorf("%s already exists; remove it before re-adding", bare)
 	}
 	if err := git.CloneBare(url, bare); err != nil {
-		return wrapCloneErr(err)
+		return "", "", "", wrapCloneErr(err)
 	}
 	if defaultBase == "" {
 		detected, err := git.DefaultBranch(bare)
 		if err != nil {
-			return fmt.Errorf("detect default branch (pass --default-base to override): %w", err)
+			return "", "", "", fmt.Errorf("detect default branch (pass --default-base to override): %w", err)
 		}
 		defaultBase = detected
 	}
@@ -99,11 +111,75 @@ func runRepoAdd(url, asAlias, defaultBase string) error {
 		DefaultBase: defaultBase,
 	})
 	if err := reg.Save(); err != nil {
-		return err
+		return "", "", "", err
 	}
 	fmt.Printf("Added repo %s (aliases: %s, default base: %s)\n",
 		slug, strings.Join(aliases, ", "), defaultBase)
-	return nil
+	return slug, primary, defaultBase, nil
+}
+
+// repoAddSetup creates the default-branch worktree, starts the container, runs
+// .ahjoconfig commands, and stores BaseContainerName in the registry.
+func repoAddSetup(slug, primary, defaultBase string) error {
+	fmt.Printf("Creating default-branch worktree (%s)...\n", defaultBase)
+	// noFetch=true: we just cloned, no need to fetch again.
+	if err := runNew(primary, defaultBase, "", "", true); err != nil {
+		return fmt.Errorf("create default worktree: %w", err)
+	}
+
+	reg, err := registry.Load()
+	if err != nil {
+		return err
+	}
+	wt := reg.FindWorktree(slug, defaultBase)
+	if wt == nil {
+		return fmt.Errorf("default worktree not in registry after creation")
+	}
+
+	fmt.Printf("Starting default-branch container...\n")
+	if err := coi.Setup(wt.WorktreePath, 1); err != nil {
+		return fmt.Errorf("coi setup: %w", err)
+	}
+	containerName, err := coi.ResolveContainer(wt.Slug, 1)
+	if err != nil {
+		return err
+	}
+	if containerName == "" {
+		return fmt.Errorf("coi setup completed but no container found for slug %q", wt.Slug)
+	}
+	if err := coi.ContainerExecAs(containerName, 1000, "/usr/local/bin/ahjo-claude-prepare"); err != nil {
+		return fmt.Errorf("ahjo-claude-prepare: %w", err)
+	}
+
+	if ahjoConf, found, err := ahjoconfig.Load(wt.WorktreePath); err != nil {
+		return fmt.Errorf(".ahjoconfig: %w", err)
+	} else if found {
+		for _, cmd := range ahjoConf.Run {
+			fmt.Printf("→ %s\n", cmd)
+			if err := coi.ContainerExec(containerName, true, "bash", "-c", cmd); err != nil {
+				return fmt.Errorf(".ahjoconfig run %q: %w", cmd, err)
+			}
+		}
+	}
+
+	// Store BaseContainerName under a fresh lock so the registry is fresh.
+	release, err := lockfile.Acquire()
+	if err != nil {
+		return err
+	}
+	defer release()
+
+	reg2, err := registry.Load()
+	if err != nil {
+		return err
+	}
+	for i := range reg2.Repos {
+		if reg2.Repos[i].Name == slug {
+			reg2.Repos[i].BaseContainerName = containerName
+			break
+		}
+	}
+	return reg2.Save()
 }
 
 func newRepoLsCmd() *cobra.Command {

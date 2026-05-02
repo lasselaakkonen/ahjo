@@ -93,6 +93,156 @@ func DeleteImageAlias(alias string) error {
 	return fmt.Errorf("incus image delete %s: %w: %s", alias, err, strings.TrimSpace(string(out)))
 }
 
+// CopyContainer clones src into dst as a stateless (non-snapshot) copy.
+func CopyContainer(src, dst string) error {
+	cmd := exec.Command("incus", "copy", "--stateless", src, dst)
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		os.Stdout.Write(out)
+		return nil
+	}
+	os.Stderr.Write(out)
+	var ee *exec.ExitError
+	if errors.As(err, &ee) {
+		return fmt.Errorf("incus copy %s %s: exit %d", src, dst, ee.ExitCode())
+	}
+	return fmt.Errorf("incus copy %s %s: %w", src, dst, err)
+}
+
+// ContainerDeleteForce deletes a container forcefully. Tolerant of "not found".
+func ContainerDeleteForce(name string) error {
+	cmd := exec.Command("incus", "delete", "--force", name)
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		return nil
+	}
+	low := strings.ToLower(string(out))
+	if strings.Contains(low, "not found") || strings.Contains(low, "no such") {
+		return nil
+	}
+	os.Stderr.Write(out)
+	var ee *exec.ExitError
+	if errors.As(err, &ee) {
+		return fmt.Errorf("incus delete -f %s: exit %d", name, ee.ExitCode())
+	}
+	return fmt.Errorf("incus delete -f %s: %w", name, err)
+}
+
+// ConfigDeviceSet updates a single key on a named device in a container.
+func ConfigDeviceSet(container, device, key, value string) error {
+	arg := key + "=" + value
+	cmd := exec.Command("incus", "config", "device", "set", container, device, arg)
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		os.Stdout.Write(out)
+		return nil
+	}
+	os.Stderr.Write(out)
+	var ee *exec.ExitError
+	if errors.As(err, &ee) {
+		return fmt.Errorf("incus config device set %s %s %s: exit %d", container, device, arg, ee.ExitCode())
+	}
+	return fmt.Errorf("incus config device set %s %s %s: %w", container, device, arg, err)
+}
+
+// FindMountDevice scans `incus config device show <container>` and returns the
+// name of the first disk device whose source path equals sourcePath. This is
+// used to find the worktree bind-mount that COI created so its source can be
+// updated after an `incus copy`.
+func FindMountDevice(container, sourcePath string) (string, error) {
+	cmd := exec.Command("incus", "config", "device", "show", container)
+	out, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("incus config device show %s: %w", container, err)
+	}
+	needle := "source: " + sourcePath
+	var currentDevice string
+	for _, line := range strings.Split(string(out), "\n") {
+		// Device name: non-space-prefixed line ending with ":"
+		if len(line) > 0 && line[0] != ' ' && strings.HasSuffix(line, ":") {
+			currentDevice = strings.TrimSuffix(line, ":")
+		}
+		if strings.TrimSpace(line) == needle && currentDevice != "" {
+			return currentDevice, nil
+		}
+	}
+	return "", fmt.Errorf("no disk device with source %q in container %q", sourcePath, container)
+}
+
+// RemoveDevice removes a named device from a container. Tolerant of "not found".
+func RemoveDevice(container, device string) error {
+	cmd := exec.Command("incus", "config", "device", "remove", container, device)
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		return nil
+	}
+	low := strings.ToLower(string(out))
+	if strings.Contains(low, "not found") || strings.Contains(low, "no such") {
+		return nil
+	}
+	var ee *exec.ExitError
+	if errors.As(err, &ee) {
+		return fmt.Errorf("incus config device remove %s %s: exit %d", container, device, ee.ExitCode())
+	}
+	return fmt.Errorf("incus config device remove %s %s: %w", container, device, err)
+}
+
+// UpdateWorktreeMounts rebases all disk device source paths in a COW-copied
+// container from oldBase to newBase. Devices whose remapped source does not
+// exist on the host are removed — COI may have created protect-* bind-mounts
+// for directories (e.g. .husky, .vscode) that are absent in the new branch.
+func UpdateWorktreeMounts(container, oldBase, newBase string) error {
+	cmd := exec.Command("incus", "config", "device", "show", container)
+	out, err := cmd.Output()
+	if err != nil {
+		return fmt.Errorf("incus config device show %s: %w", container, err)
+	}
+
+	type devInfo struct {
+		name  string
+		props map[string]string
+	}
+	var devs []devInfo
+	var cur *devInfo
+	for _, line := range strings.Split(string(out), "\n") {
+		if len(line) > 0 && line[0] != ' ' && strings.HasSuffix(line, ":") {
+			devs = append(devs, devInfo{name: strings.TrimSuffix(line, ":"), props: map[string]string{}})
+			cur = &devs[len(devs)-1]
+			continue
+		}
+		if cur == nil {
+			continue
+		}
+		if kv := strings.SplitN(strings.TrimSpace(line), ": ", 2); len(kv) == 2 {
+			cur.props[kv[0]] = kv[1]
+		}
+	}
+
+	for _, d := range devs {
+		if d.props["type"] != "disk" {
+			continue
+		}
+		src := d.props["source"]
+		if !strings.HasPrefix(src, oldBase) {
+			continue
+		}
+		newSrc := newBase + src[len(oldBase):]
+		if _, serr := os.Stat(newSrc); serr != nil {
+			// Source path absent in new worktree — drop the device.
+			rmCmd := exec.Command("incus", "config", "device", "remove", container, d.name)
+			if rmOut, rmErr := rmCmd.CombinedOutput(); rmErr != nil {
+				return fmt.Errorf("incus config device remove %s %s: %w: %s", container, d.name, rmErr, rmOut)
+			}
+			continue
+		}
+		setCmd := exec.Command("incus", "config", "device", "set", container, d.name, "source="+newSrc)
+		if setOut, setErr := setCmd.CombinedOutput(); setErr != nil {
+			return fmt.Errorf("incus config device set %s %s source=%s: %w: %s", container, d.name, newSrc, setErr, setOut)
+		}
+	}
+	return nil
+}
+
 // StoragePoolDriver returns the driver of the default storage pool, e.g. "btrfs".
 func StoragePoolDriver() (string, error) {
 	cmd := exec.Command("incus", "storage", "list", "--format=json")

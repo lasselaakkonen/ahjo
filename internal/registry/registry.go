@@ -24,23 +24,25 @@ type Registry struct {
 }
 
 type Repo struct {
-	Name        string   `toml:"name"`
-	Aliases     []string `toml:"aliases"`
-	Remote      string   `toml:"remote"`
-	BarePath    string   `toml:"bare_path"`
-	DefaultBase string   `toml:"default_base"`
+	Name              string   `toml:"name"`
+	Aliases           []string `toml:"aliases"`
+	Remote            string   `toml:"remote"`
+	BarePath          string   `toml:"bare_path"`
+	DefaultBase       string   `toml:"default_base"`
+	BaseContainerName string   `toml:"base_container_name,omitempty"`
 }
 
 type Worktree struct {
-	Repo            string    `toml:"repo"`
-	Aliases         []string  `toml:"aliases"`
-	Branch          string    `toml:"branch"`
-	Slug            string    `toml:"slug"`
-	WorktreePath    string    `toml:"worktree_path"`
-	ContainerAlias  string    `toml:"container_alias"`
-	SSHPort         int       `toml:"ssh_port"`
-	SSHHostKeysDir  string    `toml:"ssh_host_keys_dir"`
-	CreatedAt       time.Time `toml:"created_at"`
+	Repo           string    `toml:"repo"`
+	Aliases        []string  `toml:"aliases"`
+	Branch         string    `toml:"branch"`
+	Slug           string    `toml:"slug"`
+	WorktreePath   string    `toml:"worktree_path"`
+	ContainerAlias string    `toml:"container_alias"`
+	SSHPort        int       `toml:"ssh_port"`
+	SSHHostKeysDir string    `toml:"ssh_host_keys_dir"`
+	CreatedAt      time.Time `toml:"created_at"`
+	IncusName      string    `toml:"incus_name,omitempty"`
 }
 
 var (

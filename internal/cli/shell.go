@@ -42,50 +42,65 @@ func runShell(alias string, update bool) error {
 		return fmt.Errorf("no worktree with alias %q; create with `ahjo new`", alias)
 	}
 
-	// COI names containers "coi-<hash>-<slot>" where the hash is derived from
-	// the workspace path; the .coi/config.toml `alias` is just a label. Resolve
-	// alias+slot -> the real incus name via `coi list --format json`. An empty
-	// result means COI hasn't created the container yet, so we trigger setup.
-	const slot = 1
-	containerName, err := coi.ResolveContainer(w.Slug, slot)
-	if err != nil {
-		return err
-	}
+	var containerName string
 
-	if update && containerName != "" {
-		// `coi shutdown` is graceful-stop-and-delete (per `coi --help`), so a
-		// successful Shutdown leaves no container behind. Only fall through to
-		// `coi container delete -f` when Shutdown actually failed — otherwise
-		// we'd hit "instance not found" and surface it as an error.
-		fmt.Printf("→ coi shutdown %s\n", containerName)
-		if err := coi.Shutdown(containerName); err != nil {
-			fmt.Fprintf(cobraOutErr(), "warn: coi shutdown: %v; falling back to force-delete\n", err)
-			fmt.Printf("→ coi container delete -f %s\n", containerName)
-			if err := coi.ContainerDelete(containerName); err != nil {
-				return fmt.Errorf("container delete: %w", err)
-			}
+	if w.IncusName != "" {
+		// Container was created via incus copy (COW from the default-branch base);
+		// it is not registered with COI so ResolveContainer won't find it.
+		if update {
+			return fmt.Errorf("--update is not supported for COW-copied containers; recreate with `ahjo rm %s && ahjo new`", alias)
 		}
-		containerName = ""
-	}
-
-	if containerName == "" {
-		// First-shell: run COI's session-setup pipeline (mounts, claude
-		// config push, sandbox injection) without launching claude, then
-		// merge ahjo's claude prompt-suppressors into the just-populated
-		// /home/code/.claude/{settings,.}.json so the user's first claude
-		// invocation skips the trust + bypass dialogs.
-		if err := coi.Setup(w.WorktreePath, slot); err != nil {
-			return fmt.Errorf("coi setup: %w", err)
+		exists, err := incus.ContainerExists(w.IncusName)
+		if err != nil {
+			return err
 		}
+		if !exists {
+			return fmt.Errorf("incus container %q not found; recreate with `ahjo rm %s && ahjo new`", w.IncusName, alias)
+		}
+		containerName = w.IncusName
+	} else {
+		// COI-managed container flow.
+		const slot = 1
 		containerName, err = coi.ResolveContainer(w.Slug, slot)
 		if err != nil {
 			return err
 		}
-		if containerName == "" {
-			return fmt.Errorf("coi setup completed but no container registered for alias %q at slot %d", w.Slug, slot)
+
+		if update && containerName != "" {
+			// `coi shutdown` is graceful-stop-and-delete (per `coi --help`), so a
+			// successful Shutdown leaves no container behind. Only fall through to
+			// `coi container delete -f` when Shutdown actually failed — otherwise
+			// we'd hit "instance not found" and surface it as an error.
+			fmt.Printf("→ coi shutdown %s\n", containerName)
+			if err := coi.Shutdown(containerName); err != nil {
+				fmt.Fprintf(cobraOutErr(), "warn: coi shutdown: %v; falling back to force-delete\n", err)
+				fmt.Printf("→ coi container delete -f %s\n", containerName)
+				if err := coi.ContainerDelete(containerName); err != nil {
+					return fmt.Errorf("container delete: %w", err)
+				}
+			}
+			containerName = ""
 		}
-		if err := coi.ContainerExecAs(containerName, 1000, "/usr/local/bin/ahjo-claude-prepare"); err != nil {
-			return fmt.Errorf("ahjo-claude-prepare: %w", err)
+
+		if containerName == "" {
+			// First-shell: run COI's session-setup pipeline (mounts, claude
+			// config push, sandbox injection) without launching claude, then
+			// merge ahjo's claude prompt-suppressors into the just-populated
+			// /home/code/.claude/{settings,.}.json so the user's first claude
+			// invocation skips the trust + bypass dialogs.
+			if err := coi.Setup(w.WorktreePath, slot); err != nil {
+				return fmt.Errorf("coi setup: %w", err)
+			}
+			containerName, err = coi.ResolveContainer(w.Slug, slot)
+			if err != nil {
+				return err
+			}
+			if containerName == "" {
+				return fmt.Errorf("coi setup completed but no container registered for alias %q at slot %d", w.Slug, slot)
+			}
+			if err := coi.ContainerExecAs(containerName, 1000, "/usr/local/bin/ahjo-claude-prepare"); err != nil {
+				return fmt.Errorf("ahjo-claude-prepare: %w", err)
+			}
 		}
 	}
 

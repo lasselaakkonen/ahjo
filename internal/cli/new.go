@@ -7,9 +7,11 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/lasselaakkonen/ahjo/internal/ahjoconfig"
 	"github.com/lasselaakkonen/ahjo/internal/config"
 	"github.com/lasselaakkonen/ahjo/internal/coi"
 	"github.com/lasselaakkonen/ahjo/internal/git"
+	"github.com/lasselaakkonen/ahjo/internal/incus"
 	"github.com/lasselaakkonen/ahjo/internal/lockfile"
 	"github.com/lasselaakkonen/ahjo/internal/paths"
 	"github.com/lasselaakkonen/ahjo/internal/ports"
@@ -126,11 +128,19 @@ func runNew(repoAlias, branch, base, asAlias string, noFetch bool) error {
 		return err
 	}
 
+	// Merge any .ahjoconfig forward_env into the template data.
+	extraForwardEnv := []string(nil)
+	if ahjoConf, found, err := ahjoconfig.Load(worktreePath); err != nil {
+		return fmt.Errorf(".ahjoconfig: %w", err)
+	} else if found {
+		extraForwardEnv = ahjoConf.ForwardEnv
+	}
+
 	if err := coi.RenderConfig(worktreePath, coi.TemplateData{
 		Image:       paths.AhjoBaseProfile,
 		Slug:        slug,
 		HostKeysDir: hostKeysDir,
-		ForwardEnv:  cfg.ForwardEnv,
+		ForwardEnv:  append(cfg.ForwardEnv, extraForwardEnv...),
 	}); err != nil {
 		return err
 	}
@@ -146,6 +156,32 @@ func runNew(repoAlias, branch, base, asAlias string, noFetch bool) error {
 		SSHHostKeysDir: hostKeysDir,
 		CreatedAt:      time.Now().UTC(),
 	}
+
+	// COW copy: clone the default-branch container instead of starting fresh.
+	if repo.BaseContainerName != "" {
+		cowName := "ahjo-" + slug
+		baseWorktreePath := paths.WorktreePath(repo.Name, repo.DefaultBase)
+		if err := incus.CopyContainer(repo.BaseContainerName, cowName); err != nil {
+			return fmt.Errorf("incus copy base container: %w", err)
+		}
+		// Rebase workspace-relative disk device sources (workspace, protect-*).
+		if err := incus.UpdateWorktreeMounts(cowName, baseWorktreePath, worktreePath); err != nil {
+			return fmt.Errorf("rebase worktree mounts in COW container: %w", err)
+		}
+		// SSH host key mounts (mount-0, mount-1) are keyed by slug, not worktree
+		// path, so UpdateWorktreeMounts leaves them untouched. Update explicitly.
+		if err := incus.ConfigDeviceSet(cowName, "mount-0", "source", hostKeysDir); err != nil {
+			return fmt.Errorf("update host-keys mount in COW container: %w", err)
+		}
+		if err := incus.ConfigDeviceSet(cowName, "mount-1", "source", hostKeysDir+"/authorized_keys"); err != nil {
+			return fmt.Errorf("update authorized_keys mount in COW container: %w", err)
+		}
+		// Remove the stale ahjo-ssh proxy (source container's port); shell.go
+		// re-adds it with the correct port on first attach.
+		_ = incus.RemoveDevice(cowName, "ahjo-ssh")
+		w.IncusName = cowName
+	}
+
 	reg.Worktrees = append(reg.Worktrees, w)
 	if err := reg.Save(); err != nil {
 		return err
@@ -194,11 +230,17 @@ func rerender(cfg *config.Config, reg *registry.Registry, w *registry.Worktree, 
 	if err := sshpkg.WriteKnownHosts(w.SSHHostKeysDir, w.SSHPort); err != nil {
 		return err
 	}
+
+	extraForwardEnv := []string(nil)
+	if ahjoConf, found, _ := ahjoconfig.Load(w.WorktreePath); found {
+		extraForwardEnv = ahjoConf.ForwardEnv
+	}
+
 	if err := coi.RenderConfig(w.WorktreePath, coi.TemplateData{
 		Image:       paths.AhjoBaseProfile,
 		Slug:        w.Slug,
 		HostKeysDir: w.SSHHostKeysDir,
-		ForwardEnv:  cfg.ForwardEnv,
+		ForwardEnv:  append(cfg.ForwardEnv, extraForwardEnv...),
 	}); err != nil {
 		return err
 	}
