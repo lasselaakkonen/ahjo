@@ -31,26 +31,51 @@ func runShell(alias string) error {
 		return fmt.Errorf("no worktree with alias %q; create with `ahjo new`", alias)
 	}
 
-	// Best-effort: if the COI-managed container exists by alias, ensure ssh proxy
-	// + sshd are wired before attach. coi-managed names are typically
-	// "<alias>-<slot>" — slot 1 is the default. Look up by alias prefix.
-	containerName := w.Slug + "-1"
-	if exists, err := incus.ContainerExists(containerName); err == nil && exists {
-		if err := coi.ContainerStart(containerName); err != nil {
+	// COI names containers "coi-<hash>-<slot>" where the hash is derived from
+	// the workspace path; the .coi/config.toml `alias` is just a label. Resolve
+	// alias+slot -> the real incus name via `coi list --format json`. An empty
+	// result means COI hasn't created the container yet, so we trigger setup.
+	const slot = 1
+	containerName, err := coi.ResolveContainer(w.Slug, slot)
+	if err != nil {
+		return err
+	}
+
+	if containerName == "" {
+		// First-shell: run COI's session-setup pipeline (mounts, claude
+		// config push, sandbox injection) without launching claude, then
+		// merge ahjo's claude prompt-suppressors into the just-populated
+		// /home/code/.claude/{settings,.}.json so the user's first claude
+		// invocation skips the trust + bypass dialogs.
+		if err := coi.Setup(w.WorktreePath, slot); err != nil {
+			return fmt.Errorf("coi setup: %w", err)
+		}
+		containerName, err = coi.ResolveContainer(w.Slug, slot)
+		if err != nil {
 			return err
 		}
-		if err := incus.AddProxyDevice(
-			containerName, "ahjo-ssh",
-			fmt.Sprintf("tcp:127.0.0.1:%d", w.SSHPort),
-			"tcp:127.0.0.1:22",
-		); err != nil {
-			return err
+		if containerName == "" {
+			return fmt.Errorf("coi setup completed but no container registered for alias %q at slot %d", w.Slug, slot)
 		}
-		if err := coi.ContainerExec(containerName, true, "systemctl", "start", "ssh"); err != nil {
-			// non-fatal: maybe systemd not up yet, or already running
-			fmt.Fprintf(cobraOutErr(), "warn: could not start sshd: %v\n", err)
+		if err := coi.ContainerExecAs(containerName, 1000, "/usr/local/bin/ahjo-claude-prepare"); err != nil {
+			return fmt.Errorf("ahjo-claude-prepare: %w", err)
 		}
 	}
-	// Whether the container existed or not, hand off to coi shell.
-	return coi.ExecShell(w.WorktreePath)
+
+	// Ensure ssh proxy + sshd are wired before attach.
+	if err := coi.ContainerStart(containerName); err != nil {
+		return err
+	}
+	if err := incus.AddProxyDevice(
+		containerName, "ahjo-ssh",
+		fmt.Sprintf("tcp:127.0.0.1:%d", w.SSHPort),
+		"tcp:127.0.0.1:22",
+	); err != nil {
+		return err
+	}
+	if err := coi.ContainerExec(containerName, true, "systemctl", "start", "ssh"); err != nil {
+		// non-fatal: maybe systemd not up yet, or already running
+		fmt.Fprintf(cobraOutErr(), "warn: could not start sshd: %v\n", err)
+	}
+	return coi.ExecShell(w.WorktreePath, containerName)
 }
