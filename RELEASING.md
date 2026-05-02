@@ -11,6 +11,13 @@ make print-version      # what `git describe` would stamp into the binary
 
 The version string baked into the binary comes from `git describe --tags --always --dirty`, falling back to `dev` when there are no tags or no git checkout. Override it explicitly with `make build VERSION=v1.2.3-rc1`.
 
+## Updating the in-VM binary
+
+On macOS, the host binary is a thin shim that relays into a Lima VM where the real CLI lives at `/usr/local/bin/ahjo`. There are two flows:
+
+- **End-user upgrade**: download the new Mac shim from a release, then run `ahjo init`. The install step's version check notices the mismatch and reinstalls the matching `ahjo-linux-<arch>` into the VM. No nuke needed.
+- **Developer iteration**: after `make build`, run `make install-vm` to push `dist/ahjo-linux-<host-arch>` straight into the VM at `/usr/local/bin/ahjo`. This skips every other init step (Lima/Incus/COI/etc.) — use it when you've only changed Go code. Alternatively, `./ahjo init` works too: `*-dirty` and `dev` versions always reinstall, so a fresh `make build` followed by `./ahjo init` reliably refreshes the in-VM bytes even when the version string didn't change.
+
 ## Release artifacts
 
 `make dist` produces, in `dist/`:

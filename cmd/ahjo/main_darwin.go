@@ -263,9 +263,11 @@ func macInitSteps(buildCOI bool) []initflow.Step {
 		{
 			Title: "Install ahjo into VM at " + vmAhjoPath,
 			Skip: func() (bool, string, error) {
-				// dev builds always re-install: both sides report "dev" so a
-				// version match tells us nothing about whether the bytes match.
-				if version == "dev" || version == "" {
+				// dev/dirty builds always re-install: same version string can
+				// cover different bytes (two builds on the same dirty commit
+				// stamp identical "<sha>-dirty"), so a version match tells us
+				// nothing about whether the bytes are current.
+				if version == "dev" || version == "" || strings.HasSuffix(version, "-dirty") {
 					return false, "", nil
 				}
 				out, err := exec.Command("limactl", "shell", vmName, "--", vmAhjoPath, "version").Output()
