@@ -66,6 +66,21 @@ func main() {
 			execSSHFromMac(args[1], args[2])
 			return
 		}
+	case "doctor":
+		macFail := runMacDoctor(os.Stdout)
+		vmFail := false
+		if vmRunning() {
+			cmd := exec.Command("limactl", "shell", vmName, "ahjo", "doctor")
+			cmd.Stdout = os.Stdout
+			cmd.Stderr = os.Stderr
+			if err := cmd.Run(); err != nil {
+				vmFail = true
+			}
+		}
+		if macFail || vmFail {
+			os.Exit(1)
+		}
+		return
 	}
 
 	if err := preflightLima(); err != nil {
@@ -216,6 +231,7 @@ func macInitSteps(buildCOI bool) []initflow.Step {
 			Show: fmt.Sprintf(`limactl start \
   --name=%s --cpus=4 --memory=8 --disk=50 \
   --vm-type=vz --rosetta --mount-writable --network=vzNAT \
+  --set='.ssh.forwardAgent=true' \
   template://ubuntu-lts`, vmName),
 			Action: func(out io.Writer) error {
 				return initflow.RunShell(out, "",
@@ -224,6 +240,7 @@ func macInitSteps(buildCOI bool) []initflow.Step {
 					"--cpus=4", "--memory=8", "--disk=50",
 					"--vm-type=vz", "--rosetta",
 					"--mount-writable", "--network=vzNAT",
+					"--set=.ssh.forwardAgent=true",
 					"template://ubuntu-lts",
 				)
 			},

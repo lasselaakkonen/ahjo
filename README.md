@@ -35,6 +35,14 @@ ahjo init
 
 That's it. Step-by-step prompts walk you through every install. The flow is resumable: re-running `ahjo init` skips anything already done.
 
+If you use 1Password (or any agent that requires `IdentityAgent` in `~/.ssh/config`), add the following to your shellrc *before* running `ahjo init`, otherwise the agent inside the VM will be empty and `ahjo repo add git@…` will fail:
+
+```sh
+export SSH_AUTH_SOCK="$HOME/Library/Group Containers/2BUA8C4S2C.com.1password/t/agent.sock"
+```
+
+`ahjo doctor` verifies this end-to-end. See [CONTAINER-ISOLATION.md](CONTAINER-ISOLATION.md#the-ssh-agent-hole) for why.
+
 On macOS the same command does both the host setup (Homebrew check → `brew install lima` → `limactl start`) and the in-VM bring-up (Zabbly + Incus, `incus admin init`, COI install, `coi-default` build, `ahjo-base` image, `claude setup-token`). It pulls the matching `ahjo-linux-<arch>` from the GitHub release that built your host binary, verifies it against `SHA256SUMS`, drops it into the VM at `/usr/local/bin/ahjo`, and drives the rest by relaying through `limactl shell`. No second invocation, no shelling into the VM.
 
 On Linux there's no VM — `ahjo init` runs the bring-up directly. After `usermod -aG incus-admin` it re-execs itself under `sg incus-admin` so the new group activates without a re-shell, then continues to COI, `ahjo-base`, and `claude setup-token` in the same pass.
