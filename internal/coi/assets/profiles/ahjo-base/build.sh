@@ -81,3 +81,59 @@ jq "$strip_env"' | .projects["/workspace"] = ((.projects["/workspace"] // {}) + 
 touch "$marker"
 PREPARE
 chmod 0755 /usr/local/bin/ahjo-claude-prepare
+
+# pnpm: hand management from mise to corepack so package.json's
+# `packageManager: pnpm@x.y.z` is honored per-project. coi-default installs
+# pnpm via `mise use --global npm:pnpm@latest`, which is just npm's "latest"
+# and ignores the pin. Corepack's shim downloads + activates the pinned
+# version on demand and falls back to current "latest" outside any project.
+#
+# Why we install-then-uninstall pnpm: ahjo-base is a layered image on top of
+# coi-default. By the time this script runs, the parent layer has already
+# installed pnpm via mise (we can't intercept that without forking COI).
+# So we remove what coi-default installed, in this layer.
+#
+# This is not a fight with mise — it aligns with mise's own upstream
+# guidance. The mise project's Node cookbook recipe explicitly recommends
+# `corepack enable` (via mise hooks) for Node projects rather than
+# installing pnpm as a mise tool, because:
+#   - corepack reads `packageManager: pnpm@x.y.z` from each project's
+#     package.json and activates that exact version on demand;
+#   - mise's npm:pnpm backend is just a global "latest" install with no
+#     per-project awareness, which makes pnpm-pinned monorepos behave
+#     differently in ahjo than in CI / production Docker.
+# COI happens to install pnpm via mise anyway; we revert that choice here.
+#
+# The cost is ~30s of redundant install→uninstall during `ahjo update`
+# only (not at container-create — branches COW-clone the finished image).
+# Long-term fix lives upstream: a COI patch making the mise tool list
+# opt-out-able would let ahjo skip the install in the first place.
+#
+# Mechanics (also surprising — worth keeping):
+#   - mise canonicalizes `npm:pnpm` to a bare `pnpm = "latest"` entry in
+#     ~/.config/mise/config.toml (mise has a native pnpm backend), so
+#     `unuse` must match the bare name, not `npm:pnpm`.
+#   - `mise unuse` removes the config entry but leaves the binary at
+#     ~/.local/share/mise/installs/pnpm/. `mise reshim` then regenerates
+#     a shim for *every installed tool* regardless of config, so without
+#     `uninstall` the shim rematerializes the next time anything triggers
+#     a reshim. `uninstall` removes the install dir; reshim has nothing
+#     to make a shim from.
+su - code -c 'mise unuse --global pnpm || true'
+su - code -c 'mise uninstall pnpm || true'
+
+# corepack ships with Node and creates pnpm/yarn/npx shims in the system
+# Node bin (NodeSource installs to /usr/bin). `mise activate` prepends mise's
+# shim dir to PATH, but with mise's pnpm shim removed, lookup falls through
+# to /usr/bin/pnpm (corepack).
+corepack enable
+
+# Suppress corepack's "About to download pnpm@x.y.z, continue?" prompt so
+# non-interactive contexts don't hang on first use of a new pnpm version.
+# /etc/environment covers PAM logins; profile.d covers `runuser -l` etc.
+grep -q '^COREPACK_ENABLE_DOWNLOAD_PROMPT=' /etc/environment \
+    || echo 'COREPACK_ENABLE_DOWNLOAD_PROMPT=0' >> /etc/environment
+cat > /etc/profile.d/corepack.sh <<'EOF'
+export COREPACK_ENABLE_DOWNLOAD_PROMPT=0
+EOF
+chmod 644 /etc/profile.d/corepack.sh

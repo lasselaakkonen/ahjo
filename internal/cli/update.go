@@ -87,6 +87,10 @@ func vmUpdateSteps(buildCOI bool) []initflow.Step {
 		},
 		{
 			Title: "Rebuild ahjo-base from the embedded profile",
+			Note: "ahjo-base layers on top of coi-default and currently adds: SSH host-key dir, " +
+				"the ahjo-claude-prepare hook, and corepack-managed pnpm (replacing coi-default's " +
+				"mise-managed pnpm so per-project `packageManager` pins are honored). Rebuilding " +
+				"here picks up newer corepack/pnpm signing keys via the freshly-built coi-default.",
 			Show: "delete incus image alias 'ahjo-base' (if present)\n" +
 				"re-materialize ~/.ahjo/profiles/ahjo-base/{config.toml,build.sh} from embedded assets\n" +
 				"coi build --profile ahjo-base",
