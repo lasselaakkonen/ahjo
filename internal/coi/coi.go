@@ -49,12 +49,20 @@ func InstalledVersion() string {
 	return ""
 }
 
-// ExecShell replaces the current process with `coi shell --container <name>`
-// from worktreeDir. Stdio + signals + exit code passthrough is automatic via
-// execve. Pinning the container by name (not by --slot) is required because
-// `coi shell --slot N` auto-allocates a fresh slot whenever slot N already
-// has a running container — which is always, for an existing ahjo worktree.
-// `--container <name>` forces COI to reuse our prepared container instead.
+// ExecShell replaces the current process with
+// `coi shell --tmux=false --container <name>` from worktreeDir. Stdio +
+// signals + exit code passthrough is automatic via execve. Pinning the
+// container by name (not by --slot) is required because `coi shell --slot N`
+// auto-allocates a fresh slot whenever slot N already has a running container
+// — which is always, for an existing ahjo worktree. `--container <name>`
+// forces COI to reuse our prepared container instead.
+//
+// `--tmux=false` keeps the host terminal off the alternate screen: COI's
+// default-on tmux session puts the terminal on the alt-screen without
+// requesting mouse tracking, which makes terminal emulators (Ghostty, xterm,
+// …) translate scroll-wheel events into ↑/↓ arrow keypresses that then
+// nudge the inner app's input cursor. Users who want tmux can start it
+// themselves inside the container.
 func ExecShell(worktreeDir, containerName string) error {
 	bin, err := exec.LookPath("coi")
 	if err != nil {
@@ -63,7 +71,7 @@ func ExecShell(worktreeDir, containerName string) error {
 	if err := os.Chdir(worktreeDir); err != nil {
 		return fmt.Errorf("chdir %s: %w", worktreeDir, err)
 	}
-	return syscall.Exec(bin, []string{"coi", "shell", "--container", containerName}, os.Environ())
+	return syscall.Exec(bin, []string{"coi", "shell", "--tmux=false", "--container", containerName}, os.Environ())
 }
 
 // Setup triggers COI's container creation + session setup (claude config push,
