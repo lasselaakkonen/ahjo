@@ -146,6 +146,64 @@ func ContainerDeleteForce(name string) error {
 	return fmt.Errorf("incus delete -f %s: %w", name, err)
 }
 
+// ConfigGet reads a single container-level config key via `incus config get`.
+// Returns the trimmed value; an unset key surfaces as the empty string.
+func ConfigGet(container, key string) (string, error) {
+	cmd := exec.Command("incus", "config", "get", container, key)
+	out, err := cmd.Output()
+	if err != nil {
+		var ee *exec.ExitError
+		if errors.As(err, &ee) {
+			os.Stderr.Write(ee.Stderr)
+			return "", fmt.Errorf("incus config get %s %s: exit %d", container, key, ee.ExitCode())
+		}
+		return "", fmt.Errorf("incus config get %s %s: %w", container, key, err)
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+// ConfigSet writes a single container-level config key via `incus config set`.
+func ConfigSet(container, key, value string) error {
+	cmd := exec.Command("incus", "config", "set", container, key, value)
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		os.Stdout.Write(out)
+		return nil
+	}
+	os.Stderr.Write(out)
+	var ee *exec.ExitError
+	if errors.As(err, &ee) {
+		return fmt.Errorf("incus config set %s %s=%s: exit %d", container, key, value, ee.ExitCode())
+	}
+	return fmt.Errorf("incus config set %s %s=%s: %w", container, key, value, err)
+}
+
+// Stop stops a container. Tolerant of "not running" / "already stopped" /
+// "instance not found" so callers can use it as a "make sure it's stopped"
+// step without first checking.
+func Stop(container string) error {
+	cmd := exec.Command("incus", "stop", container)
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		os.Stdout.Write(out)
+		return nil
+	}
+	low := strings.ToLower(string(out))
+	if strings.Contains(low, "not running") ||
+		strings.Contains(low, "already stopped") ||
+		strings.Contains(low, "is stopped") ||
+		strings.Contains(low, "not found") ||
+		strings.Contains(low, "no such") {
+		return nil
+	}
+	os.Stderr.Write(out)
+	var ee *exec.ExitError
+	if errors.As(err, &ee) {
+		return fmt.Errorf("incus stop %s: exit %d", container, ee.ExitCode())
+	}
+	return fmt.Errorf("incus stop %s: %w", container, err)
+}
+
 // ConfigDeviceSet updates a single key on a named device in a container.
 func ConfigDeviceSet(container, device, key, value string) error {
 	arg := key + "=" + value
@@ -176,6 +234,7 @@ type ProxyDevice struct {
 // current set of listening ports inside the container.
 func ListProxyDevices(container string) ([]ProxyDevice, error) {
 	cmd := exec.Command("incus", "config", "device", "show", container)
+	cmd.Stderr = os.Stderr
 	out, err := cmd.Output()
 	if err != nil {
 		return nil, fmt.Errorf("incus config device show %s: %w", container, err)

@@ -60,6 +60,7 @@ on the Mac drives the whole chain.`,
 func vmUpdateSteps(buildCOI bool) []initflow.Step {
 	onLima := lima.IsGuest()
 	return []initflow.Step{
+		subuidGrantStep(),
 		{
 			Title: "Refresh Claude Code on the VM (idempotent)",
 			Note:  "re-runs Anthropic's installer; it's a no-op if already current. Note: Anthropic's installer also auto-updates in the background, so this is mainly belt-and-suspenders.",

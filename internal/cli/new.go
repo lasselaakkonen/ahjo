@@ -11,6 +11,7 @@ import (
 	"github.com/lasselaakkonen/ahjo/internal/config"
 	"github.com/lasselaakkonen/ahjo/internal/coi"
 	"github.com/lasselaakkonen/ahjo/internal/git"
+	"github.com/lasselaakkonen/ahjo/internal/idmap"
 	"github.com/lasselaakkonen/ahjo/internal/incus"
 	"github.com/lasselaakkonen/ahjo/internal/lockfile"
 	"github.com/lasselaakkonen/ahjo/internal/paths"
@@ -179,6 +180,14 @@ func runNew(repoAlias, branch, base, asAlias string, noFetch bool) error {
 		// Remove the stale ahjo-ssh proxy (source container's port); shell.go
 		// re-adds it with the correct port on first attach.
 		_ = incus.RemoveDevice(cowName, "ahjo-ssh")
+		// Apply raw.idmap so the rebased workspace bind mount surfaces inside
+		// the container as code:code. The COW copy is stopped (incus copy
+		// --stateless), so a plain ConfigSet is enough; the first start later
+		// in prepareWorktreeContainer picks the mapping up.
+		// See CONTAINER-ISOLATION.md "Workspace UID mapping".
+		if err := incus.ConfigSet(cowName, "raw.idmap", idmap.RawIdmapValue(os.Getuid(), os.Getgid())); err != nil {
+			return fmt.Errorf("set raw.idmap on COW container: %w", err)
+		}
 		w.IncusName = cowName
 	}
 

@@ -15,6 +15,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/lasselaakkonen/ahjo/internal/coi"
+	"github.com/lasselaakkonen/ahjo/internal/idmap"
 	"github.com/lasselaakkonen/ahjo/internal/incus"
 	"github.com/lasselaakkonen/ahjo/internal/initflow"
 	"github.com/lasselaakkonen/ahjo/internal/lima"
@@ -135,6 +136,7 @@ Signed-By: /etc/apt/keyrings/zabbly.asc
 				return initflow.RunShell(out, "", "sudo", "apt-get", "install", "-y", "incus")
 			},
 		},
+		subuidGrantStep(),
 		{
 			Title: "Initialize Incus with explicit subnet (preseed)",
 			Skip: func() (bool, string, error) {
@@ -324,6 +326,60 @@ Signed-By: /etc/apt/keyrings/zabbly.asc
 		},
 	}...)
 	return steps
+}
+
+// subuidGrantStep ensures /etc/subuid + /etc/subgid grant the Incus daemon
+// permission to delegate the in-VM host UID/GID into a container's userns.
+// Required so the per-container `raw.idmap` ahjo applies after `coi.Setup`
+// (see internal/cli/shell.go and internal/cli/new.go) is honored at start;
+// without these lines, `newuidmap` rejects the mapping and the container
+// fails to come up.
+//
+// Shared between `ahjo init` and `ahjo update` — both need to assert the
+// invariant. The step is idempotent: re-runs detect the lines and skip the
+// daemon restart entirely.
+//
+// Background: COI v0.8.0 implements raw.idmap natively but auto-disables it
+// on Lima/Colima (it assumes the workspace is on virtiofs and handled at the
+// VM level). ahjo's worktrees live on the VM's local filesystem, so the
+// assumption doesn't hold. See CONTAINER-ISOLATION.md "Workspace UID mapping".
+func subuidGrantStep() initflow.Step {
+	uid := os.Getuid()
+	gid := os.Getgid()
+	subuidLine := fmt.Sprintf("root:%d:1", uid)
+	subgidLine := fmt.Sprintf("root:%d:1", gid)
+	return initflow.Step{
+		Title: "Grant Incus daemon subuid/subgid for the in-VM host user",
+		Skip: func() (bool, string, error) {
+			ok, err := idmap.HasSubuidGrants(uid, gid)
+			if err != nil {
+				return false, "", err
+			}
+			if ok {
+				return true, "/etc/subuid and /etc/subgid already grant " + subuidLine, nil
+			}
+			return false, "", nil
+		},
+		Note: "Required so each ahjo container's `raw.idmap` (which maps the VM " +
+			"host user onto the in-container `code` user) is honored at start. " +
+			"COI's Lima auto-detect skips raw.idmap; ahjo applies it itself, but " +
+			"only works if the daemon has these subuid/subgid grants.",
+		Show: fmt.Sprintf("echo '%s' | sudo tee -a /etc/subuid\n", subuidLine) +
+			fmt.Sprintf("echo '%s' | sudo tee -a /etc/subgid\n", subgidLine) +
+			"sudo systemctl restart incus  (only if either file changed)",
+		Action: func(out io.Writer) error {
+			changed, err := idmap.EnsureSubuidGrants(uid, gid, out)
+			if err != nil {
+				return err
+			}
+			if !changed {
+				fmt.Fprintln(out, "  → no change; skipping daemon restart")
+				return nil
+			}
+			fmt.Fprintln(out, "  → restarting incus to pick up new subuid/subgid grants")
+			return initflow.RunShell(out, "", "sudo", "systemctl", "restart", "incus")
+		},
+	}
 }
 
 // claudeOnboardingVersion is the value written to ~/.claude.json's

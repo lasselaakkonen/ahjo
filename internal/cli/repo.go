@@ -147,6 +147,12 @@ func repoAddSetup(slug, primary, defaultBase string) error {
 	if containerName == "" {
 		return fmt.Errorf("coi setup completed but no container found for slug %q", wt.Slug)
 	}
+	// Same workaround as shell.go: COI's Lima auto-detect skips raw.idmap.
+	// Apply it here too so the base container (and every COW copy that inherits
+	// from it after `incus copy`) starts with the correct UID mapping.
+	if err := applyRawIdmap(containerName); err != nil {
+		return err
+	}
 	if err := coi.ContainerExecAs(containerName, 1000, "/usr/local/bin/ahjo-claude-prepare"); err != nil {
 		return fmt.Errorf("ahjo-claude-prepare: %w", err)
 	}

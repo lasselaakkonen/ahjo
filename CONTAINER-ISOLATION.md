@@ -49,6 +49,20 @@ These are the *intentional* leaks — every other path is closed.
 
 Nothing else crosses — no `~/.ssh/`, no `~/.gitconfig`, no shell history, no `~/Library`.
 
+## Workspace UID mapping
+
+Each container runs unprivileged in its own user namespace; Incus assigns it a non-overlapping UID range like `0 1074266112 1000000000`. The worktree on the VM, however, is owned by the Lima user (UID 1000 / GID 1000) — *outside* that range — so without intervention the bind mount surfaces inside the container as `nobody:nogroup` and the in-container `code` user (UID 1000) can only `r-x` it. Even namespace-root via `sudo` can't `chown` away from an unmapped owner.
+
+COI ships its own fix for this — `raw.idmap "both <hostUID> 1000"` in `internal/session/setup.go` — but auto-disables it on Lima/Colima, on the assumption that the workspace path is a Mac directory virtiofs-mounted into the VM and UID translation already happens at the VM-level. ahjo's worktrees live at `~/.ahjo/worktrees/<slug>/` on the VM's local ext4/btrfs, not on virtiofs, so the assumption doesn't hold and we end up with no UID mapping at all. There is no `disable_shift = false` opt-out in the COI version ahjo pins — the override only goes one way.
+
+ahjo therefore applies the mapping itself, with two pieces both wired into `ahjo init` / `ahjo update`:
+
+1. **subuid/subgid grants for the Incus daemon**: a one-time idempotent append of `root:<hostUID>:1` to `/etc/subuid` and `root:<hostGID>:1` to `/etc/subgid` so the daemon (running as root) is allowed to delegate those IDs into a container's userns. Without this, `newuidmap` rejects the mapping at container start. The init/update step restarts the Incus daemon when (and only when) it actually appended a line.
+
+2. **per-container `raw.idmap`**: every container ahjo creates gets `both <hostUID> 1000` set on it (matching COI's own format), mapping the host VM user onto the in-container `code` user. Applied in `internal/cli/shell.go::prepareWorktreeContainer` (first-shell, COI-managed path) and `internal/cli/new.go::runNew` (COW-copy path). Files written inside as `code` land on the VM owned by the Lima user; files owned by the Lima user on the VM appear inside as `code:code`. The boundary — Claude inside can't reach UID 0, can't touch other host files, can't escape devices — is unchanged; we widen the namespace by one user, the one we already share with the worktree by construction.
+
+See the [Incus docs on `raw.idmap`](https://linuxcontainers.org/incus/docs/main/reference/instance_options/#instance-raw) for the kernel-level mechanism.
+
 ## The SSH-agent hole
 
 `git clone git@github.com:…` inside a container needs an SSH key. ahjo does **not** copy your host keys into the VM or container. Instead, with `ssh.forwardAgent: true` set on both legs, the agent socket is forwarded:

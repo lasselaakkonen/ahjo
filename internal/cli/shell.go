@@ -2,10 +2,12 @@ package cli
 
 import (
 	"fmt"
+	"os"
 
 	"github.com/spf13/cobra"
 
 	"github.com/lasselaakkonen/ahjo/internal/coi"
+	"github.com/lasselaakkonen/ahjo/internal/idmap"
 	"github.com/lasselaakkonen/ahjo/internal/incus"
 	"github.com/lasselaakkonen/ahjo/internal/lockfile"
 	"github.com/lasselaakkonen/ahjo/internal/registry"
@@ -113,6 +115,14 @@ func prepareWorktreeContainer(alias string, update bool) (*registry.Worktree, st
 			if containerName == "" {
 				return nil, "", fmt.Errorf("coi setup completed but no container registered for alias %q at slot %d", w.Slug, slot)
 			}
+			// COI's Lima auto-detect skips raw.idmap (it assumes the workspace
+			// is virtiofs-backed; ahjo's worktrees aren't). Apply it ourselves
+			// so the workspace surfaces inside the container as code:code
+			// instead of nobody:nogroup. Requires the container be stopped:
+			// raw.idmap is honored at next start.
+			if err := applyRawIdmap(containerName); err != nil {
+				return nil, "", err
+			}
 			if err := coi.ContainerExecAs(containerName, 1000, "/usr/local/bin/ahjo-claude-prepare"); err != nil {
 				return nil, "", fmt.Errorf("ahjo-claude-prepare: %w", err)
 			}
@@ -149,4 +159,25 @@ func prepareWorktreeContainer(alias string, update bool) (*registry.Worktree, st
 	}
 
 	return w, containerName, nil
+}
+
+// applyRawIdmap stops the container, sets the per-container raw.idmap that
+// maps the in-VM host UID/GID onto the container's `code` user, and starts
+// it back up. raw.idmap is honored at next start, so the stop/start cycle is
+// what makes it take effect on a container coi.Setup just left running.
+//
+// See CONTAINER-ISOLATION.md "Workspace UID mapping" for why ahjo applies
+// this itself rather than relying on COI.
+func applyRawIdmap(containerName string) error {
+	val := idmap.RawIdmapValue(os.Getuid(), os.Getgid())
+	if err := incus.Stop(containerName); err != nil {
+		return fmt.Errorf("stop %s before raw.idmap: %w", containerName, err)
+	}
+	if err := incus.ConfigSet(containerName, "raw.idmap", val); err != nil {
+		return fmt.Errorf("set raw.idmap on %s: %w", containerName, err)
+	}
+	if err := coi.ContainerStart(containerName); err != nil {
+		return fmt.Errorf("start %s after raw.idmap: %w", containerName, err)
+	}
+	return nil
 }
