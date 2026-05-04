@@ -17,12 +17,29 @@ ifeq ($(HOST_GOOS),darwin)
 HOST_BUILD_DEPS := dist/ahjo-linux-$(HOST_GOARCH)
 endif
 
-.PHONY: build dist clean print-version
+VM_NAME ?= ahjo
+VM_AHJO := /usr/local/bin/ahjo
+
+.PHONY: build dist clean print-version install-vm
 
 build: $(HOST_BUILD_DEPS)
 	go build $(GOFLAGS) -o ahjo $(PKG)
 
 dist: $(DIST_BINS) dist/SHA256SUMS
+
+# Push the freshly-built dist/ahjo-linux-<host-arch> into the Lima VM at
+# /usr/local/bin/ahjo. Fast path for iterating on the in-VM binary without
+# the full `ahjo update` rebuild (claude reinstall + coi-default rebuild +
+# ahjo-base rebuild). Mac-only — Linux hosts run ahjo directly with no VM.
+install-vm: dist/ahjo-linux-$(HOST_GOARCH)
+ifneq ($(HOST_GOOS),darwin)
+	@echo "install-vm is only meaningful on macOS hosts (current: $(HOST_GOOS))" >&2
+	@exit 1
+endif
+	@command -v limactl >/dev/null 2>&1 || { echo "limactl not on PATH; run \`ahjo init\` first" >&2; exit 1; }
+	@echo "  push   dist/ahjo-linux-$(HOST_GOARCH) -> $(VM_NAME):$(VM_AHJO)  ($(VERSION))"
+	@limactl shell $(VM_NAME) -- sudo install -m 0755 /dev/stdin $(VM_AHJO) < dist/ahjo-linux-$(HOST_GOARCH)
+	@limactl shell $(VM_NAME) -- $(VM_AHJO) --version
 
 dist/ahjo-darwin-arm64: $(GO_SRC) ; @$(MAKE) --no-print-directory _xbuild GOOS=darwin GOARCH=arm64 OUT=$@
 dist/ahjo-darwin-amd64: $(GO_SRC) ; @$(MAKE) --no-print-directory _xbuild GOOS=darwin GOARCH=amd64 OUT=$@
