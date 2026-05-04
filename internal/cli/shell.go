@@ -15,8 +15,10 @@ func newShellCmd() *cobra.Command {
 	var update bool
 	cmd := &cobra.Command{
 		Use:   "shell <alias>",
-		Short: "Start (if needed) and attach to the worktree's container via `coi shell`",
-		Long: `Start the container if needed, wire SSH proxy + sshd, attach via ` + "`coi shell`" + `.
+		Short: "Start (if needed) and attach an interactive shell to the worktree's container",
+		Long: `Start the container if needed, wire SSH proxy + sshd, attach an interactive
+shell via ` + "`coi shell --debug`" + ` (skips COI's AI-tool launcher). Use ` + "`ahjo claude`" + `
+to launch claude instead.
 
 Pass --update to discard the existing container before attaching: ahjo shuts it
 down, deletes it, and the regular first-shell path then re-creates it from the
@@ -34,13 +36,25 @@ re-renders that file in place).`,
 }
 
 func runShell(alias string, update bool) error {
-	reg, err := registry.Load()
+	w, containerName, err := prepareWorktreeContainer(alias, update)
 	if err != nil {
 		return err
 	}
+	return coi.ExecShell(w.WorktreePath, containerName)
+}
+
+// prepareWorktreeContainer resolves the worktree by alias, creates the
+// container on first use (or recreates it when update=true), starts it, wires
+// the ssh proxy/sshd, and reconciles auto-expose. Returns the registry entry
+// and the resolved container name ready for an attach call.
+func prepareWorktreeContainer(alias string, update bool) (*registry.Worktree, string, error) {
+	reg, err := registry.Load()
+	if err != nil {
+		return nil, "", err
+	}
 	w := reg.FindWorktreeByAlias(alias)
 	if w == nil {
-		return fmt.Errorf("no worktree with alias %q; create with `ahjo new`", alias)
+		return nil, "", fmt.Errorf("no worktree with alias %q; create with `ahjo new`", alias)
 	}
 
 	var containerName string
@@ -49,14 +63,14 @@ func runShell(alias string, update bool) error {
 		// Container was created via incus copy (COW from the default-branch base);
 		// it is not registered with COI so ResolveContainer won't find it.
 		if update {
-			return fmt.Errorf("--update is not supported for COW-copied containers; recreate with `ahjo rm %s && ahjo new`", alias)
+			return nil, "", fmt.Errorf("--update is not supported for COW-copied containers; recreate with `ahjo rm %s && ahjo new`", alias)
 		}
 		exists, err := incus.ContainerExists(w.IncusName)
 		if err != nil {
-			return err
+			return nil, "", err
 		}
 		if !exists {
-			return fmt.Errorf("incus container %q not found; recreate with `ahjo rm %s && ahjo new`", w.IncusName, alias)
+			return nil, "", fmt.Errorf("incus container %q not found; recreate with `ahjo rm %s && ahjo new`", w.IncusName, alias)
 		}
 		containerName = w.IncusName
 	} else {
@@ -64,7 +78,7 @@ func runShell(alias string, update bool) error {
 		const slot = 1
 		containerName, err = coi.ResolveContainer(w.Slug, slot)
 		if err != nil {
-			return err
+			return nil, "", err
 		}
 
 		if update && containerName != "" {
@@ -77,7 +91,7 @@ func runShell(alias string, update bool) error {
 				fmt.Fprintf(cobraOutErr(), "warn: coi shutdown: %v; falling back to force-delete\n", err)
 				fmt.Printf("→ coi container delete -f %s\n", containerName)
 				if err := coi.ContainerDelete(containerName); err != nil {
-					return fmt.Errorf("container delete: %w", err)
+					return nil, "", fmt.Errorf("container delete: %w", err)
 				}
 			}
 			containerName = ""
@@ -90,31 +104,31 @@ func runShell(alias string, update bool) error {
 			// /home/code/.claude/{settings,.}.json so the user's first claude
 			// invocation skips the trust + bypass dialogs.
 			if err := coi.Setup(w.WorktreePath, slot); err != nil {
-				return fmt.Errorf("coi setup: %w", err)
+				return nil, "", fmt.Errorf("coi setup: %w", err)
 			}
 			containerName, err = coi.ResolveContainer(w.Slug, slot)
 			if err != nil {
-				return err
+				return nil, "", err
 			}
 			if containerName == "" {
-				return fmt.Errorf("coi setup completed but no container registered for alias %q at slot %d", w.Slug, slot)
+				return nil, "", fmt.Errorf("coi setup completed but no container registered for alias %q at slot %d", w.Slug, slot)
 			}
 			if err := coi.ContainerExecAs(containerName, 1000, "/usr/local/bin/ahjo-claude-prepare"); err != nil {
-				return fmt.Errorf("ahjo-claude-prepare: %w", err)
+				return nil, "", fmt.Errorf("ahjo-claude-prepare: %w", err)
 			}
 		}
 	}
 
 	// Ensure ssh proxy + sshd are wired before attach.
 	if err := coi.ContainerStart(containerName); err != nil {
-		return err
+		return nil, "", err
 	}
 	if err := incus.AddProxyDevice(
 		containerName, "ahjo-ssh",
 		fmt.Sprintf("tcp:127.0.0.1:%d", w.SSHPort),
 		"tcp:127.0.0.1:22",
 	); err != nil {
-		return err
+		return nil, "", err
 	}
 	if err := coi.ContainerExec(containerName, true, "systemctl", "start", "ssh"); err != nil {
 		// non-fatal: maybe systemd not up yet, or already running
@@ -134,5 +148,5 @@ func runShell(alias string, update bool) error {
 		release()
 	}
 
-	return coi.ExecShell(w.WorktreePath, containerName)
+	return w, containerName, nil
 }

@@ -70,7 +70,7 @@ COI's claude integration writes `~/.claude/settings.json` and `~/.claude.json` d
 
 driven by `[tool.claude] effort_level` in the per-worktree `.coi/config.toml`, defaulting to `"medium"` when unset. Both fields are written to the same value. The env-var block is the problem: env-var values have the **highest precedence** in claude's effort resolution, so any value persisted there locks the user's `/effort` slider — every change shows "CLAUDE_CODE_EFFORT_LEVEL=… overrides this session". This is true regardless of which level COI was configured to write.
 
-**`ahjo-claude-prepare`** (baked into the `ahjo-base` image, run once per container by `ahjo shell` immediately after COI's first session-setup, before claude ever launches) repairs this. In a single pass it:
+**`ahjo-claude-prepare`** (baked into the `ahjo-base` image, run once per container by `ahjo shell` / `ahjo claude` immediately after COI's first session-setup, before claude ever launches) repairs this. In a single pass it:
 
 1. Strips the `CLAUDE_CODE_EFFORT_LEVEL` key out of the `env` blocks in both `~/.claude/settings.json` and `~/.claude.json` (and removes the surrounding `env` object if that was its only key — but preserves any other env vars the user may have).
 2. Plants ahjo's defaults that the user *can* change later: `model: "opusplan"`, `effortLevel: "high"`, plus `skipDangerousModePermissionPrompt: true` and `projects["/workspace"].hasTrustDialogAccepted: true` to silence the two first-run prompts.
@@ -89,11 +89,12 @@ ahjo init  (interactive, on Mac's Lima VM or Linux host):
 ahjo new <repo> <branch>:
   → writes .coi/config.toml with forward_env = ["CLAUDE_CODE_OAUTH_TOKEN"]
 
-ahjo shell <alias>:
+ahjo shell <alias>  (or ahjo claude <alias>):
   → tokenstore.Load() exports the token from ~/.ahjo/.env into the VM shell
   → coi shell forwards exported env var into the container shell
   → COI copies host's ~/.claude.json into /home/code/.claude.json
-  → user runs `claude` → drops to prompt, "Claude API" header, no friction
+  → ahjo shell drops to bash; ahjo claude (or `claude` from the shell) →
+    prompt, "Claude API" header, no friction
 ```
 
 ## When something breaks

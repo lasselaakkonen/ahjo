@@ -78,8 +78,11 @@ ahjo new acme/api pr-491-token-refresh              # alias: acme/api@pr-491-tok
 ahjo new web feat/checkout-redesign --as checkout   # aliases: acme/web@feat/checkout-redesign, checkout
 
 # 3. Drop into the first one. Container starts on demand.
+#    `ahjo shell` opens an interactive shell; use `ahjo claude` to launch claude.
 ahjo shell acme/api@pr-482-rate-limit
-#   ... cd into the worktree, run `claude`, work normally ...
+#   ... in the container's shell, work normally ...
+ahjo claude acme/api@pr-482-rate-limit
+#   ... in claude's TUI, with the worktree mounted at /workspace ...
 
 # 4. From the Mac, ssh straight in (e.g. for VS Code Remote-SSH).
 #    Any alias works — auto or --as.
@@ -122,7 +125,8 @@ State lives under `~/.ahjo/` (registry, ports, host keys, profiles). The Mac shi
 | `ahjo repo ls` | List registered repos with their aliases. |
 | `ahjo repo rm <alias> [--force]` | Drop a repo by any of its aliases. Refuses if worktrees still exist. |
 | `ahjo new <repo-alias> <branch> [--as <alias>] [--base <ref>] [--no-fetch]` | Create the worktree and render `.coi/config.toml`. Auto alias is `<repo-primary-alias>@<branch>`; `--as` adds a second alias. Idempotent. |
-| `ahjo shell <alias> [--update]` | Start the container if needed, wire SSH proxy + sshd, attach via `coi shell`. `--update` shuts down and deletes the existing container first so the next attach builds a fresh one from the current `ahjo-base` image; the worktree, host keys, registry entry, and ssh port are preserved. |
+| `ahjo shell <alias> [--update]` | Start the container if needed, wire SSH proxy + sshd, attach an interactive shell via `coi shell --debug` (skips COI's AI-tool launcher). `--update` shuts down and deletes the existing container first so the next attach builds a fresh one from the current `ahjo-base` image; the worktree, host keys, registry entry, and ssh port are preserved. |
+| `ahjo claude <alias> [--update]` | Same prep as `ahjo shell`, but launches `claude` inside the container instead of dropping to a shell. |
 | `ahjo ssh <alias>` | `exec ssh` into the container using the generated ssh-config (Mac-side or in-VM). |
 | `ahjo expose <alias> <container-port>` | Manually add an Incus proxy device exposing a container port on `127.0.0.1`. |
 | `ahjo expose <alias> --sync` | Reconcile auto-expose proxy devices to the container's current TCP loopback listeners (skipping `:22` and ports below `[auto_expose].min_port`). Run after starting docker-compose / a dev server inside the container so newly-bound ports surface to the host. Manual `ahjo expose` entries are untouched. |

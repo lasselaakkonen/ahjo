@@ -50,12 +50,15 @@ func InstalledVersion() string {
 }
 
 // ExecShell replaces the current process with
-// `coi shell --tmux=false --container <name>` from worktreeDir. Stdio +
-// signals + exit code passthrough is automatic via execve. Pinning the
-// container by name (not by --slot) is required because `coi shell --slot N`
-// auto-allocates a fresh slot whenever slot N already has a running container
-// — which is always, for an existing ahjo worktree. `--container <name>`
-// forces COI to reuse our prepared container instead.
+// `coi shell --debug --tmux=false --container <name>` from worktreeDir. The
+// `--debug` flag skips COI's AI-tool launcher (which would otherwise start
+// `claude` per the container's `[tool.claude]` config) and drops straight to
+// an interactive bash. Use ExecClaude for the claude-launching variant.
+//
+// Pinning the container by name (not by --slot) is required because
+// `coi shell --slot N` auto-allocates a fresh slot whenever slot N already
+// has a running container — which is always, for an existing ahjo worktree.
+// `--container <name>` forces COI to reuse our prepared container instead.
 //
 // `--tmux=false` keeps the host terminal off the alternate screen: COI's
 // default-on tmux session puts the terminal on the alt-screen without
@@ -63,7 +66,20 @@ func InstalledVersion() string {
 // …) translate scroll-wheel events into ↑/↓ arrow keypresses that then
 // nudge the inner app's input cursor. Users who want tmux can start it
 // themselves inside the container.
+//
+// Stdio + signals + exit code passthrough is automatic via execve.
 func ExecShell(worktreeDir, containerName string) error {
+	return execAttach(worktreeDir, containerName, true)
+}
+
+// ExecClaude replaces the current process with
+// `coi shell --tmux=false --container <name>` from worktreeDir, letting COI's
+// AI-tool launcher start `claude` inside the container.
+func ExecClaude(worktreeDir, containerName string) error {
+	return execAttach(worktreeDir, containerName, false)
+}
+
+func execAttach(worktreeDir, containerName string, debug bool) error {
 	bin, err := exec.LookPath("coi")
 	if err != nil {
 		return fmt.Errorf("coi not on PATH: %w", err)
@@ -71,7 +87,12 @@ func ExecShell(worktreeDir, containerName string) error {
 	if err := os.Chdir(worktreeDir); err != nil {
 		return fmt.Errorf("chdir %s: %w", worktreeDir, err)
 	}
-	return syscall.Exec(bin, []string{"coi", "shell", "--tmux=false", "--container", containerName}, os.Environ())
+	argv := []string{"coi", "shell", "--tmux=false"}
+	if debug {
+		argv = append(argv, "--debug")
+	}
+	argv = append(argv, "--container", containerName)
+	return syscall.Exec(bin, argv, os.Environ())
 }
 
 // Setup triggers COI's container creation + session setup (claude config push,
