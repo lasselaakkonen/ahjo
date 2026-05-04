@@ -62,7 +62,11 @@ func runNuke(yes bool) error {
 	defer release()
 
 	for _, w := range reg.Worktrees {
-		name := w.Slug + "-1"
+		name, err := resolveContainerName(&w)
+		if err != nil {
+			fmt.Fprintf(cobraOutErr(), "note: skipping container ops for %s: %v\n", w.Slug, err)
+			continue
+		}
 		fmt.Printf("→ coi shutdown %s\n", name)
 		if err := coi.Shutdown(name); err != nil {
 			fmt.Fprintf(cobraOutErr(), "warn: coi shutdown %s: %v\n", name, err)
@@ -116,7 +120,12 @@ func printNukePreview(reg *registry.Registry) {
 		fmt.Println("  - no worktree containers tracked in the registry")
 	} else {
 		for _, w := range reg.Worktrees {
-			fmt.Printf("  - delete container %s-1 and worktree %s\n", w.Slug, w.WorktreePath)
+			name, err := resolveContainerName(&w)
+			if err != nil {
+				fmt.Printf("  - (no container) remove worktree %s\n", w.WorktreePath)
+				continue
+			}
+			fmt.Printf("  - delete container %s and worktree %s\n", name, w.WorktreePath)
 		}
 	}
 	fmt.Println("  - delete incus images: ahjo-base, coi-default")

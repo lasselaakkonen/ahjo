@@ -34,13 +34,11 @@ func newLsCmd() *cobra.Command {
 			tw := tabwriter.NewWriter(cobraOut(), 0, 2, 2, ' ', 0)
 			fmt.Fprintln(tw, "ALIASES\tSLUG\tSSH PORT\tCONTAINER\tEXPOSED\tCREATED")
 			for _, w := range reg.Worktrees {
-				name := w.Slug + "-1"
-				if w.IncusName != "" {
-					name = w.IncusName
-				}
 				state := "missing"
-				if exists, err := incus.ContainerExists(name); err == nil && exists {
-					state = "present"
+				if name, err := resolveContainerName(&w); err == nil {
+					if exists, err := incus.ContainerExists(name); err == nil && exists {
+						state = "present"
+					}
 				}
 				fmt.Fprintf(tw, "%s\t%s\t%d\t%s\t%s\t%s\n",
 					strings.Join(w.Aliases, ","), w.Slug, w.SSHPort, state,

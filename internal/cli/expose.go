@@ -79,6 +79,11 @@ func runExpose(alias string, cport int) error {
 		return fmt.Errorf("no worktree with alias %q", alias)
 	}
 
+	containerName, err := resolveContainerName(w)
+	if err != nil {
+		return err
+	}
+
 	pp, err := ports.Load()
 	if err != nil {
 		return err
@@ -92,7 +97,6 @@ func runExpose(alias string, cport int) error {
 		return err
 	}
 
-	containerName := w.Slug + "-1"
 	deviceName := fmt.Sprintf("ahjo-expose-%d", cport)
 	if err := incus.AddProxyDevice(
 		containerName, deviceName,

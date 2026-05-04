@@ -32,7 +32,10 @@ func reconcileAutoExpose(out io.Writer, w *registry.Worktree) error {
 		return err
 	}
 	enabled, minPort := autoExposeSettings(gcfg, w.WorktreePath)
-	containerName := containerNameFor(w)
+	containerName, err := resolveContainerName(w)
+	if err != nil {
+		return err
+	}
 
 	devices, err := incus.ListProxyDevices(containerName)
 	if err != nil {
@@ -122,13 +125,6 @@ func autoExposeSettings(gcfg *config.Config, worktreePath string) (enabled bool,
 		}
 	}
 	return
-}
-
-func containerNameFor(w *registry.Worktree) string {
-	if w.IncusName != "" {
-		return w.IncusName
-	}
-	return w.Slug + "-1"
 }
 
 // autoDevicesByPort returns just the auto-expose proxy devices keyed by the

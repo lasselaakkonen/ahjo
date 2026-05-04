@@ -42,13 +42,16 @@ func runRm(alias string) error {
 		return nil
 	}
 	repo := reg.FindRepo(w.Repo)
-	containerName := w.Slug + "-1"
 
-	if err := coi.Shutdown(containerName); err != nil {
-		fmt.Fprintf(cobraOutErr(), "warn: coi shutdown: %v\n", err)
-	}
-	if err := coi.ContainerDelete(containerName); err != nil {
-		fmt.Fprintf(cobraOutErr(), "warn: container delete: %v\n", err)
+	if containerName, err := resolveContainerName(w); err != nil {
+		fmt.Fprintf(cobraOutErr(), "note: skipping container shutdown/delete: %v\n", err)
+	} else {
+		if err := coi.Shutdown(containerName); err != nil {
+			fmt.Fprintf(cobraOutErr(), "warn: coi shutdown: %v\n", err)
+		}
+		if err := coi.ContainerDelete(containerName); err != nil {
+			fmt.Fprintf(cobraOutErr(), "warn: container delete: %v\n", err)
+		}
 	}
 
 	if repo != nil {
