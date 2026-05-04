@@ -25,6 +25,7 @@ import (
 	"syscall"
 
 	"github.com/lasselaakkonen/ahjo/internal/initflow"
+	"github.com/lasselaakkonen/ahjo/internal/lima"
 )
 
 const (
@@ -79,7 +80,7 @@ func main() {
 		macFail := runMacDoctor(os.Stdout)
 		vmFail := false
 		if vmRunning() {
-			cmd := exec.Command("limactl", "shell", vmName, "ahjo", "doctor")
+			cmd := lima.Cmd("shell", vmName, "ahjo", "doctor")
 			cmd.Stdout = os.Stdout
 			cmd.Stderr = os.Stderr
 			if err := cmd.Run(); err != nil {
@@ -96,13 +97,12 @@ func main() {
 		fmt.Fprintln(os.Stderr, "ahjo:", err)
 		os.Exit(1)
 	}
-	bin, err := exec.LookPath("limactl")
-	if err != nil {
+	if _, err := exec.LookPath("limactl"); err != nil {
 		fmt.Fprintln(os.Stderr, "ahjo: limactl not on PATH; run `ahjo init` first")
 		os.Exit(1)
 	}
-	exe := append([]string{"limactl", "shell", vmName, "ahjo"}, args...)
-	if err := syscall.Exec(bin, exe, os.Environ()); err != nil {
+	relayArgs := append([]string{"shell", vmName, "ahjo"}, args...)
+	if err := lima.Exec(relayArgs...); err != nil {
 		fmt.Fprintln(os.Stderr, "ahjo: exec limactl:", err)
 		os.Exit(1)
 	}
@@ -226,7 +226,7 @@ func runMacInit(yes, buildCOI bool) error {
 		return fmt.Errorf("Homebrew is required to install Lima. Install it from https://brew.sh and re-run `ahjo init`")
 	}
 	r := initflow.Runner{Yes: yes, In: os.Stdin, Out: os.Stdout, Err: os.Stderr}
-	return r.Execute(macInitSteps(buildCOI))
+	return r.Execute(macInitSteps(yes, buildCOI))
 }
 
 // runMacUpdate is the macOS half of `ahjo update`: refresh the in-VM ahjo
@@ -261,7 +261,7 @@ func macUpdateSteps(buildCOI bool) []initflow.Step {
 			},
 			Show: "limactl start " + vmName,
 			Action: func(out io.Writer) error {
-				return initflow.RunShell(out, "", "limactl", "start", vmName)
+				return initflow.RunShellEnv(out, lima.Env(), "", "limactl", "start", vmName)
 			},
 		},
 		{
@@ -290,7 +290,7 @@ func macUpdateSteps(buildCOI bool) []initflow.Step {
 				if version == "dev" || version == "" || strings.HasSuffix(version, "-dirty") {
 					return false, "", nil
 				}
-				out, err := exec.Command("limactl", "shell", vmName, "--", vmAhjoPath, "version").Output()
+				out, err := lima.Cmd("shell", vmName, "--", vmAhjoPath, "version").Output()
 				if err != nil {
 					return false, "", nil
 				}
@@ -309,7 +309,7 @@ func macUpdateSteps(buildCOI bool) []initflow.Step {
 					return err
 				}
 				defer f.Close()
-				cmd := exec.Command("limactl", "shell", vmName, "--",
+				cmd := lima.Cmd("shell", vmName, "--",
 					"sudo", "install", "-m", "0755", "/dev/stdin", vmAhjoPath)
 				cmd.Stdout = out
 				cmd.Stderr = out
@@ -329,13 +329,13 @@ func macUpdateSteps(buildCOI bool) []initflow.Step {
 				if buildCOI {
 					argv = append(argv, "--build-coi")
 				}
-				return initflow.RunShell(out, "", argv...)
+				return initflow.RunShellEnv(out, lima.Env(), "", argv...)
 			},
 		},
 	}
 }
 
-func macInitSteps(buildCOI bool) []initflow.Step {
+func macInitSteps(yes, buildCOI bool) []initflow.Step {
 	// linuxBin is resolved by the "Resolve" step and consumed by the "Install
 	// into VM" step. Captured by closure across steps.
 	var linuxBin string
@@ -354,6 +354,7 @@ func macInitSteps(buildCOI bool) []initflow.Step {
 				return initflow.RunShell(out, "", "brew", "install", "lima")
 			},
 		},
+		pickAgentStep(yes),
 		{
 			Title: fmt.Sprintf("Create %q VM (vz + rosetta + writable mount + vzNAT)", vmName),
 			Skip: func() (bool, string, error) {
@@ -368,7 +369,7 @@ func macInitSteps(buildCOI bool) []initflow.Step {
   --set='.ssh.forwardAgent=true' \
   template://ubuntu-lts`, vmName),
 			Action: func(out io.Writer) error {
-				return initflow.RunShell(out, "",
+				return initflow.RunShellEnv(out, lima.Env(), "",
 					"limactl", "start",
 					"--name="+vmName,
 					"--cpus=4", "--memory=8", "--disk=50",
@@ -389,7 +390,7 @@ func macInitSteps(buildCOI bool) []initflow.Step {
 			},
 			Show: "limactl start " + vmName,
 			Action: func(out io.Writer) error {
-				return initflow.RunShell(out, "", "limactl", "start", vmName)
+				return initflow.RunShellEnv(out, lima.Env(), "", "limactl", "start", vmName)
 			},
 		},
 		{
@@ -421,7 +422,7 @@ func macInitSteps(buildCOI bool) []initflow.Step {
 				if version == "dev" || version == "" || strings.HasSuffix(version, "-dirty") {
 					return false, "", nil
 				}
-				out, err := exec.Command("limactl", "shell", vmName, "--", vmAhjoPath, "version").Output()
+				out, err := lima.Cmd("shell", vmName, "--", vmAhjoPath, "version").Output()
 				if err != nil {
 					return false, "", nil
 				}
@@ -440,7 +441,7 @@ func macInitSteps(buildCOI bool) []initflow.Step {
 					return err
 				}
 				defer f.Close()
-				cmd := exec.Command("limactl", "shell", vmName, "--",
+				cmd := lima.Cmd("shell", vmName, "--",
 					"sudo", "install", "-m", "0755", "/dev/stdin", vmAhjoPath)
 				cmd.Stdout = out
 				cmd.Stderr = out
@@ -457,7 +458,7 @@ func macInitSteps(buildCOI bool) []initflow.Step {
 				if buildCOI {
 					argv = append(argv, "--build-coi")
 				}
-				return initflow.RunShell(out, "", argv...)
+				return initflow.RunShellEnv(out, lima.Env(), "", argv...)
 			},
 			Post: "\nDone. Try:\n  ahjo doctor\n  ahjo repo add <git-url>           # alias derived from URL, or pass --as <alias>\n  ahjo new <repo-alias> <branch>    # auto-aliased <repo-alias>@<branch>, or pass --as <alias>",
 		},

@@ -100,12 +100,22 @@ func (r Runner) confirm() (bool, error) {
 // piped on stdin. The first argument is the program; subsequent args are
 // passed verbatim — no shell expansion.
 func RunShell(out io.Writer, stdin string, argv ...string) error {
+	return RunShellEnv(out, nil, stdin, argv...)
+}
+
+// RunShellEnv is RunShell with an explicit env. Pass nil to inherit the
+// parent env. Use this when invoking limactl so SSH_AUTH_SOCK can be
+// overridden via lima.Env().
+func RunShellEnv(out io.Writer, env []string, stdin string, argv ...string) error {
 	if len(argv) == 0 {
 		return fmt.Errorf("empty argv")
 	}
 	cmd := exec.Command(argv[0], argv[1:]...)
 	cmd.Stdout = out
 	cmd.Stderr = out
+	if env != nil {
+		cmd.Env = env
+	}
 	if stdin != "" {
 		cmd.Stdin = strings.NewReader(stdin)
 	} else {

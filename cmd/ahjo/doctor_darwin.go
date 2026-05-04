@@ -15,15 +15,10 @@ import (
 	"os/exec"
 	"strings"
 
+	"github.com/lasselaakkonen/ahjo/internal/agent"
+	"github.com/lasselaakkonen/ahjo/internal/lima"
 	"github.com/lasselaakkonen/ahjo/internal/preflight"
 )
-
-// launchdSockPrefix matches macOS's default $SSH_AUTH_SOCK, which points at a
-// launchd-provided ssh-agent that has no keys unless the user opted into the
-// system Keychain integration. Detecting it lets us tell users why their VM
-// agent looks empty even though `git` works on the host (host `git` reaches
-// 1Password etc. via ~/.ssh/config IdentityAgent, which Lima doesn't honor).
-const launchdSockPrefix = "/private/tmp/com.apple.launchd."
 
 // runMacDoctor prints the host half of `ahjo doctor` and returns true if any
 // check failed. Output style matches preflight.Format so the merged stdout
@@ -31,7 +26,7 @@ const launchdSockPrefix = "/private/tmp/com.apple.launchd."
 func runMacDoctor(w io.Writer) bool {
 	fmt.Fprintln(w, "[host-side checks]")
 	ps := []preflight.Problem{
-		checkHostAgent(),
+		checkAgentConfigured(),
 		checkSSHAuthSockKind(),
 	}
 	vmP, runVMCheck := checkVMRunning()
@@ -46,64 +41,59 @@ func runMacDoctor(w io.Writer) bool {
 	return preflight.Worst(ps) >= preflight.Fail
 }
 
-// hostAgentKeyCount runs `ssh-add -l` against $SSH_AUTH_SOCK in the current
-// shell. Exit semantics: 0 = keys present (one per line), 1 = agent reachable
-// but empty, 2 = no agent.
-func hostAgentKeyCount() (int, error) {
-	out, err := exec.Command("ssh-add", "-l").Output()
-	if err == nil {
-		return countNonEmptyLines(string(out)), nil
-	}
-	var ee *exec.ExitError
-	if errors.As(err, &ee) && ee.ExitCode() == 1 {
-		return 0, nil
-	}
-	return 0, err
-}
-
-func checkHostAgent() preflight.Problem {
-	n, err := hostAgentKeyCount()
+// checkAgentConfigured reports whether `ahjo init` has picked an agent
+// socket and that the socket still has keys. This is the lever ahjo
+// actually uses when invoking limactl, so it's the source of truth.
+func checkAgentConfigured() preflight.Problem {
+	sock, label, err := agent.Resolve()
 	if err != nil {
 		return preflight.Problem{
 			Severity: preflight.Fail,
-			Title:    "no ssh agent reachable from this shell",
-			Detail:   strings.TrimSpace(err.Error()),
-			Fix:      sshAgentFix,
-		}
-	}
-	if n == 0 {
-		return preflight.Problem{
-			Severity: preflight.Warn,
-			Title:    "ssh agent reachable but has no keys",
+			Title:    "no ssh-agent picked for VM forwarding",
+			Detail:   err.Error(),
 			Fix:      sshAgentFix,
 		}
 	}
 	return preflight.Problem{
 		Severity: preflight.OK,
-		Title:    fmt.Sprintf("host ssh agent: %d key(s)", n),
+		Title:    fmt.Sprintf("ssh-agent forwarded into VM: %s (%s)", label, sock),
 	}
 }
 
+// checkSSHAuthSockKind is informational once an agent is configured: ahjo
+// overrides SSH_AUTH_SOCK in its own subprocess env, so the value in the
+// caller's shell doesn't affect VM forwarding. We still flag the launchd
+// default with a warn so users notice their *interactive* `git`/`ssh` might
+// be reaching an empty agent.
 func checkSSHAuthSockKind() preflight.Problem {
 	sock := os.Getenv("SSH_AUTH_SOCK")
+	configured := agent.Configured() != ""
 	if sock == "" {
+		if configured {
+			return preflight.Problem{
+				Severity: preflight.OK,
+				Title:    "shell SSH_AUTH_SOCK unset (ok — ahjo uses its configured agent)",
+			}
+		}
 		return preflight.Problem{
 			Severity: preflight.Warn,
 			Title:    "SSH_AUTH_SOCK not set in this shell",
 			Fix:      sshAgentFix,
 		}
 	}
-	if strings.HasPrefix(sock, launchdSockPrefix) {
-		return preflight.Problem{
-			Severity: preflight.Warn,
-			Title:    "SSH_AUTH_SOCK points at macOS's launchd default agent",
-			Detail:   sock + "  (host `git` may still work via ~/.ssh/config IdentityAgent, but Lima only forwards $SSH_AUTH_SOCK)",
-			Fix:      sshAgentFix,
+	if strings.HasPrefix(sock, agent.LaunchdSockPrefix) {
+		sev := preflight.Warn
+		title := "shell SSH_AUTH_SOCK points at macOS's launchd default agent"
+		detail := sock + "  (your interactive `git`/`ssh` may be using an empty agent; ahjo's VM forwarding is unaffected when an agent is configured)"
+		if configured {
+			sev = preflight.OK
+			title = "shell SSH_AUTH_SOCK is launchd default (ok — ahjo overrides it for limactl)"
 		}
+		return preflight.Problem{Severity: sev, Title: title, Detail: detail}
 	}
 	return preflight.Problem{
 		Severity: preflight.OK,
-		Title:    "SSH_AUTH_SOCK points at a custom agent socket",
+		Title:    "shell SSH_AUTH_SOCK points at a custom agent socket",
 	}
 }
 
@@ -123,9 +113,19 @@ func checkVMRunning() (preflight.Problem, bool) {
 	}, true
 }
 
+// checkInVMAgent verifies that what reaches the VM matches what ahjo
+// resolved on the host. Mismatch usually means the configured socket has
+// changed since the running ssh session was opened, or the agent went
+// away mid-session.
 func checkInVMAgent() preflight.Problem {
-	hostN, hostErr := hostAgentKeyCount()
-	out, err := exec.Command("limactl", "shell", vmName, "--", "ssh-add", "-l").Output()
+	hostSock, _, hostErr := agent.Resolve()
+	hostN := -1
+	if hostErr == nil {
+		if n, ok := agentKeyCountForSock(hostSock); ok {
+			hostN = n
+		}
+	}
+	out, err := lima.Cmd("shell", vmName, "--", "ssh-add", "-l").Output()
 	vmN := 0
 	if err != nil {
 		var ee *exec.ExitError
@@ -140,14 +140,14 @@ func checkInVMAgent() preflight.Problem {
 		vmN = countNonEmptyLines(string(out))
 	}
 	switch {
-	case vmN == 0 && hostErr == nil && hostN > 0:
+	case vmN == 0 && hostN > 0:
 		return preflight.Problem{
 			Severity: preflight.Fail,
 			Title:    "in-VM ssh agent is empty (host has " + fmt.Sprint(hostN) + ")",
-			Detail:   "Lima's hostagent forwarded an empty agent — it was started in a shell where SSH_AUTH_SOCK pointed at the launchd default.",
+			Detail:   "the forwarded agent reached the VM as empty — try `limactl stop " + vmName + " && limactl start " + vmName + "` so the new socket gets picked up by any persistent session.",
 			Fix:      sshAgentFix,
 		}
-	case hostErr == nil && vmN != hostN:
+	case hostN >= 0 && vmN != hostN:
 		return preflight.Problem{
 			Severity: preflight.Warn,
 			Title:    fmt.Sprintf("in-VM ssh agent: %d key(s) (host has %d)", vmN, hostN),
@@ -160,14 +160,35 @@ func checkInVMAgent() preflight.Problem {
 	}
 }
 
-// sshAgentFix is the multi-line fix block we attach to every check whose
-// remediation is the same: get $SSH_AUTH_SOCK pointing at a real agent, then
-// bounce the VM so its hostagent rebuilds the forwarding.
-const sshAgentFix = `if you use 1Password, add to your shell rc:
-         export SSH_AUTH_SOCK="$HOME/Library/Group Containers/2BUA8C4S2C.com.1password/t/agent.sock"
-       then bounce the VM so its hostagent picks up the new socket:
-         limactl stop ` + vmName + ` && limactl start ` + vmName + `
-       see CONTAINER-ISOLATION.md for non-1Password agents.`
+// agentKeyCountForSock returns (n, true) when `ssh-add -l` against sock
+// succeeded (n=0 means reachable-empty), or (0, false) when ssh-add can't
+// run or the agent is unreachable.
+func agentKeyCountForSock(sock string) (int, bool) {
+	if _, err := exec.LookPath("ssh-add"); err != nil {
+		return 0, false
+	}
+	cmd := exec.Command("ssh-add", "-l")
+	cmd.Env = append(os.Environ(), "SSH_AUTH_SOCK="+sock)
+	out, err := cmd.Output()
+	if err == nil {
+		return countNonEmptyLines(string(out)), true
+	}
+	var ee *exec.ExitError
+	if errors.As(err, &ee) && ee.ExitCode() == 1 {
+		return 0, true
+	}
+	return 0, false
+}
+
+// sshAgentFix is the multi-line fix block attached to checks that point
+// at the agent picker: re-running `ahjo init` re-detects 1Password /
+// Secretive / gpg-agent / ssh_config IdentityAgent and writes the chosen
+// socket into ~/.ahjo/config.toml [mac].ssh_auth_sock. ahjo overrides
+// SSH_AUTH_SOCK in its limactl subprocess env, so no shell rc edit is
+// needed.
+const sshAgentFix = "run `ahjo init` to (re-)detect host agents.\n" +
+	"       Make sure 1Password (or your agent app) is running and has at\n" +
+	"       least one key loaded; see CONTAINER-ISOLATION.md for details."
 
 func countNonEmptyLines(s string) int {
 	n := 0
