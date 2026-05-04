@@ -13,10 +13,11 @@ import (
 const Version = 1
 
 const (
-	PurposeSSH    = "ssh"
-	ExposePrefix  = "expose-" // followed by container port, e.g. "expose-3000"
-	defaultMin    = 10000
-	defaultMax    = 10999
+	PurposeSSH       = "ssh"
+	ExposePrefix     = "expose-" // followed by container port, e.g. "expose-3000"
+	AutoExposePrefix = "auto-"   // followed by container port, e.g. "auto-3000"
+	defaultMin       = 10000
+	defaultMax       = 10999
 )
 
 type Range struct {
@@ -126,4 +127,29 @@ func (p *Ports) FreeSlug(slug string) {
 		out = append(out, a)
 	}
 	p.Allocations = out
+}
+
+// FreePurpose removes the single allocation matching (slug, purpose). Used by
+// auto-expose to release a port when its container-side listener disappears.
+func (p *Ports) FreePurpose(slug, purpose string) {
+	out := p.Allocations[:0]
+	for _, a := range p.Allocations {
+		if a.Slug == slug && a.Purpose == purpose {
+			continue
+		}
+		out = append(out, a)
+	}
+	p.Allocations = out
+}
+
+// AllocationsForSlug returns a copy of every allocation belonging to slug.
+// Used by `ahjo ls` to render exposed-ports per worktree.
+func (p *Ports) AllocationsForSlug(slug string) []Allocation {
+	var out []Allocation
+	for _, a := range p.Allocations {
+		if a.Slug == slug {
+			out = append(out, a)
+		}
+	}
+	return out
 }

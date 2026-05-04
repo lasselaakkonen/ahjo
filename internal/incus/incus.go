@@ -11,6 +11,24 @@ import (
 	"strings"
 )
 
+// Exec runs a one-shot command in the container via `incus exec` and returns
+// its captured stdout. Stderr is forwarded so any error context surfaces to
+// the user without the caller having to plumb it through.
+func Exec(container string, argv ...string) ([]byte, error) {
+	args := append([]string{"exec", container, "--"}, argv...)
+	cmd := exec.Command("incus", args...)
+	cmd.Stderr = os.Stderr
+	out, err := cmd.Output()
+	if err != nil {
+		var ee *exec.ExitError
+		if errors.As(err, &ee) {
+			return out, fmt.Errorf("incus exec %s: exit %d", container, ee.ExitCode())
+		}
+		return out, fmt.Errorf("incus exec %s: %w", container, err)
+	}
+	return out, nil
+}
+
 // ContainerExists returns true if a container with this exact name is registered.
 func ContainerExists(name string) (bool, error) {
 	cmd := exec.Command("incus", "list", "--format=json", name)
@@ -143,6 +161,56 @@ func ConfigDeviceSet(container, device, key, value string) error {
 		return fmt.Errorf("incus config device set %s %s %s: exit %d", container, device, arg, ee.ExitCode())
 	}
 	return fmt.Errorf("incus config device set %s %s %s: %w", container, device, arg, err)
+}
+
+// ProxyDevice is one row of a container's proxy-device list. Listen and
+// Connect carry the raw `proto:addr:port` strings as Incus stores them.
+type ProxyDevice struct {
+	Name    string
+	Listen  string
+	Connect string
+}
+
+// ListProxyDevices parses `incus config device show <container>` and returns
+// every device with `type: proxy`. Auto-expose uses this to diff against the
+// current set of listening ports inside the container.
+func ListProxyDevices(container string) ([]ProxyDevice, error) {
+	cmd := exec.Command("incus", "config", "device", "show", container)
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("incus config device show %s: %w", container, err)
+	}
+	type devInfo struct {
+		name  string
+		props map[string]string
+	}
+	var devs []devInfo
+	var cur *devInfo
+	for _, line := range strings.Split(string(out), "\n") {
+		if len(line) > 0 && line[0] != ' ' && strings.HasSuffix(line, ":") {
+			devs = append(devs, devInfo{name: strings.TrimSuffix(line, ":"), props: map[string]string{}})
+			cur = &devs[len(devs)-1]
+			continue
+		}
+		if cur == nil {
+			continue
+		}
+		if kv := strings.SplitN(strings.TrimSpace(line), ": ", 2); len(kv) == 2 {
+			cur.props[kv[0]] = kv[1]
+		}
+	}
+	var proxies []ProxyDevice
+	for _, d := range devs {
+		if d.props["type"] != "proxy" {
+			continue
+		}
+		proxies = append(proxies, ProxyDevice{
+			Name:    d.name,
+			Listen:  d.props["listen"],
+			Connect: d.props["connect"],
+		})
+	}
+	return proxies, nil
 }
 
 // FindMountDevice scans `incus config device show <container>` and returns the

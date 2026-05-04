@@ -21,16 +21,30 @@ const Version = 1
 // fields live under a namespaced section ([mac], [linux]) so a reader can
 // see at a glance which side a field applies to.
 type Config struct {
-	Version    int       `toml:"version"`
-	ForwardEnv []string  `toml:"forward_env"` // appended to template's defaults
-	PortRange  Range     `toml:"port_range"`
-	Mac        MacConfig `toml:"mac"` // host-only; ignored in the VM
+	Version    int              `toml:"version"`
+	ForwardEnv []string         `toml:"forward_env"` // appended to template's defaults
+	PortRange  Range            `toml:"port_range"`
+	AutoExpose AutoExposeConfig `toml:"auto_expose"`
+	Mac        MacConfig        `toml:"mac"` // host-only; ignored in the VM
 }
 
 type Range struct {
 	Min int `toml:"min"`
 	Max int `toml:"max"`
 }
+
+// AutoExposeConfig controls automatic exposure of container loopback ports
+// to the host. Reconciled from `ss -tlnH` inside the container on `ahjo shell`
+// and `ahjo expose --sync`.
+//
+// Enabled is a *bool so a per-repo .ahjoconfig can distinguish "unset" from
+// "explicitly disabled" when overriding the global default.
+type AutoExposeConfig struct {
+	Enabled *bool `toml:"enabled"`
+	MinPort int   `toml:"min_port"`
+}
+
+const DefaultAutoExposeMinPort = 3000
 
 // MacConfig holds settings only consumed by the Mac-side shim.
 type MacConfig struct {
@@ -42,10 +56,12 @@ type MacConfig struct {
 }
 
 func defaults() *Config {
+	enabled := true
 	return &Config{
 		Version:    Version,
 		ForwardEnv: []string{"CLAUDE_CODE_OAUTH_TOKEN"},
 		PortRange:  Range{Min: 10000, Max: 10999},
+		AutoExpose: AutoExposeConfig{Enabled: &enabled, MinPort: DefaultAutoExposeMinPort},
 	}
 }
 
@@ -72,6 +88,12 @@ func Load() (*Config, error) {
 	}
 	if c.PortRange.Min == 0 && c.PortRange.Max == 0 {
 		c.PortRange = defaults().PortRange
+	}
+	if c.AutoExpose.Enabled == nil {
+		c.AutoExpose.Enabled = defaults().AutoExpose.Enabled
+	}
+	if c.AutoExpose.MinPort == 0 {
+		c.AutoExpose.MinPort = DefaultAutoExposeMinPort
 	}
 	return c, nil
 }

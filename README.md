@@ -85,8 +85,16 @@ ahjo shell acme/api@pr-482-rate-limit
 #    Any alias works — auto or --as.
 ahjo ssh checkout
 
-# 5. Forward the dev server out of the container so you can hit it
-#    from a Mac browser:
+# 5. Any TCP loopback listener inside the container with port >= 3000 is
+#    auto-exposed on 127.0.0.1 of the host (Mac via Lima auto-forward).
+#    For pre-existing listeners ahjo wires this up at `ahjo shell` start.
+#    For listeners that come up later (e.g. after `docker compose up`),
+#    refresh from another terminal:
+ahjo expose checkout --sync
+#   -> auto-expose: container :3000 -> 127.0.0.1:10042
+#      auto-expose: container :5432 -> 127.0.0.1:10043
+#
+# Or manually pin a single port (no threshold check, allocation persisted):
 ahjo expose checkout 3000
 #   -> container :3000 -> 127.0.0.1:10042
 
@@ -116,14 +124,32 @@ State lives under `~/.ahjo/` (registry, ports, host keys, profiles). The Mac shi
 | `ahjo new <repo-alias> <branch> [--as <alias>] [--base <ref>] [--no-fetch]` | Create the worktree and render `.coi/config.toml`. Auto alias is `<repo-primary-alias>@<branch>`; `--as` adds a second alias. Idempotent. |
 | `ahjo shell <alias> [--update]` | Start the container if needed, wire SSH proxy + sshd, attach via `coi shell`. `--update` shuts down and deletes the existing container first so the next attach builds a fresh one from the current `ahjo-base` image; the worktree, host keys, registry entry, and ssh port are preserved. |
 | `ahjo ssh <alias>` | `exec ssh` into the container using the generated ssh-config (Mac-side or in-VM). |
-| `ahjo expose <alias> <container-port>` | Add an Incus proxy device exposing a container port on `127.0.0.1`. |
+| `ahjo expose <alias> <container-port>` | Manually add an Incus proxy device exposing a container port on `127.0.0.1`. |
+| `ahjo expose <alias> --sync` | Reconcile auto-expose proxy devices to the container's current TCP loopback listeners (skipping `:22` and ports below `[auto_expose].min_port`). Run after starting docker-compose / a dev server inside the container so newly-bound ports surface to the host. Manual `ahjo expose` entries are untouched. |
 | `ahjo ls` | Worktrees with aliases, slug, SSH port, container state, creation time. |
 | `ahjo rm <alias>` | Stop + delete the container, remove the worktree, free ports, drop the registry entry. |
 | `ahjo gc [--older-than DUR] [--prune] [--dry-run]` | Report (and optionally remove) stale worktrees. Defaults to dry-run. |
 | `ahjo nuke [-y]` | Tear down everything `init` built so it can be rebuilt: containers, `ahjo-base`/`coi-default` images, worktrees, host keys, port allocations. On macOS this also stops + deletes the Lima VM. Keeps `~/.ahjo/{config.toml,profiles,repos}` and registered repos. |
 | `ahjo version` | Print the version baked into the binary. |
 
-Global config: `~/.ahjo/config.toml` (optional). See [`internal/config/config.go`](internal/config/config.go) for fields — currently `forward_env` and `port_range`.
+Global config: `~/.ahjo/config.toml` (optional). See [`internal/config/config.go`](internal/config/config.go) for fields — currently `forward_env`, `port_range`, and `auto_expose`.
+
+The `[auto_expose]` section controls automatic forwarding of container TCP
+loopback listeners to the host:
+
+```toml
+[auto_expose]
+enabled  = true   # default; set false to opt out globally
+min_port = 3000   # default; listeners below this are ignored
+```
+
+A repo can override either field in its `.ahjoconfig` (per-worktree). When
+enabled, ahjo runs `ss -tlnH` inside the container at `ahjo shell` start and
+on `ahjo expose --sync`, then ensures one `ahjo-auto-<port>` Incus proxy
+device per qualifying listener (allocating Mac-side host ports from the same
+`port_range` as `ahjo expose`). Listeners that disappear get their proxy
+devices removed and their host ports freed; manual `ahjo expose` entries are
+never touched.
 
 ## Rebuilding after a change
 

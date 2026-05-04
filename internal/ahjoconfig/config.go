@@ -14,9 +14,19 @@ const filename = ".ahjoconfig"
 
 // Config represents the .ahjoconfig file in a repo root.
 type Config struct {
-	Version    int      `toml:"version"`
-	Run        []string `toml:"run"`
-	ForwardEnv []string `toml:"forward_env"`
+	Version    int              `toml:"version"`
+	Run        []string         `toml:"run"`
+	ForwardEnv []string         `toml:"forward_env"`
+	AutoExpose AutoExposeConfig `toml:"auto_expose"`
+}
+
+// AutoExposeConfig overrides the global ~/.ahjo/config.toml [auto_expose]
+// section for this repo. Each field is a pointer so "unset in .ahjoconfig"
+// is distinguishable from "explicitly set to zero", and the global value
+// is used for any field this repo doesn't override.
+type AutoExposeConfig struct {
+	Enabled *bool `toml:"enabled"`
+	MinPort *int  `toml:"min_port"`
 }
 
 // Load reads .ahjoconfig from worktreePath. Returns (nil, false, nil) when

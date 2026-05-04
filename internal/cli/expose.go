@@ -13,11 +13,27 @@ import (
 )
 
 func newExposeCmd() *cobra.Command {
-	return &cobra.Command{
-		Use:   "expose <alias> <container-port>",
+	var sync bool
+	cmd := &cobra.Command{
+		Use:   "expose <alias> [<container-port>]",
 		Short: "Add an Incus proxy device exposing a container port on 127.0.0.1",
-		Args:  cobra.ExactArgs(2),
+		Long: `Manually expose <container-port> on 127.0.0.1 (Mac-side via Lima auto-forward),
+or with --sync, reconcile auto-expose proxy devices to match the container's
+current set of TCP loopback listeners (ports >= [auto_expose].min_port).
+
+--sync is what you run after starting docker-compose / a dev server inside the
+container so newly-bound ports surface to the host without restarting the
+shell. Manual expose entries are never touched by --sync.`,
+		Args: func(cmd *cobra.Command, args []string) error {
+			if sync {
+				return cobra.ExactArgs(1)(cmd, args)
+			}
+			return cobra.ExactArgs(2)(cmd, args)
+		},
 		RunE: func(_ *cobra.Command, args []string) error {
+			if sync {
+				return runExposeSync(args[0])
+			}
 			cport, err := strconv.Atoi(args[1])
 			if err != nil || cport <= 0 || cport > 65535 {
 				return fmt.Errorf("invalid container port %q", args[1])
@@ -25,6 +41,26 @@ func newExposeCmd() *cobra.Command {
 			return runExpose(args[0], cport)
 		},
 	}
+	cmd.Flags().BoolVar(&sync, "sync", false, "reconcile auto-expose proxy devices to the container's current listeners")
+	return cmd
+}
+
+func runExposeSync(alias string) error {
+	release, err := lockfile.Acquire()
+	if err != nil {
+		return err
+	}
+	defer release()
+
+	reg, err := registry.Load()
+	if err != nil {
+		return err
+	}
+	w := reg.FindWorktreeByAlias(alias)
+	if w == nil {
+		return fmt.Errorf("no worktree with alias %q", alias)
+	}
+	return reconcileAutoExpose(cobraOut(), w)
 }
 
 func runExpose(alias string, cport int) error {

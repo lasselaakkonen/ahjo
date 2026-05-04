@@ -7,6 +7,7 @@ import (
 
 	"github.com/lasselaakkonen/ahjo/internal/coi"
 	"github.com/lasselaakkonen/ahjo/internal/incus"
+	"github.com/lasselaakkonen/ahjo/internal/lockfile"
 	"github.com/lasselaakkonen/ahjo/internal/registry"
 )
 
@@ -119,5 +120,19 @@ func runShell(alias string, update bool) error {
 		// non-fatal: maybe systemd not up yet, or already running
 		fmt.Fprintf(cobraOutErr(), "warn: could not start sshd: %v\n", err)
 	}
+
+	// Auto-expose: reconcile proxy devices for any pre-existing listeners
+	// (e.g. from a previously-started docker-compose). Best-effort — failures
+	// here must not block the user from getting their shell.
+	release, err := lockfile.Acquire()
+	if err != nil {
+		fmt.Fprintf(cobraOutErr(), "warn: auto-expose skipped: %v\n", err)
+	} else {
+		if err := reconcileAutoExpose(cobraOut(), w); err != nil {
+			fmt.Fprintf(cobraOutErr(), "warn: auto-expose: %v\n", err)
+		}
+		release()
+	}
+
 	return coi.ExecShell(w.WorktreePath, containerName)
 }
