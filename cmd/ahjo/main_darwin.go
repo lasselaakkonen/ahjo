@@ -329,7 +329,17 @@ func macUpdateSteps(buildCOI bool) []initflow.Step {
 				if buildCOI {
 					argv = append(argv, "--build-coi")
 				}
-				return initflow.RunShellEnv(out, lima.Env(), "", argv...)
+				if err := initflow.RunShellEnv(out, lima.Env(), "", argv...); err != nil {
+					return err
+				}
+				// Defensive symmetry with macInitSteps: refresh the lima ssh
+				// ControlMaster so users whose master was opened before
+				// `ahjo init`'s usermod (and therefore inherits stale
+				// supplementary groups) recover by running `ahjo update`.
+				if err := lima.CloseSSHControlMaster(vmName); err != nil {
+					fmt.Fprintf(out, "  warn: could not close existing ssh master (%v); a `limactl stop %s && limactl start %s` may be needed\n", err, vmName, vmName)
+				}
+				return nil
 			},
 		},
 	}
@@ -458,7 +468,18 @@ func macInitSteps(yes, buildCOI bool) []initflow.Step {
 				if buildCOI {
 					argv = append(argv, "--build-coi")
 				}
-				return initflow.RunShellEnv(out, lima.Env(), "", argv...)
+				if err := initflow.RunShellEnv(out, lima.Env(), "", argv...); err != nil {
+					return err
+				}
+				// In-VM init added the user to incus-admin. Close the lima ssh
+				// ControlMaster so the next limactl shell re-authenticates and
+				// PAM activates the new supplementary group — same dynamic
+				// CloseSSHControlMaster handles for SSH_AUTH_SOCK after agent
+				// changes (see saveAgentChoice in agent_step_darwin.go).
+				if err := lima.CloseSSHControlMaster(vmName); err != nil {
+					fmt.Fprintf(out, "  warn: could not close existing ssh master (%v); a `limactl stop %s && limactl start %s` may be needed\n", err, vmName, vmName)
+				}
+				return nil
 			},
 			Post: "\nDone. Try:\n  ahjo doctor\n  ahjo repo add <git-url>           # alias derived from URL, or pass --as <alias>\n  ahjo new <repo-alias> <branch>    # auto-aliased <repo-alias>@<branch>, or pass --as <alias>",
 		},
