@@ -2,4 +2,4 @@
 
 package paths
 
-func isLinux() bool { return false }
+func MacHostHome() (string, bool) { return "", false }

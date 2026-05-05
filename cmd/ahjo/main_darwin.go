@@ -176,7 +176,7 @@ func execSSHFromMac(alias string) {
 	shared := filepath.Join(home, ".ahjo-shared")
 	cfg := filepath.Join(shared, "ssh-config")
 	if _, err := os.Stat(cfg); err != nil {
-		fmt.Fprintf(os.Stderr, "ahjo: %s missing; run `ahjo new` first\n", cfg)
+		fmt.Fprintf(os.Stderr, "ahjo: %s: %v\n", cfg, err)
 		os.Exit(1)
 	}
 	slug, err := lookupAlias(filepath.Join(shared, "aliases"), alias)

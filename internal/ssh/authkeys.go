@@ -9,13 +9,21 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/lasselaakkonen/ahjo/internal/paths"
 )
 
 // WriteAuthorizedKeys assembles <slugDir>/authorized_keys from two sources:
 // the forwarded ssh-agent (preferred — keeps key material off the VM disk
 // and matches CONTAINER-ISOLATION.md's "no ~/.ssh/ crosses" rule) and
-// ~/.ssh/*.pub (fallback for native-Linux runs without an agent). Dedupes
-// by the actual key bytes so a key loaded from both sources lands once.
+// ~/.ssh/*.pub (fallback for native-Linux runs without an agent). On Lima
+// it also includes the Mac host's ~/.ssh/*.pub via the virtiofs mount, so
+// the user's Mac-side key authenticates without agent dependency. Dedupes
+// by key bytes so a key loaded from multiple sources lands once.
+//
+// Writes in place (O_TRUNC) rather than via tempfile+rename so incus
+// single-file bind mounts (path /home/code/.ssh/authorized_keys) keep
+// pointing at the same inode and observe the new content live.
 func WriteAuthorizedKeys(slugDir string) error {
 	body, sources, err := collectAuthorizedKeys()
 	if err != nil {
@@ -25,23 +33,15 @@ func WriteAuthorizedKeys(slugDir string) error {
 		return fmt.Errorf("no public keys available: %s; load a key into your ssh-agent (1Password etc.) or run `ssh-keygen -t ed25519`", strings.Join(sources, "; "))
 	}
 	dst := filepath.Join(slugDir, "authorized_keys")
-	tmp, err := os.CreateTemp(slugDir, ".authorized_keys.tmp.*")
+	f, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
 	if err != nil {
 		return err
 	}
-	defer os.Remove(tmp.Name())
-	if _, err := tmp.WriteString(body); err != nil {
-		tmp.Close()
+	if _, err := f.WriteString(body); err != nil {
+		f.Close()
 		return err
 	}
-	if err := tmp.Chmod(0o600); err != nil {
-		tmp.Close()
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		return err
-	}
-	return os.Rename(tmp.Name(), dst)
+	return f.Close()
 }
 
 // collectAuthorizedKeys merges agent and file-backed public keys, dedupes,
@@ -96,27 +96,49 @@ func agentPublicKeys() ([]string, string) {
 	return lines, fmt.Sprintf("%d key(s)", len(lines))
 }
 
-// filePublicKeys reads every ~/.ssh/*.pub. Each file may contain multiple
-// keys; we split on lines so dedup works against agent output.
+// filePublicKeys reads ~/.ssh/*.pub plus, when running inside the Lima VM,
+// the Mac host's ~/.ssh/*.pub via the virtiofs mount. Each file may contain
+// multiple keys; we split on lines so dedup works against agent output.
 func filePublicKeys() ([]string, string, error) {
-	home, err := os.UserHomeDir()
+	homes, err := pubKeyHomes()
 	if err != nil {
 		return nil, "", err
 	}
-	matches, err := filepath.Glob(filepath.Join(home, ".ssh", "*.pub"))
-	if err != nil {
-		return nil, "", fmt.Errorf("glob ~/.ssh/*.pub: %w", err)
-	}
-	sort.Strings(matches)
-	var lines []string
-	for _, m := range matches {
-		c, err := os.ReadFile(m)
+	var (
+		lines    []string
+		statuses []string
+	)
+	for _, h := range homes {
+		matches, err := filepath.Glob(filepath.Join(h.dir, ".ssh", "*.pub"))
 		if err != nil {
-			return nil, "", fmt.Errorf("read %s: %w", m, err)
+			return nil, "", fmt.Errorf("glob %s/.ssh/*.pub: %w", h.dir, err)
 		}
-		lines = append(lines, splitNonEmpty(string(c))...)
+		sort.Strings(matches)
+		for _, m := range matches {
+			c, err := os.ReadFile(m)
+			if err != nil {
+				return nil, "", fmt.Errorf("read %s: %w", m, err)
+			}
+			lines = append(lines, splitNonEmpty(string(c))...)
+		}
+		statuses = append(statuses, fmt.Sprintf("%s: %d file(s)", h.label, len(matches)))
 	}
-	return lines, fmt.Sprintf("%d key(s) across %d file(s)", len(lines), len(matches)), nil
+	return lines, strings.Join(statuses, ", "), nil
+}
+
+type homeDir struct{ dir, label string }
+
+func pubKeyHomes() ([]homeDir, error) {
+	var hs []homeDir
+	if h, err := os.UserHomeDir(); err == nil {
+		hs = append(hs, homeDir{dir: h, label: "~/.ssh"})
+	} else {
+		return nil, err
+	}
+	if mac, ok := paths.MacHostHome(); ok && mac != hs[0].dir {
+		hs = append(hs, homeDir{dir: mac, label: mac + "/.ssh"})
+	}
+	return hs, nil
 }
 
 // appendUnique writes line to b, keyed on type+base64 so two entries that

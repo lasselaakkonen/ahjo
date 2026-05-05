@@ -12,7 +12,7 @@ import (
 	"github.com/lasselaakkonen/ahjo/internal/registry"
 )
 
-// RegenerateConfig writes ~/.ahjo-shared/ssh-config and ~/.ahjo-shared/aliases
+// RegenerateConfig writes ~/.ahjo-shared/{ssh-config,aliases,known_hosts}
 // from the registry atomically.
 func RegenerateConfig(reg *registry.Registry) error {
 	if err := os.MkdirAll(paths.SharedDir(), 0o755); err != nil {
@@ -20,6 +20,8 @@ func RegenerateConfig(reg *registry.Registry) error {
 	}
 	wts := append([]registry.Worktree(nil), reg.Worktrees...)
 	sort.Slice(wts, func(i, j int) bool { return wts[i].Slug < wts[j].Slug })
+
+	knownHosts := paths.KnownHostsPath()
 
 	var b strings.Builder
 	fmt.Fprintln(&b, "# ahjo-managed: do not edit")
@@ -30,7 +32,7 @@ func RegenerateConfig(reg *registry.Registry) error {
 		fmt.Fprintf(&b, "  Port %d\n", w.SSHPort)
 		fmt.Fprintln(&b, "  User code")
 		fmt.Fprintln(&b, "  IdentityFile ~/.ssh/id_ed25519")
-		fmt.Fprintf(&b, "  UserKnownHostsFile %s\n", filepath.Join(w.SSHHostKeysDir, "known_hosts"))
+		fmt.Fprintf(&b, "  UserKnownHostsFile %s\n", knownHosts)
 		fmt.Fprintln(&b, "  StrictHostKeyChecking yes")
 		fmt.Fprintln(&b, "  ForwardAgent yes")
 		fmt.Fprintln(&b)
@@ -47,7 +49,38 @@ func RegenerateConfig(reg *registry.Registry) error {
 			fmt.Fprintf(&amap, "%s\t%s\n", a, w.Slug)
 		}
 	}
-	return writeAtomic(paths.AliasesPath(), amap.String(), 0o644)
+	if err := writeAtomic(paths.AliasesPath(), amap.String(), 0o644); err != nil {
+		return err
+	}
+
+	return writeKnownHosts(knownHosts, wts)
+}
+
+// writeKnownHosts concatenates each worktree's per-slug known_hosts into a
+// single Mac-readable file. Worktrees with no host keys yet are skipped —
+// they'll be picked up on the next regeneration.
+func writeKnownHosts(dst string, wts []registry.Worktree) error {
+	var b strings.Builder
+	fmt.Fprintln(&b, "# ahjo-managed: do not edit")
+	for _, w := range wts {
+		src := filepath.Join(w.SSHHostKeysDir, paths.KnownHostsFile)
+		c, err := os.ReadFile(src)
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return fmt.Errorf("read %s: %w", src, err)
+		}
+		s := strings.TrimRight(string(c), "\n")
+		for _, line := range strings.Split(s, "\n") {
+			line = strings.TrimSpace(line)
+			if line == "" || strings.HasPrefix(line, "#") {
+				continue
+			}
+			fmt.Fprintln(&b, line)
+		}
+	}
+	return writeAtomic(dst, b.String(), 0o644)
 }
 
 func writeAtomic(dst, content string, mode os.FileMode) error {

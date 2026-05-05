@@ -17,6 +17,7 @@ const (
 	LockFile          = ".lock"
 	SSHConfigFile     = "ssh-config"
 	AliasesFile       = "aliases"
+	KnownHostsFile    = "known_hosts"
 	AhjoBaseProfile   = "ahjo-base"
 	CoiProfilesSubdir = "profiles"
 )
@@ -43,14 +44,25 @@ func Expand(p string) string {
 	return p
 }
 
-func AhjoDir() string         { return filepath.Join(home(), AhjoDirName) }
-func SharedDir() string       { return filepath.Join(home(), SharedDirName) }
+func AhjoDir() string { return filepath.Join(home(), AhjoDirName) }
+
+// SharedDir is the directory both Mac-side and in-VM ahjo read/write so that
+// ssh-config, aliases, and known_hosts are visible from both sides. On Mac
+// and in the Lima VM it resolves to <mac-home>/.ahjo-shared (same physical
+// path via virtiofs); on standalone Linux it falls back to ~/.ahjo-shared.
+func SharedDir() string {
+	if mac, ok := MacHostHome(); ok {
+		return filepath.Join(mac, SharedDirName)
+	}
+	return filepath.Join(home(), SharedDirName)
+}
 func RegistryPath() string    { return filepath.Join(AhjoDir(), RegistryFile) }
 func PortsPath() string       { return filepath.Join(AhjoDir(), PortsFile) }
 func ConfigPath() string      { return filepath.Join(AhjoDir(), ConfigFile) }
 func LockPath() string        { return filepath.Join(AhjoDir(), LockFile) }
 func SSHConfigPath() string   { return filepath.Join(SharedDir(), SSHConfigFile) }
 func AliasesPath() string     { return filepath.Join(SharedDir(), AliasesFile) }
+func KnownHostsPath() string  { return filepath.Join(SharedDir(), KnownHostsFile) }
 func ReposDir() string        { return filepath.Join(AhjoDir(), "repos") }
 func WorktreesDir() string    { return filepath.Join(AhjoDir(), "worktrees") }
 func HostKeysDir() string     { return filepath.Join(AhjoDir(), "host-keys") }
@@ -77,22 +89,9 @@ func EnsureSkeleton() error {
 	return ensureShared()
 }
 
-// ensureShared creates the SharedDir; on Linux it's a symlink target under AhjoDir,
-// on Mac it's a Lima 9p mount the user must set up — we just ensure it exists or
-// is reachable, but never silently move things.
 func ensureShared() error {
-	if _, err := os.Stat(SharedDir()); err == nil {
-		return nil
-	}
-	// On Linux we can helpfully create it as a real dir under ~/.ahjo/shared and
-	// symlink ~/.ahjo-shared -> ~/.ahjo/shared. On Mac, the Lima mount must
-	// already be in place; if it isn't, ahjo doctor reports it.
-	if isLinux() {
-		real := filepath.Join(AhjoDir(), "shared")
-		if err := os.MkdirAll(real, 0o755); err != nil {
-			return fmt.Errorf("mkdir %s: %w", real, err)
-		}
-		return os.Symlink(real, SharedDir())
+	if err := os.MkdirAll(SharedDir(), 0o755); err != nil {
+		return fmt.Errorf("mkdir %s: %w", SharedDir(), err)
 	}
 	return nil
 }
