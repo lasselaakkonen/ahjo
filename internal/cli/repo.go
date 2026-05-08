@@ -1,9 +1,13 @@
 package cli
 
 import (
+	"context"
 	"fmt"
+	"io"
 	"os"
+	"os/exec"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -257,6 +261,87 @@ func newRepoRmCmd() *cobra.Command {
 	}
 	cmd.Flags().BoolVar(&force, "force", false, "remove even if worktrees exist (registry only — does NOT touch worktree containers)")
 	return cmd
+}
+
+// EnsureRepo returns the repo registered under repoAlias. If the repo
+// isn't registered and the alias has the canonical "<owner>/<repo>"
+// shape, it auto-adds the repo by deriving a GitHub URL (SSH if
+// reachable, else HTTPS) and running the standard `repo add` flow.
+// Idempotent: a second call on a registered repo just returns it.
+func EnsureRepo(repoAlias string) (*registry.Repo, error) {
+	reg, err := registry.Load()
+	if err != nil {
+		return nil, err
+	}
+	if r := reg.FindRepoByAlias(repoAlias); r != nil {
+		return r, nil
+	}
+
+	owner, name, ok := splitRepoAlias(repoAlias)
+	if !ok {
+		return nil, fmt.Errorf("no repo with alias %q (try `ahjo repo add` or `ahjo repo ls`)", repoAlias)
+	}
+
+	url := pickGitHubURL(owner, name)
+	fmt.Printf("repo %q not registered; adding from %s...\n", repoAlias, url)
+	if err := runRepoAdd(url, "", ""); err != nil {
+		return nil, err
+	}
+
+	reg, err = registry.Load()
+	if err != nil {
+		return nil, err
+	}
+	if r := reg.FindRepoByAlias(repoAlias); r != nil {
+		return r, nil
+	}
+	// repoAddRegister lowercases the derived alias; if the user passed
+	// mixed case, fall through to the lowercased lookup.
+	if r := reg.FindRepoByAlias(strings.ToLower(repoAlias)); r != nil {
+		return r, nil
+	}
+	return nil, fmt.Errorf("internal: just-added repo %q not in registry", repoAlias)
+}
+
+// splitRepoAlias parses "<owner>/<repo>" — exactly two non-empty
+// slash-separated segments, no `@`. Worktree aliases (which contain `@`)
+// and arbitrary user-provided aliases are rejected so we don't try to
+// GitHub-clone them.
+func splitRepoAlias(alias string) (owner, repo string, ok bool) {
+	if strings.Contains(alias, "@") {
+		return "", "", false
+	}
+	parts := strings.Split(alias, "/")
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		return "", "", false
+	}
+	return parts[0], parts[1], true
+}
+
+// pickGitHubURL probes whether SSH access to github.com works for
+// <owner>/<name>; returns the SSH URL if yes, else the HTTPS URL.
+func pickGitHubURL(owner, name string) string {
+	sshURL := fmt.Sprintf("git@github.com:%s/%s.git", owner, name)
+	if probeSSHReachable(sshURL) {
+		return sshURL
+	}
+	return fmt.Sprintf("https://github.com/%s/%s.git", owner, name)
+}
+
+// probeSSHReachable runs `git ls-remote --exit-code <url> HEAD` with a
+// short timeout and BatchMode SSH so it fails fast on missing keys,
+// unknown hosts, or network issues instead of prompting the user.
+func probeSSHReachable(url string) bool {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "git", "ls-remote", "--exit-code", url, "HEAD")
+	cmd.Env = append(os.Environ(),
+		"GIT_SSH_COMMAND=ssh -o BatchMode=yes -o ConnectTimeout=3 -o StrictHostKeyChecking=accept-new",
+		"GIT_TERMINAL_PROMPT=0",
+	)
+	cmd.Stdout = io.Discard
+	cmd.Stderr = io.Discard
+	return cmd.Run() == nil
 }
 
 // wrapCloneErr decorates a clone failure with a Lima-aware hint when the
