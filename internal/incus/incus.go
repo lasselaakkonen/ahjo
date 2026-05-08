@@ -74,6 +74,33 @@ func AddProxyDevice(container, device, listen, connect string) error {
 	return fmt.Errorf("incus %s: %w", strings.Join(args, " "), err)
 }
 
+// AddDiskDevice adds a disk (bind-mount) device, tolerating "already exists" errors.
+func AddDiskDevice(container, device, source, path string, readonly bool) error {
+	args := []string{
+		"config", "device", "add", container, device, "disk",
+		"source=" + source,
+		"path=" + path,
+	}
+	if readonly {
+		args = append(args, "readonly=true")
+	}
+	cmd := exec.Command("incus", args...)
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		os.Stdout.Write(out)
+		return nil
+	}
+	if strings.Contains(strings.ToLower(string(out)), "already exists") {
+		return nil
+	}
+	os.Stderr.Write(out)
+	var ee *exec.ExitError
+	if errors.As(err, &ee) {
+		return fmt.Errorf("incus %s: exit %d", strings.Join(args, " "), ee.ExitCode())
+	}
+	return fmt.Errorf("incus %s: %w", strings.Join(args, " "), err)
+}
+
 // ImageAliasExists returns true if alias resolves to an Incus image.
 func ImageAliasExists(alias string) (bool, error) {
 	cmd := exec.Command("incus", "image", "alias", "list", "--format=json")

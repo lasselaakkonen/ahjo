@@ -123,6 +123,15 @@ func prepareWorktreeContainer(alias string, update bool) (*registry.Worktree, st
 			if err := applyRawIdmap(containerName); err != nil {
 				return nil, "", err
 			}
+			repo := reg.FindRepo(w.Repo)
+			if repo == nil {
+				return nil, "", fmt.Errorf("internal: worktree %q references missing repo %q", alias, w.Repo)
+			}
+			// Bind-mount the bare repo at its absolute VM path so
+			// /workspace/.git's gitdir: pointer resolves inside the container.
+			if err := incus.AddDiskDevice(containerName, "ahjo-bare", repo.BarePath, repo.BarePath, false); err != nil {
+				return nil, "", fmt.Errorf("add ahjo-bare disk device: %w", err)
+			}
 			if err := coi.ContainerExecAs(containerName, 1000, "/usr/local/bin/ahjo-claude-prepare"); err != nil {
 				return nil, "", fmt.Errorf("ahjo-claude-prepare: %w", err)
 			}

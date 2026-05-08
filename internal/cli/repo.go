@@ -10,6 +10,7 @@ import (
 	"github.com/lasselaakkonen/ahjo/internal/ahjoconfig"
 	"github.com/lasselaakkonen/ahjo/internal/coi"
 	"github.com/lasselaakkonen/ahjo/internal/git"
+	"github.com/lasselaakkonen/ahjo/internal/incus"
 	"github.com/lasselaakkonen/ahjo/internal/lima"
 	"github.com/lasselaakkonen/ahjo/internal/lockfile"
 	"github.com/lasselaakkonen/ahjo/internal/paths"
@@ -131,6 +132,10 @@ func repoAddSetup(slug, primary, defaultBase string) error {
 	if err != nil {
 		return err
 	}
+	repo := reg.FindRepo(slug)
+	if repo == nil {
+		return fmt.Errorf("repo %q not in registry after creation", slug)
+	}
 	wt := reg.FindWorktree(slug, defaultBase)
 	if wt == nil {
 		return fmt.Errorf("default worktree not in registry after creation")
@@ -152,6 +157,11 @@ func repoAddSetup(slug, primary, defaultBase string) error {
 	// from it after `incus copy`) starts with the correct UID mapping.
 	if err := applyRawIdmap(containerName); err != nil {
 		return err
+	}
+	// Bind-mount the bare repo at its absolute VM path so /workspace/.git's
+	// gitdir: pointer resolves inside the container. COW copies inherit this.
+	if err := incus.AddDiskDevice(containerName, "ahjo-bare", repo.BarePath, repo.BarePath, false); err != nil {
+		return fmt.Errorf("add ahjo-bare disk device: %w", err)
 	}
 	if err := coi.ContainerExecAs(containerName, 1000, "/usr/local/bin/ahjo-claude-prepare"); err != nil {
 		return fmt.Errorf("ahjo-claude-prepare: %w", err)
