@@ -30,6 +30,33 @@ func TestSplitRepoAlias(t *testing.T) {
 	}
 }
 
+func TestSplitWorktreeAlias(t *testing.T) {
+	cases := []struct {
+		in         string
+		wantRepo   string
+		wantBranch string
+		wantOK     bool
+	}{
+		{"github/ahjo@main", "github/ahjo", "main", true},
+		{"acme/api@feature/x", "acme/api", "feature/x", true},
+		{"github/ahjo", "", "", false},
+		{"github/ahjo@", "", "", false},
+		{"@main", "", "", false},
+		{"github/ahjo@a@b", "", "", false},
+		{"github@main", "", "", false},
+		{"", "", "", false},
+	}
+	for _, c := range cases {
+		t.Run(c.in, func(t *testing.T) {
+			repo, branch, ok := splitWorktreeAlias(c.in)
+			if ok != c.wantOK || repo != c.wantRepo || branch != c.wantBranch {
+				t.Fatalf("splitWorktreeAlias(%q) = (%q, %q, %v), want (%q, %q, %v)",
+					c.in, repo, branch, ok, c.wantRepo, c.wantBranch, c.wantOK)
+			}
+		})
+	}
+}
+
 func TestPickGitHubURL_FormatsBothSchemes(t *testing.T) {
 	// We can't deterministically assert which scheme is picked (depends on
 	// the host's SSH access to github.com), but we can confirm the chosen

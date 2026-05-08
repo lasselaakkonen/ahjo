@@ -3,6 +3,7 @@ package cli
 import (
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -41,6 +42,15 @@ Pass --as <alias> to register an additional alias for the worktree.`,
 }
 
 func runNew(repoAlias, branch, base, asAlias string, noFetch bool) error {
+	// EnsureRepo runs without holding the lockfile — runRepoAdd acquires
+	// the lock itself for the registration phase, then releases before
+	// recursing into runNew for the default-branch worktree. Calling it
+	// here lets `ahjo new <new-repo> <branch>` auto-clone from GitHub
+	// before we proceed with worktree creation.
+	if _, err := EnsureRepo(repoAlias); err != nil {
+		return err
+	}
+
 	release, err := lockfile.Acquire()
 	if err != nil {
 		return err
@@ -201,6 +211,67 @@ func runNew(repoAlias, branch, base, asAlias string, noFetch bool) error {
 
 	fmt.Fprintf(os.Stdout, "ssh port %d; run: ahjo shell %s\n", port, primary)
 	return nil
+}
+
+// EnsureWorktree returns the worktree registered under worktreeAlias.
+// If the worktree isn't registered and the alias has the canonical
+// "<repo-alias>@<branch>" shape, it auto-adds the parent repo (via
+// EnsureRepo) and runs runNew to create the worktree. Idempotent for
+// already-registered worktrees.
+func EnsureWorktree(worktreeAlias string) (*registry.Worktree, error) {
+	reg, err := registry.Load()
+	if err != nil {
+		return nil, err
+	}
+	if w := reg.FindWorktreeByAlias(worktreeAlias); w != nil {
+		return w, nil
+	}
+
+	repoAlias, branch, ok := splitWorktreeAlias(worktreeAlias)
+	if !ok {
+		return nil, fmt.Errorf("no worktree with alias %q; create with `ahjo new`", worktreeAlias)
+	}
+
+	if _, err := EnsureRepo(repoAlias); err != nil {
+		return nil, err
+	}
+
+	// runNew is idempotent for an existing worktree (re-renders config);
+	// for a missing one it creates the branch + container scaffolding.
+	if err := runNew(repoAlias, branch, "", "", false); err != nil {
+		return nil, err
+	}
+
+	reg, err = registry.Load()
+	if err != nil {
+		return nil, err
+	}
+	if w := reg.FindWorktreeByAlias(worktreeAlias); w != nil {
+		return w, nil
+	}
+	if w := reg.FindWorktreeByAlias(strings.ToLower(worktreeAlias)); w != nil {
+		return w, nil
+	}
+	return nil, fmt.Errorf("internal: just-created worktree %q not in registry", worktreeAlias)
+}
+
+// splitWorktreeAlias parses "<repo-alias>@<branch>" — exactly one `@`,
+// repo-alias must satisfy splitRepoAlias's shape, branch must be non-empty.
+// Branch may contain slashes (e.g. "feature/x"); repo-alias may not.
+func splitWorktreeAlias(alias string) (repoAlias, branch string, ok bool) {
+	at := strings.Index(alias, "@")
+	if at < 0 || strings.LastIndex(alias, "@") != at {
+		return "", "", false
+	}
+	repoAlias = alias[:at]
+	branch = alias[at+1:]
+	if branch == "" {
+		return "", "", false
+	}
+	if _, _, ok := splitRepoAlias(repoAlias); !ok {
+		return "", "", false
+	}
+	return repoAlias, branch, true
 }
 
 // resolveBase picks the ref to base a new worktree on. Order: explicit
