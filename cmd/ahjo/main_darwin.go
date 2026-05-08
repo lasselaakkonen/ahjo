@@ -92,6 +92,19 @@ func main() {
 			os.Exit(1)
 		}
 		return
+	case "spotlight":
+		// Run the "is the target dir clean?" check on Mac before relaying.
+		// The same check inside the VM reads the Mac repo through virtiofs and
+		// reports false positives (file mode + stat-cache mismatches), even
+		// when `git status` on the Mac shows clean. Mac-side is the source of
+		// truth; if it passes we tell the in-VM activate to skip its own check
+		// by passing --force.
+		newArgs, err := preflightSpotlightOnMac(args)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "ahjo:", err)
+			os.Exit(1)
+		}
+		args = newArgs
 	}
 
 	if err := preflightLima(); err != nil {
@@ -142,6 +155,85 @@ func hasFlag(args []string, flags ...string) bool {
 		}
 	}
 	return false
+}
+
+// preflightSpotlightOnMac handles the Mac-side cleanliness check for
+// `ahjo spotlight <alias> --target <path>`. It runs `git status --porcelain`
+// in the target on Mac, where the user's view is authoritative. If the target
+// is clean, --force is appended so the in-VM activate skips its own check
+// (which sees the dir through virtiofs and false-positives on file-mode and
+// stat-cache deltas). If the target is dirty, it errors here instead of
+// inside the VM, where the message would be muddled by virtiofs noise.
+//
+// Returns the (possibly-modified) args to relay. Forms that don't activate
+// (off, status, --daemon, no alias arg) are passed through unchanged.
+func preflightSpotlightOnMac(args []string) ([]string, error) {
+	// args[0] == "spotlight". Inspect args[1:].
+	rest := args[1:]
+	var alias, target string
+	force := false
+	for i := 0; i < len(rest); i++ {
+		a := rest[i]
+		switch {
+		case a == "off", a == "status":
+			return args, nil
+		case a == "--daemon":
+			return args, nil
+		case a == "--force":
+			force = true
+		case a == "--target":
+			if i+1 < len(rest) {
+				target = rest[i+1]
+				i++
+			}
+		case strings.HasPrefix(a, "--target="):
+			target = strings.TrimPrefix(a, "--target=")
+		case strings.HasPrefix(a, "-"):
+			// other flags: ignore
+		default:
+			if alias == "" {
+				alias = a
+			}
+		}
+	}
+	if alias == "" || force || target == "" {
+		// No activation, or user already passed --force, or target left to
+		// per-repo default (which lives in the in-VM registry — we can't see
+		// it from here). Defer to the in-VM check.
+		return args, nil
+	}
+	target = expandHomeOnMac(target)
+	if !filepath.IsAbs(target) {
+		return args, nil
+	}
+	if _, err := os.Stat(filepath.Join(target, ".git")); err != nil {
+		return args, nil
+	}
+	out, err := exec.Command("git", "-C", target, "status", "--porcelain").Output()
+	if err != nil {
+		// git missing or broken: defer to in-VM. Best-effort.
+		return args, nil
+	}
+	if len(strings.TrimSpace(string(out))) > 0 {
+		return nil, fmt.Errorf("target %q has uncommitted changes; commit/stash first or pass --force", target)
+	}
+	// Clean per Mac. Append --force so the in-VM check (which would
+	// false-positive over virtiofs) is skipped.
+	return append(args, "--force"), nil
+}
+
+func expandHomeOnMac(p string) string {
+	if p == "~" {
+		if h, err := os.UserHomeDir(); err == nil {
+			return h
+		}
+	}
+	if strings.HasPrefix(p, "~/") {
+		if h, err := os.UserHomeDir(); err == nil {
+			return filepath.Join(h, p[2:])
+		}
+	}
+	return p
 }
 
 func preflightLima() error {

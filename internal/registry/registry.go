@@ -30,6 +30,10 @@ type Repo struct {
 	BarePath          string   `toml:"bare_path"`
 	DefaultBase       string   `toml:"default_base"`
 	BaseContainerName string   `toml:"base_container_name,omitempty"`
+	// MacSpotlightTarget is the per-repo default Mac path used by
+	// `ahjo spotlight`. Set on first activation; subsequent calls without
+	// --target reuse it.
+	MacSpotlightTarget string `toml:"mac_spotlight_target,omitempty"`
 }
 
 type Worktree struct {
