@@ -13,24 +13,24 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/lasselaakkonen/ahjo/internal/lockfile"
+	"github.com/lasselaakkonen/ahjo/internal/mirror"
 	"github.com/lasselaakkonen/ahjo/internal/paths"
 	"github.com/lasselaakkonen/ahjo/internal/registry"
-	"github.com/lasselaakkonen/ahjo/internal/spotlight"
 )
 
-func newSpotlightCmd() *cobra.Command {
+func newMirrorCmd() *cobra.Command {
 	var target string
 	var force bool
 	var daemonMode bool
 
 	cmd := &cobra.Command{
-		Use:   "spotlight <alias|off|status>",
+		Use:   "mirror <alias|off|status>",
 		Short: "Mirror a worktree onto the Mac so you can run the app natively",
 		Long: `Activate a one-way live mirror from a worktree to a Mac directory.
 
-  ahjo spotlight <alias> [--target <path>]   activate (one active at a time)
-  ahjo spotlight off                         stop the active spotlight
-  ahjo spotlight status                      show the current spotlight (if any)
+  ahjo mirror <alias> [--target <path>]   activate (one active at a time)
+  ahjo mirror off                         stop the active mirror
+  ahjo mirror status                      show the current mirror (if any)
 
 The watcher runs on the Lima VM. Container writes show up in the worktree via
 the existing read-write bind-mount, so VM-side fsnotify catches them with no
@@ -45,18 +45,18 @@ clobbered.`,
 		Args: cobra.RangeArgs(0, 1),
 		RunE: func(_ *cobra.Command, args []string) error {
 			if daemonMode {
-				return runSpotlightDaemon()
+				return runMirrorDaemon()
 			}
 			if len(args) == 0 {
-				return runSpotlightStatus()
+				return runMirrorStatus()
 			}
 			switch args[0] {
 			case "off":
-				return runSpotlightOff()
+				return runMirrorOff()
 			case "status":
-				return runSpotlightStatus()
+				return runMirrorStatus()
 			default:
-				return runSpotlightActivate(args[0], target, force)
+				return runMirrorActivate(args[0], target, force)
 			}
 		},
 	}
@@ -67,7 +67,7 @@ clobbered.`,
 	return cmd
 }
 
-func runSpotlightActivate(alias, target string, force bool) error {
+func runMirrorActivate(alias, target string, force bool) error {
 	release, err := lockfile.Acquire()
 	if err != nil {
 		return err
@@ -89,16 +89,16 @@ func runSpotlightActivate(alias, target string, force bool) error {
 
 	targetPath := strings.TrimSpace(target)
 	if targetPath == "" {
-		targetPath = repo.MacSpotlightTarget
+		targetPath = repo.MacMirrorTarget
 	}
 	if targetPath == "" {
 		return fmt.Errorf("no target dir set for repo %q; pass --target </absolute/path>", repo.Name)
 	}
-	targetPath = expandSpotlightTarget(targetPath)
+	targetPath = expandMirrorTarget(targetPath)
 	if !filepath.IsAbs(targetPath) {
 		return fmt.Errorf("--target must be absolute (got %q)", targetPath)
 	}
-	if err := validateSpotlightTarget(targetPath); err != nil {
+	if err := validateMirrorTarget(targetPath); err != nil {
 		return err
 	}
 	if _, err := exec.LookPath("rsync"); err != nil {
@@ -113,23 +113,23 @@ func runSpotlightActivate(alias, target string, force bool) error {
 		}
 	}
 
-	if err := stopActiveSpotlight(); err != nil {
-		fmt.Fprintf(cobraOutErr(), "warn: stop existing spotlight: %v\n", err)
+	if err := stopActiveMirror(); err != nil {
+		fmt.Fprintf(cobraOutErr(), "warn: stop existing mirror: %v\n", err)
 	}
 
-	if repo.MacSpotlightTarget != targetPath {
-		repo.MacSpotlightTarget = targetPath
+	if repo.MacMirrorTarget != targetPath {
+		repo.MacMirrorTarget = targetPath
 		if err := reg.Save(); err != nil {
 			return err
 		}
 	}
 
 	fmt.Printf("→ initial sync %s → %s\n", w.WorktreePath, targetPath)
-	if err := spotlight.Bootstrap(w.WorktreePath, targetPath, cobraOut()); err != nil {
+	if err := mirror.Bootstrap(w.WorktreePath, targetPath, cobraOut()); err != nil {
 		return fmt.Errorf("initial sync: %w", err)
 	}
 
-	st := &spotlight.State{
+	st := &mirror.State{
 		Alias:        alias,
 		Slug:         w.Slug,
 		WorktreePath: w.WorktreePath,
@@ -139,49 +139,49 @@ func runSpotlightActivate(alias, target string, force bool) error {
 	if err := st.Save(); err != nil {
 		return err
 	}
-	pid, err := spawnSpotlightDaemon()
+	pid, err := spawnMirrorDaemon()
 	if err != nil {
-		_ = spotlight.Clear()
+		_ = mirror.Clear()
 		return fmt.Errorf("launch daemon: %w", err)
 	}
 	st.PID = pid
 	if err := st.Save(); err != nil {
 		return err
 	}
-	fmt.Printf("spotlight: %s → %s (pid %d, log %s)\n", alias, targetPath, pid, spotlight.LogPath())
+	fmt.Printf("mirror: %s → %s (pid %d, log %s)\n", alias, targetPath, pid, mirror.LogPath())
 	return nil
 }
 
-func runSpotlightOff() error {
+func runMirrorOff() error {
 	release, err := lockfile.Acquire()
 	if err != nil {
 		return err
 	}
 	defer release()
-	if err := stopActiveSpotlight(); err != nil {
+	if err := stopActiveMirror(); err != nil {
 		return err
 	}
-	if err := spotlight.Clear(); err != nil {
+	if err := mirror.Clear(); err != nil {
 		return err
 	}
-	fmt.Println("spotlight: off")
+	fmt.Println("mirror: off")
 	return nil
 }
 
-func runSpotlightStatus() error {
-	st, err := spotlight.Load()
+func runMirrorStatus() error {
+	st, err := mirror.Load()
 	if err != nil {
 		return err
 	}
 	if st == nil {
-		fmt.Println("spotlight: inactive")
+		fmt.Println("mirror: inactive")
 		return nil
 	}
-	alive := spotlight.PIDAlive(st.PID)
+	alive := mirror.PIDAlive(st.PID)
 	if alive {
-		fmt.Printf("spotlight: active\n")
+		fmt.Printf("mirror: active\n")
 	} else {
-		fmt.Printf("spotlight: stale (daemon not running)\n")
+		fmt.Printf("mirror: stale (daemon not running)\n")
 	}
 	fmt.Printf("  alias:    %s\n", st.Alias)
 	fmt.Printf("  worktree: %s\n", st.WorktreePath)
@@ -191,37 +191,37 @@ func runSpotlightStatus() error {
 	if !alive {
 		// Per the plan: stale PIDs lie. Clean up so the next status call
 		// reports inactive, and the user's per-repo target stays in registry.
-		_ = spotlight.Clear()
+		_ = mirror.Clear()
 	}
 	return nil
 }
 
-func runSpotlightDaemon() error {
-	st, err := spotlight.Load()
+func runMirrorDaemon() error {
+	st, err := mirror.Load()
 	if err != nil {
 		return err
 	}
 	if st == nil {
-		return fmt.Errorf("no spotlight state; run `ahjo spotlight <alias>` first")
+		return fmt.Errorf("no mirror state; run `ahjo mirror <alias>` first")
 	}
-	logF, err := os.OpenFile(spotlight.LogPath(), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	logF, err := os.OpenFile(mirror.LogPath(), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
 	if err != nil {
 		return err
 	}
 	defer logF.Close()
-	ctx, cancel := spotlight.InstallSignalHandler()
+	ctx, cancel := mirror.InstallSignalHandler()
 	defer cancel()
-	return spotlight.RunDaemon(ctx, st.WorktreePath, st.Target, logF)
+	return mirror.RunDaemon(ctx, st.WorktreePath, st.Target, logF)
 }
 
-// stopActiveSpotlight SIGTERMs the recorded daemon PID (if alive) and waits up
+// stopActiveMirror SIGTERMs the recorded daemon PID (if alive) and waits up
 // to 3s for exit, then SIGKILLs as a last resort. Idempotent.
-func stopActiveSpotlight() error {
-	st, err := spotlight.Load()
+func stopActiveMirror() error {
+	st, err := mirror.Load()
 	if err != nil {
 		return err
 	}
-	if st == nil || !spotlight.PIDAlive(st.PID) {
+	if st == nil || !mirror.PIDAlive(st.PID) {
 		return nil
 	}
 	if err := syscall.Kill(st.PID, syscall.SIGTERM); err != nil && !errors.Is(err, syscall.ESRCH) {
@@ -229,7 +229,7 @@ func stopActiveSpotlight() error {
 	}
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
-		if !spotlight.PIDAlive(st.PID) {
+		if !mirror.PIDAlive(st.PID) {
 			return nil
 		}
 		time.Sleep(50 * time.Millisecond)
@@ -238,12 +238,12 @@ func stopActiveSpotlight() error {
 	return nil
 }
 
-// expandSpotlightTarget expands a leading `~` against the Mac host home (as
+// expandMirrorTarget expands a leading `~` against the Mac host home (as
 // seen via virtiofs from inside the Lima VM) when running under Lima, and
 // against the regular home on bare-metal Linux. Without this, `~/code/foo`
 // inside the VM would resolve to /home/<linux-user>/code/foo, NOT the user's
 // Mac path.
-func expandSpotlightTarget(p string) string {
+func expandMirrorTarget(p string) string {
 	p = strings.TrimSpace(p)
 	if p == "" {
 		return p
@@ -260,10 +260,10 @@ func expandSpotlightTarget(p string) string {
 	return paths.Expand(p)
 }
 
-// validateSpotlightTarget refuses paths that would point outside the Mac
+// validateMirrorTarget refuses paths that would point outside the Mac
 // virtiofs writable mount (when running under Lima) or that nest inside
 // ~/.ahjo/. Bare-metal Linux only enforces the second guard.
-func validateSpotlightTarget(p string) error {
+func validateMirrorTarget(p string) error {
 	cleaned := filepath.Clean(p) + string(filepath.Separator)
 	if strings.HasPrefix(cleaned, paths.AhjoDir()+string(filepath.Separator)) {
 		return fmt.Errorf("target %q must not live under %s", p, paths.AhjoDir())
@@ -273,7 +273,7 @@ func validateSpotlightTarget(p string) error {
 		return nil
 	}
 	if !strings.HasPrefix(cleaned, mac+string(filepath.Separator)) {
-		return fmt.Errorf("target %q is not under the Mac home (%s); spotlight can only write into the writable virtiofs mount", p, mac)
+		return fmt.Errorf("target %q is not under the Mac home (%s); mirror can only write into the writable virtiofs mount", p, mac)
 	}
 	return nil
 }
@@ -296,20 +296,20 @@ func requireCleanTargetGit(p string) error {
 	return fmt.Errorf("target %q has uncommitted changes; commit/stash first or pass --force", p)
 }
 
-// spawnSpotlightDaemon detaches `ahjo spotlight --daemon` into its own session
+// spawnMirrorDaemon detaches `ahjo mirror --daemon` into its own session
 // so it survives the limactl shell that started it. stdout/stderr go to the
-// spotlight log file; stdin is closed.
-func spawnSpotlightDaemon() (int, error) {
+// mirror log file; stdin is closed.
+func spawnMirrorDaemon() (int, error) {
 	self, err := os.Executable()
 	if err != nil {
 		return 0, fmt.Errorf("os.Executable: %w", err)
 	}
-	logF, err := os.OpenFile(spotlight.LogPath(), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	logF, err := os.OpenFile(mirror.LogPath(), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
 	if err != nil {
 		return 0, err
 	}
 	defer logF.Close()
-	cmd := exec.Command(self, "spotlight", "--daemon")
+	cmd := exec.Command(self, "mirror", "--daemon")
 	cmd.Stdin = nil
 	cmd.Stdout = logF
 	cmd.Stderr = logF
@@ -324,8 +324,8 @@ func spawnSpotlightDaemon() (int, error) {
 	// Settle window: surface immediate launch failures (rsync missing,
 	// state file races) before we tell the user it's running.
 	time.Sleep(200 * time.Millisecond)
-	if !spotlight.PIDAlive(cmd.Process.Pid) {
-		return 0, fmt.Errorf("daemon exited immediately; see %s", spotlight.LogPath())
+	if !mirror.PIDAlive(cmd.Process.Pid) {
+		return 0, fmt.Errorf("daemon exited immediately; see %s", mirror.LogPath())
 	}
 	return cmd.Process.Pid, nil
 }

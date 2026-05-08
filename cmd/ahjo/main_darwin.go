@@ -92,14 +92,14 @@ func main() {
 			os.Exit(1)
 		}
 		return
-	case "spotlight":
+	case "mirror":
 		// Run the "is the target dir clean?" check on Mac before relaying.
 		// The same check inside the VM reads the Mac repo through virtiofs and
 		// reports false positives (file mode + stat-cache mismatches), even
 		// when `git status` on the Mac shows clean. Mac-side is the source of
 		// truth; if it passes we tell the in-VM activate to skip its own check
 		// by passing --force.
-		newArgs, err := preflightSpotlightOnMac(args)
+		newArgs, err := preflightMirrorOnMac(args)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "ahjo:", err)
 			os.Exit(1)
@@ -157,8 +157,8 @@ func hasFlag(args []string, flags ...string) bool {
 	return false
 }
 
-// preflightSpotlightOnMac handles the Mac-side cleanliness check for
-// `ahjo spotlight <alias> --target <path>`. It runs `git status --porcelain`
+// preflightMirrorOnMac handles the Mac-side cleanliness check for
+// `ahjo mirror <alias> --target <path>`. It runs `git status --porcelain`
 // in the target on Mac, where the user's view is authoritative. If the target
 // is clean, --force is appended so the in-VM activate skips its own check
 // (which sees the dir through virtiofs and false-positives on file-mode and
@@ -167,8 +167,8 @@ func hasFlag(args []string, flags ...string) bool {
 //
 // Returns the (possibly-modified) args to relay. Forms that don't activate
 // (off, status, --daemon, no alias arg) are passed through unchanged.
-func preflightSpotlightOnMac(args []string) ([]string, error) {
-	// args[0] == "spotlight". Inspect args[1:].
+func preflightMirrorOnMac(args []string) ([]string, error) {
+	// args[0] == "mirror". Inspect args[1:].
 	rest := args[1:]
 	var alias, target string
 	force := false

@@ -1,4 +1,4 @@
-// Package spotlight implements `ahjo spotlight`: a one-way live mirror from a
+// Package mirror implements `ahjo mirror`: a one-way live mirror from a
 // VM-resident worktree onto a Mac directory under the writable virtiofs mount,
 // so that the user can run their app natively on macOS while the editing
 // happens inside an ahjo container.
@@ -6,7 +6,7 @@
 // The watcher runs on the Lima VM. Container `/workspace` is a read-write
 // bind-mount of the VM worktree, so VM-side fsnotify catches container writes
 // for free. rsync writes to the Mac via the existing virtiofs share.
-package spotlight
+package mirror
 
 import (
 	"encoding/json"
@@ -21,12 +21,12 @@ import (
 )
 
 const (
-	stateFile = "spotlight.json"
-	logFile   = "spotlight.log"
+	stateFile = "mirror.json"
+	logFile   = "mirror.log"
 )
 
-// State is the on-disk record of the currently active spotlight, persisted at
-// ~/.ahjo/spotlight.json. There is at most one active spotlight at a time.
+// State is the on-disk record of the currently active mirror, persisted at
+// ~/.ahjo/mirror.json. There is at most one active mirror at a time.
 type State struct {
 	Alias        string    `json:"alias"`
 	Slug         string    `json:"slug"`
@@ -39,18 +39,18 @@ type State struct {
 func StatePath() string { return filepath.Join(paths.AhjoDir(), stateFile) }
 func LogPath() string   { return filepath.Join(paths.AhjoDir(), logFile) }
 
-// Load reads the state file. Returns (nil, nil) when no spotlight is active.
+// Load reads the state file. Returns (nil, nil) when no mirror is active.
 func Load() (*State, error) {
 	b, err := os.ReadFile(StatePath())
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil
 	}
 	if err != nil {
-		return nil, fmt.Errorf("read spotlight state: %w", err)
+		return nil, fmt.Errorf("read mirror state: %w", err)
 	}
 	var s State
 	if err := json.Unmarshal(b, &s); err != nil {
-		return nil, fmt.Errorf("parse spotlight state: %w", err)
+		return nil, fmt.Errorf("parse mirror state: %w", err)
 	}
 	return &s, nil
 }
@@ -65,7 +65,7 @@ func (s *State) Save() error {
 		return err
 	}
 	b = append(b, '\n')
-	tmp, err := os.CreateTemp(paths.AhjoDir(), "spotlight-*.json.tmp")
+	tmp, err := os.CreateTemp(paths.AhjoDir(), "mirror-*.json.tmp")
 	if err != nil {
 		return err
 	}

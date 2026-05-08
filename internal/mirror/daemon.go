@@ -1,4 +1,4 @@
-package spotlight
+package mirror
 
 import (
 	"context"
@@ -53,7 +53,7 @@ func Bootstrap(src, dst string, out io.Writer) error {
 
 // RunDaemon is the long-lived watcher loop. Returns when ctx is cancelled or
 // the watcher fails fatally. Diagnostic output goes to out (typically the
-// spotlight log file).
+// mirror log file).
 func RunDaemon(ctx context.Context, src, dst string, out io.Writer) error {
 	w, err := fsnotify.NewWatcher()
 	if err != nil {
@@ -137,7 +137,7 @@ func addRecursive(w *fsnotify.Watcher, root string) error {
 	})
 }
 
-// rsync invokes the system rsync with the standard ahjo-spotlight flags:
+// rsync invokes the system rsync with the standard ahjo-mirror flags:
 //   - -a: archive mode (recursive, perms, times, symlinks-as-symlinks)
 //   - --delete-during: prune target files that disappeared from source, but
 //     only those NOT excluded by the filter (so Mac-side build artifacts in
@@ -166,7 +166,7 @@ func rsync(src, dst string, out io.Writer) error {
 }
 
 // InstallSignalHandler returns a context that cancels on SIGTERM/SIGINT so
-// the daemon shuts down cleanly when the user runs `ahjo spotlight off` (which
+// the daemon shuts down cleanly when the user runs `ahjo mirror off` (which
 // SIGTERMs the recorded PID).
 func InstallSignalHandler() (context.Context, context.CancelFunc) {
 	ctx, cancel := context.WithCancel(context.Background())

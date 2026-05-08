@@ -22,7 +22,7 @@ func NewRoot(version string) *cobra.Command {
 		newClaudeCmd(),
 		newSSHCmd(),
 		newExposeCmd(),
-		newSpotlightCmd(),
+		newMirrorCmd(),
 		newLsCmd(),
 		newRmCmd(),
 		newGCCmd(),
