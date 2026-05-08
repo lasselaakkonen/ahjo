@@ -35,15 +35,23 @@ func resolved() (string, string, error) {
 // os.Environ() with SSH_AUTH_SOCK overridden to the agent socket picked
 // during `ahjo init` (or auto-detected when only one candidate exists).
 //
-// When agent.Resolve fails (e.g. nothing configured yet, no candidates)
-// we fall through to os.Environ() unchanged so existing behavior is
-// preserved — `ahjo doctor` is the place that calls out the gap.
+// When agent.Resolve fails (no agent configured, or the configured agent
+// is currently empty/locked), we explicitly clear SSH_AUTH_SOCK rather
+// than passing the user's shell value through. The reason is OpenSSH's
+// ControlPersist: Lima opens an ssh ControlMaster on the very first
+// limactl invocation and reuses it for the lifetime of the VM. Whatever
+// SSH_AUTH_SOCK was active when that master is created becomes the
+// agent-forwarding endpoint for every later session — `SSH_AUTH_SOCK`
+// overrides on subsequent calls have no effect (see CloseSSHControlMaster
+// below). If we silently passed through e.g. macOS's launchd-default
+// empty agent, that empty agent would get pinned in and the user would
+// get `Permission denied (publickey)` from inside the VM forever, even
+// after they unlock 1Password. Clearing the var instead means the master
+// forms with no forwarding, which is recoverable: `ahjo doctor --fix`
+// closes the master and the next limactl call rebinds correctly.
 func Env() []string {
 	sock, _, err := resolved()
-	if err != nil {
-		return os.Environ()
-	}
-	return overrideEnv(os.Environ(), "SSH_AUTH_SOCK", sock)
+	return applyAgentEnv(os.Environ(), sock, err)
 }
 
 // EnvVerbose is like Env but also returns a one-line note describing what
@@ -51,11 +59,23 @@ func Env() []string {
 // when nothing was overridden.
 func EnvVerbose() (env []string, note string) {
 	sock, label, err := resolved()
+	env = applyAgentEnv(os.Environ(), sock, err)
 	if err != nil {
-		return os.Environ(), ""
+		return env, ""
 	}
-	return overrideEnv(os.Environ(), "SSH_AUTH_SOCK", sock),
-		fmt.Sprintf("forwarding %s agent: %s", label, sock)
+	return env, fmt.Sprintf("forwarding %s agent: %s", label, sock)
+}
+
+// applyAgentEnv returns base with SSH_AUTH_SOCK set to sock when
+// resolveErr is nil, or to the empty string when resolveErr is non-nil.
+// Pulled out of Env/EnvVerbose so the SSH_AUTH_SOCK decision is unit-
+// testable without mocking agent.Resolve. See Env's doc comment for
+// the rationale behind clearing rather than passing through.
+func applyAgentEnv(base []string, sock string, resolveErr error) []string {
+	if resolveErr != nil {
+		return overrideEnv(base, "SSH_AUTH_SOCK", "")
+	}
+	return overrideEnv(base, "SSH_AUTH_SOCK", sock)
 }
 
 // Cmd returns exec.Command("limactl", args...) with cmd.Env preset to Env().
