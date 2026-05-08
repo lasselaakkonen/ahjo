@@ -50,13 +50,19 @@ func runShell(alias string, update bool) error {
 // the ssh proxy/sshd, and reconciles auto-expose. Returns the registry entry
 // and the resolved container name ready for an attach call.
 func prepareWorktreeContainer(alias string, update bool) (*registry.Worktree, string, error) {
+	// EnsureWorktree handles auto-add of the parent repo (when alias is a
+	// "<owner>/<repo>@<branch>" worktree alias) and auto-create of the
+	// worktree itself. After it returns, the worktree is registered.
+	if _, err := EnsureWorktree(alias); err != nil {
+		return nil, "", err
+	}
 	reg, err := registry.Load()
 	if err != nil {
 		return nil, "", err
 	}
 	w := reg.FindWorktreeByAlias(alias)
 	if w == nil {
-		return nil, "", fmt.Errorf("no worktree with alias %q; create with `ahjo new`", alias)
+		return nil, "", fmt.Errorf("internal: just-ensured worktree %q not in registry", alias)
 	}
 
 	var containerName string
@@ -72,7 +78,17 @@ func prepareWorktreeContainer(alias string, update bool) (*registry.Worktree, st
 			return nil, "", err
 		}
 		if !exists {
-			return nil, "", fmt.Errorf("incus container %q not found; recreate with `ahjo rm %s && ahjo new`", w.IncusName, alias)
+			repoEnt := reg.FindRepo(w.Repo)
+			if repoEnt == nil {
+				return nil, "", fmt.Errorf("internal: worktree %q references missing repo %q", alias, w.Repo)
+			}
+			if repoEnt.BaseContainerName == "" {
+				return nil, "", fmt.Errorf("incus container %q not found and repo has no base container; recreate with `ahjo rm %s && ahjo new`", w.IncusName, alias)
+			}
+			fmt.Printf("container %q not found; recreating from base %s...\n", w.IncusName, repoEnt.BaseContainerName)
+			if err := setupCOWContainer(repoEnt, w, w.IncusName); err != nil {
+				return nil, "", err
+			}
 		}
 		containerName = w.IncusName
 	} else {

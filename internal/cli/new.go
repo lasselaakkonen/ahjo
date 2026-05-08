@@ -171,32 +171,8 @@ func runNew(repoAlias, branch, base, asAlias string, noFetch bool) error {
 	// COW copy: clone the default-branch container instead of starting fresh.
 	if repo.BaseContainerName != "" {
 		cowName := "ahjo-" + slug
-		baseWorktreePath := paths.WorktreePath(repo.Name, repo.DefaultBase)
-		if err := incus.CopyContainer(repo.BaseContainerName, cowName); err != nil {
-			return fmt.Errorf("incus copy base container: %w", err)
-		}
-		// Rebase workspace-relative disk device sources (workspace, protect-*).
-		if err := incus.UpdateWorktreeMounts(cowName, baseWorktreePath, worktreePath); err != nil {
-			return fmt.Errorf("rebase worktree mounts in COW container: %w", err)
-		}
-		// SSH host key mounts (mount-0, mount-1) are keyed by slug, not worktree
-		// path, so UpdateWorktreeMounts leaves them untouched. Update explicitly.
-		if err := incus.ConfigDeviceSet(cowName, "mount-0", "source", hostKeysDir); err != nil {
-			return fmt.Errorf("update host-keys mount in COW container: %w", err)
-		}
-		if err := incus.ConfigDeviceSet(cowName, "mount-1", "source", hostKeysDir+"/authorized_keys"); err != nil {
-			return fmt.Errorf("update authorized_keys mount in COW container: %w", err)
-		}
-		// Remove the stale ahjo-ssh proxy (source container's port); shell.go
-		// re-adds it with the correct port on first attach.
-		_ = incus.RemoveDevice(cowName, "ahjo-ssh")
-		// Apply raw.idmap so the rebased workspace bind mount surfaces inside
-		// the container as code:code. The COW copy is stopped (incus copy
-		// --stateless), so a plain ConfigSet is enough; the first start later
-		// in prepareWorktreeContainer picks the mapping up.
-		// See CONTAINER-ISOLATION.md "Workspace UID mapping".
-		if err := incus.ConfigSet(cowName, "raw.idmap", idmap.RawIdmapValue(os.Getuid(), os.Getgid())); err != nil {
-			return fmt.Errorf("set raw.idmap on COW container: %w", err)
+		if err := setupCOWContainer(repo, &w, cowName); err != nil {
+			return err
 		}
 		w.IncusName = cowName
 	}
@@ -325,4 +301,42 @@ func rerender(cfg *config.Config, reg *registry.Registry, w *registry.Worktree, 
 		return err
 	}
 	return sshpkg.RegenerateConfig(reg)
+}
+
+// setupCOWContainer creates a COW (incus copy) clone of repo.BaseContainerName
+// at cowName, rebases its workspace + host-keys mounts onto w's paths,
+// removes the stale ahjo-ssh proxy, and applies raw.idmap. The container is
+// left stopped, ready for ContainerStart on next attach.
+//
+// Used by runNew to spin up a worktree's container at creation time, and by
+// prepareWorktreeContainer to recreate it after `ahjo rm`.
+func setupCOWContainer(repo *registry.Repo, w *registry.Worktree, cowName string) error {
+	baseWorktreePath := paths.WorktreePath(repo.Name, repo.DefaultBase)
+	if err := incus.CopyContainer(repo.BaseContainerName, cowName); err != nil {
+		return fmt.Errorf("incus copy base container: %w", err)
+	}
+	// Rebase workspace-relative disk device sources (workspace, protect-*).
+	if err := incus.UpdateWorktreeMounts(cowName, baseWorktreePath, w.WorktreePath); err != nil {
+		return fmt.Errorf("rebase worktree mounts in COW container: %w", err)
+	}
+	// SSH host key mounts (mount-0, mount-1) are keyed by slug, not worktree
+	// path, so UpdateWorktreeMounts leaves them untouched. Update explicitly.
+	if err := incus.ConfigDeviceSet(cowName, "mount-0", "source", w.SSHHostKeysDir); err != nil {
+		return fmt.Errorf("update host-keys mount in COW container: %w", err)
+	}
+	if err := incus.ConfigDeviceSet(cowName, "mount-1", "source", w.SSHHostKeysDir+"/authorized_keys"); err != nil {
+		return fmt.Errorf("update authorized_keys mount in COW container: %w", err)
+	}
+	// Remove the stale ahjo-ssh proxy (source container's port); shell.go
+	// re-adds it with the correct port on first attach.
+	_ = incus.RemoveDevice(cowName, "ahjo-ssh")
+	// Apply raw.idmap so the rebased workspace bind mount surfaces inside
+	// the container as code:code. The COW copy is stopped (incus copy
+	// --stateless), so a plain ConfigSet is enough; the first start later
+	// in prepareWorktreeContainer picks the mapping up.
+	// See CONTAINER-ISOLATION.md "Workspace UID mapping".
+	if err := incus.ConfigSet(cowName, "raw.idmap", idmap.RawIdmapValue(os.Getuid(), os.Getgid())); err != nil {
+		return fmt.Errorf("set raw.idmap on COW container: %w", err)
+	}
+	return nil
 }
