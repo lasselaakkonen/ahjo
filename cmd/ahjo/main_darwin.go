@@ -77,7 +77,8 @@ func main() {
 			return
 		}
 	case "doctor":
-		macFail := runMacDoctor(os.Stdout)
+		fix := hasFlag(args[1:], "--fix")
+		macFail := runMacDoctor(os.Stdout, fix)
 		vmFail := false
 		if vmRunning() {
 			cmd := lima.Cmd("shell", vmName, "ahjo", "doctor")

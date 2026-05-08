@@ -23,22 +23,103 @@ import (
 // runMacDoctor prints the host half of `ahjo doctor` and returns true if any
 // check failed. Output style matches preflight.Format so the merged stdout
 // from this block plus the relayed in-VM block reads as one report.
-func runMacDoctor(w io.Writer) bool {
+//
+// When fix is true and the in-VM ssh-agent state mismatches what the host
+// has (empty, unreachable, or fewer keys than the host), we close the
+// cached Lima ssh ControlMaster and re-run the in-VM agent check. That's
+// the only auto-fix wired in today; everything else prints its hint as
+// usual. We only fix when the host agent itself has keys — closing the
+// master while the host is locked would just rebind to nothing.
+func runMacDoctor(w io.Writer, fix bool) bool {
 	fmt.Fprintln(w, "[host-side checks]")
+	hostP := checkAgentConfigured()
 	ps := []preflight.Problem{
-		checkAgentConfigured(),
+		hostP,
 		checkSSHAuthSockKind(),
 	}
 	vmP, runVMCheck := checkVMRunning()
 	ps = append(ps, vmP)
+	vmAgentIdx := -1
 	if runVMCheck {
+		vmAgentIdx = len(ps)
 		ps = append(ps, checkInVMAgent())
+	}
+	fixed := false
+	if fix && runVMCheck && hostP.Severity == preflight.OK && isStaleMasterSymptom(ps[vmAgentIdx]) {
+		fp := fixStaleAgentForward()
+		ps = append(ps, fp)
+		fixed = fp.Severity == preflight.OK
 	}
 	for _, p := range ps {
 		fmt.Fprintln(w, preflight.Format(p))
 	}
 	fmt.Fprintln(w)
+	// When the fix succeeded, the pre-fix failure is superseded by the
+	// post-fix OK; report exit-status against the current state, not
+	// the historical one. Keep the [fail] line in the output so the
+	// user can see what was wrong, but don't propagate it as an error.
+	if fixed && vmAgentIdx >= 0 {
+		ps[vmAgentIdx].Severity = preflight.OK
+	}
 	return preflight.Worst(ps) >= preflight.Fail
+}
+
+// isStaleMasterSymptom reports whether p looks like a Lima ssh
+// ControlMaster pinned to a stale/wrong/no agent — the case where
+// CloseSSHControlMaster is the right hammer. Three observed shapes:
+//
+//   - "in-VM ssh agent is empty (host has N)" — master pinned to an
+//     empty agent (e.g. the launchd default at master-creation time).
+//   - "in-VM ssh agent: M key(s) (host has N)" with M < N — master
+//     pinned to a different/partial agent than the host now has.
+//   - "could not query in-VM ssh agent" — master pinned to no
+//     forwarding at all (e.g. SSH_AUTH_SOCK="" at creation, after
+//     Change A's deterministic-empty path), so ssh-add in the VM
+//     can't reach any agent.
+//
+// We only fire the fix when checkAgentConfigured() came back OK on the
+// host side — see runMacDoctor — so a no-op rebind is impossible.
+func isStaleMasterSymptom(p preflight.Problem) bool {
+	if p.Severity == preflight.OK {
+		return false
+	}
+	switch {
+	case strings.HasPrefix(p.Title, "in-VM ssh agent is empty"):
+		return true
+	case strings.HasPrefix(p.Title, "in-VM ssh agent:") && strings.Contains(p.Title, "host has"):
+		return true
+	case strings.HasPrefix(p.Title, "could not query in-VM ssh agent"):
+		return true
+	}
+	return false
+}
+
+// fixStaleAgentForward closes the Lima ssh ControlMaster (no-op when
+// none is running) and re-runs the in-VM agent check. The new Problem
+// summarizes the action and the post-fix state. Mac-only — the VM
+// can't close the host's master from the inside.
+func fixStaleAgentForward() preflight.Problem {
+	if err := lima.CloseSSHControlMaster(vmName); err != nil {
+		return preflight.Problem{
+			Severity: preflight.Fail,
+			Title:    "could not close stale ssh ControlMaster",
+			Detail:   err.Error(),
+			Fix:      "limactl stop " + vmName + " && limactl start " + vmName,
+		}
+	}
+	post := checkInVMAgent()
+	if post.Severity == preflight.OK {
+		return preflight.Problem{
+			Severity: preflight.OK,
+			Title:    "fix applied: closed ssh ControlMaster, " + post.Title,
+		}
+	}
+	return preflight.Problem{
+		Severity: post.Severity,
+		Title:    "fix applied: closed ssh ControlMaster, but " + post.Title,
+		Detail:   post.Detail,
+		Fix:      post.Fix,
+	}
 }
 
 // checkAgentConfigured reports whether `ahjo init` has picked an agent
