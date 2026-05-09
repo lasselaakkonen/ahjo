@@ -195,7 +195,7 @@ Minimal example:
 | `forwardPorts` | parsed | Captured for the future allowlist; not yet enforced. |
 | `remoteUser` / `containerUser` | warn-only | ahjo runs as `ubuntu`; mismatch is logged and ignored. |
 | `image`, `build`, `dockerComposeFile`, `mounts`, `runArgs`, `secrets` | rejected | Docker-flavored or security-sensitive. `ahjo repo add` aborts with an explicit error. |
-| `features` | rejected (Phase 2b) | OCI fetch + dependency resolution is deferred to Phase 2b of `designdocs/adopt-devcontainer-spec.md`. Remove the block to proceed. |
+| `features` | honored | OCI artifacts pulled from the declared registry (anonymous read; `ghcr.io/devcontainers/features/*` is auto-trusted, other source patterns trigger a one-time `[y/N]` prompt). Dep graph resolved from each Feature's `dependsOn` (hard) and `installsAfter` (soft); each `install.sh` runs as root inside the container, options pass through as `ALL_CAPS` env vars. |
 | `customizations.vscode`, `customizations.codespaces`, etc. | ignored | ahjo isn't a VS Code host; only `customizations.ahjo` is read. |
 | `initializeCommand`, `updateContentCommand`, `waitFor`, `portsAttributes`, `hostRequirements`, `remoteEnv` | ignored | No matching ahjo concept; the spec field is silently dropped. |
 

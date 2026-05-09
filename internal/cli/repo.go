@@ -23,6 +23,11 @@ import (
 	sshpkg "github.com/lasselaakkonen/ahjo/internal/ssh"
 )
 
+// featureConsentForNew is the seed FeatureConsent map for a not-yet-
+// registered repo. Empty: a brand-new repo has no prior trust
+// decisions, so applyRepoFeatures prompts on every non-curated source.
+var featureConsentForNew = map[string]bool{}
+
 func newRepoCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "repo",
@@ -256,6 +261,18 @@ func repoAddSetup(slug, primary string, aliases []string, url, defaultBase strin
 		}
 	}
 
+	// Apply user-declared devcontainer Features (Phase 2b). Runs
+	// before warm-install so a Feature that installs a runtime (Node,
+	// Bun, …) is available to the lockfile-detected installer that
+	// follows.
+	consent, err := applyRepoFeatures(
+		context.Background(), containerName, dcConf,
+		featureConsentForNew, os.Stdin, cobraOut(),
+	)
+	if err != nil {
+		return err
+	}
+
 	if err := runWarmInstall(containerName, hostEnv); err != nil {
 		fmt.Fprintf(cobraOutErr(), "warn: warm install: %v\n", err)
 	}
@@ -322,13 +339,17 @@ func repoAddSetup(slug, primary string, aliases []string, url, defaultBase strin
 
 	branchAlias := registry.MakeBranchAlias(primary, defaultBase)
 	branchSlug := reg.MakeSlug(slug, defaultBase)
-	reg.Repos = append(reg.Repos, registry.Repo{
+	repoRow := registry.Repo{
 		Name:              slug,
 		Aliases:           aliases,
 		Remote:            url,
 		DefaultBase:       defaultBase,
 		BaseContainerName: containerName,
-	})
+	}
+	if len(consent) > 0 {
+		repoRow.FeatureConsent = consent
+	}
+	reg.Repos = append(reg.Repos, repoRow)
 	reg.Branches = append(reg.Branches, registry.Branch{
 		Repo:           slug,
 		Aliases:        []string{branchAlias},

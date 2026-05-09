@@ -35,18 +35,72 @@ type Feature struct {
 	Options map[string]string
 }
 
-// metadata is the subset of devcontainer-feature.json we read for
-// validation. Phase 2 will extend this with dependsOn / installsAfter /
-// containerEnv. The Docker-flavored fields are listed only so we can
-// reject Features that declare them; we never honor them.
-type metadata struct {
-	ID          string   `json:"id"`
+// Metadata is the subset of devcontainer-feature.json ahjo reads.
+// dependsOn / installsAfter / containerEnv feed the Phase 2b resolver;
+// the Docker-flavored fields are listed only so we can reject Features
+// that declare them, never honored.
+//
+// Spec reference: https://containers.dev/implementors/features/
+type Metadata struct {
+	ID            string                    `json:"id"`
+	DependsOn     map[string]map[string]any `json:"dependsOn"`
+	InstallsAfter []string                  `json:"installsAfter"`
+	ContainerEnv  map[string]string         `json:"containerEnv"`
+	LegacyIds     []string                  `json:"legacyIds"`
+
+	// Docker-flavored — rejected on validate.
 	Mounts      []any    `json:"mounts"`
 	Privileged  *bool    `json:"privileged"`
 	CapAdd      []string `json:"capAdd"`
 	SecurityOpt []string `json:"securityOpt"`
 	Init        *bool    `json:"init"`
 	Entrypoint  string   `json:"entrypoint"`
+}
+
+// ReadMetadata parses a Feature dir's devcontainer-feature.json and
+// returns the parsed metadata + an error if any Docker-flavored fields
+// are declared. Used by the resolver before extracting deps.
+func ReadMetadata(featureDir, featureID string) (*Metadata, error) {
+	metaPath := filepath.Join(featureDir, "devcontainer-feature.json")
+	b, err := os.ReadFile(metaPath)
+	if err != nil {
+		return nil, fmt.Errorf("read %s: %w", metaPath, err)
+	}
+	var m Metadata
+	if err := json.Unmarshal(b, &m); err != nil {
+		return nil, fmt.Errorf("parse %s: %w", metaPath, err)
+	}
+	if err := rejectDockerFields(&m, featureID); err != nil {
+		return nil, err
+	}
+	return &m, nil
+}
+
+// rejectDockerFields refuses to apply a Feature whose own
+// devcontainer-feature.json carries any Docker-flavored field. Phase
+// 1 wired this guard into Apply; Phase 2b reuses it via ReadMetadata
+// so the resolver fails before fetching transitive deps of a Feature
+// we'd reject anyway.
+func rejectDockerFields(m *Metadata, featureID string) error {
+	if len(m.Mounts) > 0 {
+		return fmt.Errorf("Feature %s declares `mounts` — Docker-flavored, not supported by ahjo", featureID)
+	}
+	if m.Privileged != nil && *m.Privileged {
+		return fmt.Errorf("Feature %s declares `privileged` — Docker-flavored, not supported by ahjo", featureID)
+	}
+	if len(m.CapAdd) > 0 {
+		return fmt.Errorf("Feature %s declares `capAdd` — Docker-flavored, not supported by ahjo", featureID)
+	}
+	if len(m.SecurityOpt) > 0 {
+		return fmt.Errorf("Feature %s declares `securityOpt` — Docker-flavored, not supported by ahjo", featureID)
+	}
+	if m.Init != nil && *m.Init {
+		return fmt.Errorf("Feature %s declares `init` — Docker-flavored, not supported by ahjo", featureID)
+	}
+	if m.Entrypoint != "" {
+		return fmt.Errorf("Feature %s declares `entrypoint` — Docker-flavored, not supported by ahjo", featureID)
+	}
+	return nil
 }
 
 // Apply pushes f into the container, runs its install.sh as root with the
@@ -126,44 +180,12 @@ func Apply(container string, f Feature, env map[string]string, out io.Writer) er
 }
 
 func validate(f Feature) error {
-	metaPath := filepath.Join(f.Dir, "devcontainer-feature.json")
 	installPath := filepath.Join(f.Dir, "install.sh")
-	if _, err := os.Stat(metaPath); err != nil {
-		return fmt.Errorf("Feature %s missing devcontainer-feature.json: %w", f.ID, err)
-	}
 	if _, err := os.Stat(installPath); err != nil {
 		return fmt.Errorf("Feature %s missing install.sh: %w", f.ID, err)
 	}
-	b, err := os.ReadFile(metaPath)
-	if err != nil {
-		return fmt.Errorf("read %s: %w", metaPath, err)
-	}
-	var m metadata
-	if err := json.Unmarshal(b, &m); err != nil {
-		return fmt.Errorf("parse %s: %w", metaPath, err)
-	}
-	// Reject Docker-flavored fields with explicit error citing the Feature
-	// ID. Phase 2 reuses this guard for user-supplied Features; we apply
-	// it to the embedded ahjo-runtime too so a regression in our own
-	// metadata fails loudly rather than silently honoring the wrong
-	// semantics.
-	if len(m.Mounts) > 0 {
-		return fmt.Errorf("Feature %s declares `mounts` — Docker-flavored, not supported by ahjo", f.ID)
-	}
-	if m.Privileged != nil && *m.Privileged {
-		return fmt.Errorf("Feature %s declares `privileged` — Docker-flavored, not supported by ahjo", f.ID)
-	}
-	if len(m.CapAdd) > 0 {
-		return fmt.Errorf("Feature %s declares `capAdd` — Docker-flavored, not supported by ahjo", f.ID)
-	}
-	if len(m.SecurityOpt) > 0 {
-		return fmt.Errorf("Feature %s declares `securityOpt` — Docker-flavored, not supported by ahjo", f.ID)
-	}
-	if m.Init != nil && *m.Init {
-		return fmt.Errorf("Feature %s declares `init` — Docker-flavored, not supported by ahjo", f.ID)
-	}
-	if m.Entrypoint != "" {
-		return fmt.Errorf("Feature %s declares `entrypoint` — Docker-flavored, not supported by ahjo", f.ID)
+	if _, err := ReadMetadata(f.Dir, f.ID); err != nil {
+		return err
 	}
 	return nil
 }

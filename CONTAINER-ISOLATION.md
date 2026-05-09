@@ -123,11 +123,16 @@ write access to the per-branch checkout — the same posture as any other
 in-container code. Treat them as part of the workload: review them before
 running, and rely on the per-container boundary to bound blast radius.
 
-`features:` (the spec's mechanism for declaring upstream Feature artifacts
-fetched from `ghcr.io/devcontainers/features/*` or other registries) is
-*rejected* in Phase 2a — the OCI fetch path lands in Phase 2b. ahjo's own
-`ahjo-runtime` Feature is applied at image-build time inside the transient
-build container; that path's trust posture is unchanged. See
+`features:` is honored from Phase 2b: the runner pulls each declared
+Feature artifact from the OCI registry (anonymous read; ghcr.io public
+Features need no credentials), resolves the dep graph, and runs each
+Feature's `install.sh` as root inside the container. Features from the
+curated `ghcr.io/devcontainers/features/*` namespace are auto-trusted;
+any other source pattern triggers a one-time `[y/N]` prompt at
+`ahjo repo add`, recorded as a glob (e.g. `ghcr.io/foo/*`) on the Repo
+row in `~/.ahjo/registry.toml`. ahjo's own `ahjo-runtime` Feature is
+applied at image-build time inside the transient build container; that
+path's trust posture is unchanged. See
 `designdocs/adopt-devcontainer-spec.md` for the full picture.
 
 ## Out of scope

@@ -94,14 +94,17 @@ func TestParse_NullAndEmptyValuesAreNotRejected(t *testing.T) {
 	}
 }
 
-func TestParse_RejectsFeatures_Phase2bDeferred(t *testing.T) {
-	body := `{"features": {"ghcr.io/devcontainers/features/node:1": {}}}`
-	_, err := Parse([]byte(body), ".devcontainer.json")
-	if err == nil {
-		t.Fatalf("expected `features:` rejection in Phase 2a")
+func TestParse_AcceptsFeatures_Phase2b(t *testing.T) {
+	body := `{"features": {
+		"ghcr.io/devcontainers/features/node:1": {"version": "20"},
+		"ghcr.io/devcontainers/features/common-utils:2": {}
+	}}`
+	cfg, err := Parse([]byte(body), ".devcontainer.json")
+	if err != nil {
+		t.Fatalf("Phase 2b should accept features: %v", err)
 	}
-	if !strings.Contains(err.Error(), "Phase 2b") {
-		t.Fatalf("error should reference Phase 2b: %v", err)
+	if len(cfg.Features) != 2 {
+		t.Fatalf("Features = %v, want 2 entries", cfg.Features)
 	}
 }
 

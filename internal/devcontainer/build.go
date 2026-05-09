@@ -89,7 +89,7 @@ func BuildAhjoBase(out io.Writer, force bool) error {
 	if err := Apply(buildName, Feature{
 		ID:  ahjoruntime.FeatureID,
 		Dir: tmpDir,
-	}, runtimeEnv(), out); err != nil {
+	}, RuntimeEnv(), out); err != nil {
 		return err
 	}
 
@@ -102,10 +102,12 @@ func BuildAhjoBase(out io.Writer, force bool) error {
 	return incus.Publish(buildName, AhjoBaseAlias)
 }
 
-// runtimeEnv is the user-identity envelope every Feature gets. Kept in one
-// place so a future user rename (Phase 4) is a single edit to remoteUser /
-// remoteUserHome, not a per-Feature audit.
-func runtimeEnv() map[string]string {
+// RuntimeEnv is the user-identity envelope every Feature gets. Kept in
+// one place so a future user rename (Phase 4) is a single edit to
+// remoteUser / remoteUserHome, not a per-Feature audit. Exported so
+// the Phase 2b repo-add path can reuse the same envelope when applying
+// user-supplied Features.
+func RuntimeEnv() map[string]string {
 	return map[string]string{
 		"_REMOTE_USER":         remoteUser,
 		"_REMOTE_USER_HOME":    remoteUserHome,

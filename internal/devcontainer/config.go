@@ -175,12 +175,17 @@ func Parse(b []byte, source string) (*Config, error) {
 	return &c, nil
 }
 
-// validate rejects Docker-flavored fields and `features:` (deferred to
-// Phase 2b). Each error names the offending field plus the source path so
-// the user knows exactly where to look.
+// validate rejects Docker-flavored fields. Each error names the
+// offending field plus the source path so the user knows exactly where
+// to look.
 //
 // Empty / null raw JSON counts as absent; only a non-trivial value
 // triggers the rejection.
+//
+// `features:` is honored from Phase 2b onward — fetched via the OCI
+// client and applied through the Feature runner during repo-add.
+// Validation of Feature contents (Docker-flavored fields in their own
+// devcontainer-feature.json) happens in the runner, not here.
 func (c *Config) validate() error {
 	type rule struct {
 		field string
@@ -200,9 +205,6 @@ func (c *Config) validate() error {
 			continue
 		}
 		return fmt.Errorf("%s declares `%s` — %s", c.Source, r.field, r.hint)
-	}
-	if len(c.Features) > 0 {
-		return fmt.Errorf("%s declares `features` — user-supplied Features need OCI fetch, deferred to Phase 2b of designdocs/adopt-devcontainer-spec.md. Remove the block to proceed", c.Source)
 	}
 	return nil
 }
