@@ -1,6 +1,6 @@
 # Container as repo (no more worktrees)
 
-**Status:** draft · **Scope:** ahjo lifecycle: `repo add`, `new`, `shell`, `rm` · plus storage pool driver
+**Status:** implemented (Phases 1 + 2) · **Scope:** ahjo lifecycle: `repo add`, `new`, `shell`, `rm` · plus storage pool driver and `ahjo mirror`
 
 ## Goal
 
