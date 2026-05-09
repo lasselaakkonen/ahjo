@@ -1,208 +1,282 @@
 # Adopt devcontainer.dev spec; drop COI
 
-**Status:** draft · **Scope:** ahjo image-build pipeline; `repo add`, `new`, `shell` lifecycle; per-repo config schema; COI dependency removal
+**Status:** draft · **Scope:** ahjo build pipeline; `repo add`, `new`, `shell` lifecycle; per-repo config schema; COI dependency removal · **Supersedes:** prior draft of this doc that proposed `mcr.microsoft.com/devcontainers/base:ubuntu` as the base image (rejected — see "Why this shape")
 
 ## Goal
 
-Retire ahjo's bespoke schemas (`.ahjoconfig` TOML, COI profile bash, the per-repo container-bake convention) in favor of the open devcontainer.dev specification. Adopt the spec as a *schema*, not a runtime — Incus + Lima stay. Replace `coi-default` with the Microsoft-maintained `mcr.microsoft.com/devcontainers/base:ubuntu`, re-express today's `ahjo-base` as a devcontainer Feature, and let repos declare dependencies via `.devcontainer/devcontainer.json` + Features. Drop the COI tool entirely once nothing else uses it.
+Retire COI as a build dependency and ahjo's bespoke `.ahjoconfig` schema in favor of two open mechanisms:
 
-End state: zero custom schemas, four image layers defined in one open vocabulary, Incus + Lima runtime untouched.
+- **devcontainer Features** as the ahjo-internal way of expressing image build steps *and* the per-repo way of declaring container deps. A Feature is just a tarball (distributed via OCI registry / HTTPS / local dir) containing `devcontainer-feature.json` + `install.sh`. The script runs as root in any Linux container with a small set of env vars. ahjo fetches and runs them via `incus exec` — no Docker, no `@devcontainers/cli`, no BuildKit.
+- **`devcontainer.json`** as the per-repo config schema. ahjo honors a runtime-neutral subset: `features`, `onCreateCommand`, `postCreateCommand`, `postStartCommand`, `postAttachCommand`, `containerEnv`, `forwardPorts`, `remoteUser`, `containerUser`, plus `customizations.ahjo` (ahjo-only extensions). Image-related and Docker-flavored fields (`image`, `build`, `dockerComposeFile`, `mounts`, `runArgs`, `secrets`) are rejected with explicit errors — they assume Docker image semantics and ahjo runs Incus system containers.
 
-## Non-goals
+Runtime stays Incus + Lima — system containers with systemd and sshd-as-a-service. The base image stays an upstream Incus image: `images:ubuntu/24.04` (distrobuilder-built, multi-arch, comes with systemd) instead of the COI-built `coi-default`. Today's `coi-default` + `ahjo-base` contents — openssh-server, sshd config, `ahjo-claude-prepare`, the `ubuntu` user (replacing today's bespoke `code` account; adopt the upstream image's canonical user), corepack — become an `ahjo-runtime` Feature applied on top of `images:ubuntu/24.04`.
 
-- **No runtime swap.** ahjo does not adopt Docker, `@devcontainers/cli`, BuildKit-as-build-driver, or any container runtime other than Incus. The spec is parsed and executed against Incus directly.
-- **No `dockerComposeFile` support.** Multi-container repos require Docker; rejected with explicit error.
-- **No `customizations.vscode.*` honoring.** ahjo isn't a VS Code host; ignored without warning.
-- **No auto-migration of `.ahjoconfig`.** Per ahjo convention (no runtime migration), users self-migrate; ahjo provides docs and parses `.ahjoconfig` as a deprecated alias.
-- **Phase 4 (repo-supplied `image:` / `build:`) is deferred** until concrete demand. Phases 1-3 already deliver the harmonization win.
-- **No greenfield rewrite.** ~5-10% of the codebase is touched; SSH wiring, branch CoW, raw.idmap, registry, mirror, and the CLI surface stay.
+End state: zero custom-bash schemas, two image layers (upstream + ahjo-runtime), Incus + Lima runtime untouched, `.devcontainer/devcontainer.json` as the per-repo schema (with ahjo's bits under `customizations.ahjo`), COI removed.
 
 ## Why now
 
-- ahjo's image stack today has four layers (`coi-default` → `ahjo-base` → implicit per-repo bake → branch container) and three custom schemas (COI profile bash, `.ahjoconfig` TOML, ahjo's per-repo bake conventions). None of them are readable by any external tool.
-- Phase 1 of `no-more-worktrees.md` is implemented; the codebase is now squarely "container holds the repo." That topology lines up with how devcontainer.dev expects to operate (workspace-in-container, lifecycle hooks executed via `exec`).
-- Microsoft publishes `mcr.microsoft.com/devcontainers/base:ubuntu` (Ubuntu 22.04/24.04/26.04, multi-arch, `vscode` non-root user at UID 1000). Importable into Incus via OCI image import. Drops the maintenance burden of `coi-default`.
-- Devcontainer Features are runtime-agnostic: each Feature is an OCI artifact containing `devcontainer-feature.json` + `install.sh`. The script runs as root inside any Linux container. ahjo can fetch and exec without touching Docker.
+- ahjo's image stack today is four layers (`coi-default` → `ahjo-base` → implicit per-repo bake → branch container) and three custom schemas (COI profile bash, `.ahjoconfig` TOML, ahjo's per-repo bake conventions). None readable by any external tool.
+- Phase 1 of `no-more-worktrees.md` is implemented; the codebase is squarely "container holds the repo." That topology lines up with how devcontainer.dev expects to operate (workspace-in-container, lifecycle hooks executed via exec).
+- Devcontainer Features are an open, mature vocabulary with a maintained `ghcr.io/devcontainers/features/*` set covering Node, Python, Go, kubectl, AWS CLI, common-utils, and dozens more. ahjo would otherwise be reinventing this catalog one `.ahjoconfig run` string at a time.
 
-## Spec adoption is schema-only — runtime stays Incus + Lima
+## Why this shape
 
-A devcontainer Feature is *just an OCI artifact*: a tarball with `devcontainer-feature.json` (metadata + options schema) and `install.sh` (root-executable shell script). Per the spec's Features page, the install script receives:
+**Devcontainer images are Docker images.** `image:` / `build:` / `dockerComposeFile:` in the spec mean *Docker artifacts*. Microsoft's `mcr.microsoft.com/devcontainers/base:ubuntu` is built `FROM buildpack-deps:noble-curl`, has no `/sbin/init`, no systemd, no CMD/ENTRYPOINT — it's designed for `docker exec`. Importing it into Incus produces an *application container* (`CONTAINER (APP)`), where Incus's incusd is PID 1 by design ("OCI images don't run an init system" per the Incus maintainer). Layering ahjo's sshd-as-a-service expectations on top would force one of: distrobuilder repack (heavy host dep), drop systemd (real topology shift, much wider blast radius than this doc's scope), or reimplement Docker semantics on Incus. None are improvements.
 
-- User-provided options as `ALL_CAPS` env vars
-- `_REMOTE_USER`, `_CONTAINER_USER`, `_REMOTE_USER_HOME`, `_CONTAINER_USER_HOME`
-- `containerEnv` from the Feature's metadata
+**Devcontainer Features are runtime-agnostic.** Per the spec, `install.sh` runs as root in any Linux container with `_REMOTE_USER`, `_CONTAINER_USER`, `_REMOTE_USER_HOME`, `_CONTAINER_USER_HOME`, and options as `ALL_CAPS` env vars. Nothing about Docker. ahjo can fetch the artifact and run it against an Incus system container with a few hundred lines of Go.
 
-ahjo fetches the artifact (via a small Go OCI client; no `oras` binary dependency required), unpacks it, and runs `incus exec <container> -- bash install.sh` as root with options as env. That's the entire integration. No `@devcontainers/cli`, no BuildKit, no Docker.
+**`images:ubuntu/24.04` already gives us what `coi-default` did.** Distrobuilder-built upstream Incus image, full Ubuntu userspace with systemd, multi-arch. That's the foundation `coi-default` was wrapping. Use it directly; layer `ahjo-runtime` on top via the same Feature runner that user repos use.
 
-The mapping from spec construct to ahjo execution:
+**Why not just keep `.ahjoconfig`?** The TOML schema is bespoke; its `run` field is a per-repo bash one-liner. devcontainer.json's `features` brings a vocabulary plus an ecosystem of community install scripts addressed by stable IDs. Repos that already have a `devcontainer.json` (Codespaces / VS Code Remote users) get partial out-of-the-box support. `.ahjoconfig` is retired entirely: `run` becomes `postCreateCommand`; `forward_env` and `auto_expose` (host→container concerns with no devcontainer equivalent) move to `customizations.ahjo` inside `devcontainer.json`, alongside `customizations.vscode` and `customizations.codespaces` — the spec's blessed extension namespace. Users self-migrate per ahjo's no-runtime-migration convention; presence of a legacy `.ahjoconfig` triggers an explicit migration error pointing at the docs.
 
-| Spec construct | ahjo execution |
-|---|---|
-| `image: foo/bar` | `incus image import` from registry → use as launch image (Phase 4 only) |
-| `build.dockerfile: ./Dockerfile` | Build via `buildah` on the VM → `incus image import` (Phase 4 only) |
-| `features: { ... }` | Resolve dependency graph → fetch each artifact → `incus exec` `install.sh` as root, options as env vars |
-| `postCreateCommand` | `incus exec <container> -- bash -c "<cmd>"` as `vscode`, in `/repo` |
-| `postStartCommand` | Same, run during `prepareBranchContainer` |
-| `containerEnv` | Merged into env at launch |
-| `forwardPorts` | Seed `auto_expose` allowed-ports list |
-| `remoteUser` / `containerUser` | Validated against ahjo's user (`vscode`); warn otherwise |
-| `dockerComposeFile` | Rejected with clear error |
+## Non-goals
 
-## Topology change
+- **No runtime swap.** ahjo does not adopt Docker, `@devcontainers/cli`, BuildKit, or any container runtime other than Incus + Lima. The spec is parsed and Features are executed against Incus directly.
+- **No `image:` / `build:` honoring.** Repos that declare these abort with an explicit error pointing at this doc. They imply a Docker image-build runtime ahjo doesn't have. Phase 4 sketches a future where they're allowed against an opt-in path; not delivered here.
+- **No `dockerComposeFile:` support.** Multi-container repos require Docker; rejected with explicit error.
+- **No `mounts:` or `runArgs:` honoring.** Both Docker-flavored; rejected with explicit error rather than silent ignore.
+- **No `secrets:` support.** Spec's secret-injection model is security-sensitive; rejected with explicit error rather than silent ignore. Revisit when there's a concrete user need and a vetted design.
+- **No non-ahjo `customizations.*` honoring.** ahjo isn't a VS Code host or Codespaces; only `customizations.ahjo.*` is read. Other tools' blocks are ignored without warning.
+- **No `.ahjoconfig` parsing path.** Per ahjo convention (no runtime migration), users self-migrate. Presence of a legacy `.ahjoconfig` triggers an explicit error pointing at the migration doc; the parser is deleted, not preserved as a deprecated alias.
+- **No greenfield rewrite.** ~5-10% of the codebase is touched; SSH wiring, branch CoW, raw.idmap, registry, mirror, and the CLI surface stay unchanged.
+- **No further username changes beyond `ubuntu`.** Phase 1 switches the in-image user from `code` to `ubuntu` (adopt the upstream image's canonical name; stop maintaining a parallel ahjo-only account). raw.idmap target stays UID 1000:1000 — only the name moves. ahjo's `incus exec` invocations pass `_REMOTE_USER=ubuntu`. Features read `_REMOTE_USER` from env rather than hardcoding, so future renames (Phase 4) still work without per-Feature edits.
+
+## Topology
 
 Before:
 
 ```
-coi-default (built by COI tool, custom profile bash)
-  └─ ahjo-base (COI profile: build.sh + config.toml; sshd + ahjo-claude-prepare + corepack + code user)
-       └─ ahjo-<repo> default container (incus launch ahjo-base; clone /repo; warm install; .ahjoconfig run)
-            └─ ahjo-<repo>-<branch> (incus copy + git checkout)
+coi-default                  (built by COI tool, custom profile bash)
+  └─ ahjo-base               (COI profile build.sh: sshd + ahjo-claude-prepare + corepack + code user)
+       └─ ahjo-<repo>        (incus launch ahjo-base; clone /repo; warm install; .ahjoconfig run)
+            └─ ahjo-<repo>-<branch>   (incus copy + git checkout)
 ```
 
 After:
 
 ```
-mcr.microsoft.com/devcontainers/base:ubuntu (upstream OCI; vscode user at UID 1000)
-  └─ ahjo-base (Incus image; built by applying ahjo-runtime Feature to base:ubuntu)
-       └─ ahjo-<repo> default container (incus launch ahjo-base; clone /repo; apply repo's Features; lifecycle commands)
-            └─ ahjo-<repo>-<branch> (incus copy + git checkout) — unchanged
+images:ubuntu/24.04          (upstream Incus system container, distrobuilder-built; systemd; multi-arch)
+  └─ ahjo-base               (Incus image; built by applying ahjo-runtime Feature to images:ubuntu/24.04)
+       └─ ahjo-<repo>        (incus launch ahjo-base; clone /repo; apply repo Features per devcontainer.json; lifecycle commands)
+            └─ ahjo-<repo>-<branch>   (incus copy + git checkout) — unchanged
 ```
 
-Schemas retired: COI profile bash, `.ahjoconfig` TOML, per-repo bake conventions. Tool retired: COI itself. Runtime: Incus + Lima, unchanged.
+Schemas retired: COI profile bash, `.ahjoconfig` TOML (deleted, not aliased), per-repo bake bash. Schema added: `.devcontainer/devcontainer.json` (subset honored) with ahjo extensions under `customizations.ahjo`. Tool retired: COI itself. Runtime: Incus + Lima system containers, unchanged.
 
-## Phase 0 — Spike (timeboxed, ~1-2 days)
+## Spec → ahjo execution mapping
 
-Three concrete checks before committing further. If any fails, revisit.
+| Spec construct                | ahjo execution                                                                                                                                       |
+|-------------------------------|------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `image: foo/bar`              | **Rejected** with explicit error referencing Phase 4                                                                                                  |
+| `build.dockerfile: ...`       | **Rejected** with explicit error referencing Phase 4                                                                                                  |
+| `dockerComposeFile: ...`      | **Rejected** — multi-container repos require Docker                                                                                                   |
+| `mounts: [...]` / `runArgs: [...]` | **Rejected** with explicit error                                                                                                                 |
+| `secrets: { ... }`            | **Rejected** with explicit error — security-sensitive; needs separate design                                                                          |
+| `features: { ... }`           | Resolve dep graph (`dependsOn` hard recursive, `installsAfter` soft conditional) → fetch each artifact via OCI client (vendored `go-containerregistry`) → `incus exec install.sh` as root, options as `ALL_CAPS` env |
+| `initializeCommand`           | Ignored with one-time deprecation notice (host-side concept; means "Lima VM" under ahjo, awkward; defer)                                              |
+| `onCreateCommand`             | Run during `repo add`, after user creation, before `postCreateCommand`, as `ubuntu` in `/repo`                                                        |
+| `updateContentCommand`        | Ignored with one-time deprecation notice (no ahjo refresh hook yet)                                                                                   |
+| `postCreateCommand`           | `incus exec <container> -- bash -c "<cmd>"` as `ubuntu`, in `/repo`, during repo-add                                                                  |
+| `postStartCommand`            | Same, run during `prepareBranchContainer` (every container start)                                                                                     |
+| `postAttachCommand`           | Same, run when ahjo attaches a user shell                                                                                                             |
+| `waitFor`                     | Ignored — ahjo runs lifecycle commands sequentially; semantics implicit                                                                               |
+| `containerEnv: { K: V }`      | Merged into env at launch                                                                                                                             |
+| `remoteEnv: { K: V }`         | Ignored without warning (no remote-tool concept)                                                                                                      |
+| `forwardPorts: [3000, ...]`   | Seed `auto_expose` allowed-ports list                                                                                                                 |
+| `portsAttributes`             | Ignored without warning                                                                                                                               |
+| `remoteUser` / `containerUser`| Validated against ahjo's `ubuntu`; warn loudly if mismatched (silently switching users breaks `git config` / keys)                                    |
+| `hostRequirements`            | Ignored without warning (Lima VM is fixed-size)                                                                                                       |
+| `customizations.ahjo.*`       | Honored — see "`customizations.ahjo` schema" below                                                                                                    |
+| `customizations.vscode.*`     | Ignored without warning                                                                                                                               |
+| `customizations.<other>.*`    | Ignored without warning                                                                                                                               |
 
-1. **Incus OCI import.** `skopeo copy docker://mcr.microsoft.com/devcontainers/base:ubuntu oci-archive:base.tar` (on Mac or VM), then `incus image import base.tar --alias ahjo-osbase`. Launch a container from it on Lima with `raw.idmap "both <hostUID> 1000"`. Validate: container starts, `vscode` user is at UID 1000:1000, `incus exec ... id vscode` returns expected, mounts work.
-2. **Run a real Feature.** Pull `ghcr.io/devcontainers/features/common-utils:2` via a hand-rolled OCI fetcher (or `crane` for the spike). Unpack the tarball. `incus file push` `install.sh` into the container. `incus exec ... bash /tmp/install.sh` as root with `_REMOTE_USER=vscode _REMOTE_USER_HOME=/home/vscode INSTALLZSH=true` etc. Validate: install completes, declared options take effect.
-3. **Round-trip a custom Feature.** Author a trivial Feature locally (`devcontainer-feature.json` + `install.sh` that touches `/marker`). Package via `oras push` to a local registry. Fetch + apply via the same code path as #2. Validates the artifact mechanics.
+**Feature-level Docker fields.** If a Feature's own `devcontainer-feature.json` declares `mounts`, `privileged`, `capAdd`, `securityOpt`, `init`, or `entrypoint`, ahjo refuses to apply that Feature with an explicit error citing the Feature ID. Curated `ghcr.io/devcontainers/features/*` Features don't use these in practice; community Features that do are explicitly out of scope.
 
-### What ahjo does in Phase 0
+### Feature runner contract
 
-Pure validation; no production code paths change. Spike code lives in a scratch branch.
+The Feature runner is the new code. ~350 LoC of Go (with vendored OCI library).
 
-### Open questions
+1. **Fetch.** Vendor `github.com/google/go-containerregistry` for OCI manifest pull + blob fetch (no Docker daemon dep). Tar extraction enforces path safety: reject entries with `..`, absolute paths, or symlinks pointing outside the Feature dir.
+2. **Resolve.** Build dependency graph from `dependsOn` (hard, recursive) and `installsAfter` (soft, conditional — only enforced if both Features are in the install set). Topological sort with cycle detection. Restart-between-rounds is not supported; if a Feature requires it, ahjo errors with "Feature X requires restart between install rounds; ahjo doesn't support this."
+3. **Apply.** For each Feature in resolved order:
+   - `incus file push` the unpacked Feature dir into `/tmp/feature-<id>/`
+   - `incus exec <container> --env _REMOTE_USER=ubuntu --env _REMOTE_USER_HOME=/home/ubuntu --env _CONTAINER_USER=ubuntu --env _CONTAINER_USER_HOME=/home/ubuntu --env <OPTION_KEY>=<value> ... -- bash /tmp/feature-<id>/install.sh`
+   - 10-minute default timeout per Feature, configurable via ahjo flag
+   - Stream stdout/stderr to ahjo's log; buffer per-Feature for error reporting
+   - Cleanup `/tmp/feature-<id>/` on success or failure
 
-1. **OCI fetcher: handcrafted Go vs vendored library?** Look at `github.com/google/go-containerregistry`. If usable without Docker daemon assumptions, vendor it; else write a 200-LoC fetcher (registry auth, manifest pull, blob download, tar extract).
-2. **`vscode` user UID — actually 1000 across all `base:ubuntu` variants?** Verify on 22.04, 24.04, 26.04 in the spike. The Dockerfile's `vscode` creation lives in a referenced script; pin to whatever variant we adopt.
+**Failure semantics.** A failed Feature aborts the rest of the install set. The container is left in a partial state and the calling command (`ahjo repo add`, `ahjo update`) fails. ahjo doesn't auto-rollback; the user retries after fixing the cause.
 
-## Phase 1 — ahjo-base as a Feature; replace `coi-default` with `base:ubuntu`
+User identity flows through env vars, not through hardcodes. The user is `ubuntu` (the upstream image's canonical user; replaces today's bespoke `code` per the reuse-canonical-names rule). Every Feature — including `ahjo-runtime` — reads `_REMOTE_USER` rather than naming a user. ahjo's `incus exec` invocations always pass `_REMOTE_USER=ubuntu`; future renames (Phase 4) change both the image *and* what ahjo passes (neither alone is sufficient).
+
+## Phase 0 — Spike (timeboxed, 1-2 days)
+
+Three checks against committed implementation choices (see "Locked-in decisions" below). The spike validates the choices, not selects between alternatives.
+
+1. **Feature runner round-trip.** Launch a fresh `images:ubuntu/24.04` container on Lima. Hand-roll a trivial Feature locally (`devcontainer-feature.json` + `install.sh` that creates `/marker` and writes `_REMOTE_USER` to it). Run via the prototype Feature runner. Validate: install completes, env vars land, `/marker` shows `ubuntu`.
+2. **Curated upstream Feature.** Pull `ghcr.io/devcontainers/features/common-utils:2` via `go-containerregistry`. Apply to a fresh `images:ubuntu/24.04` container with `_REMOTE_USER=ubuntu _REMOTE_USER_HOME=/home/ubuntu INSTALLZSH=true` (and friends). Validate: install completes, declared options take effect, the resulting userspace has zsh.
+3. **`installsAfter` ordering.** Apply two Features where one declares `installsAfter` the other (e.g., `node` after `common-utils`). Validate: the runner installs in the declared order, not in declared-set order.
+
+If all three pass, the design is proven. If #2 fails because the Feature assumes the user already exists, the ordering rule is already encoded: `ahjo-runtime` Feature ensures `ubuntu` exists at image-bake time; user Features at repo-add always run against a container with `ubuntu` present.
+
+### Locked-in decisions (no longer open)
+
+- **OCI client:** vendor `github.com/google/go-containerregistry`. Pure Go, no Docker daemon dep, public read works anonymously plus the standard token handshake for ghcr.io.
+- **JSONC parser:** `tailscale/hujson` configured to allow both comments **and** trailing commas. Real-world devcontainer.json files (especially Codespaces-targeting) use trailing commas; spec-strict parsing rejects ~10% of in-the-wild files. Lax dialect is an intentional deviation from spec for compatibility.
+- **`images:ubuntu/24.04` `ubuntu` user:** keep it. The `ahjo-runtime` Feature uses the upstream `ubuntu` user (UID 1000) as-is, or creates one at UID 1000 if absent. ahjo's previous `code` user is retired — adopting the upstream image's canonical user instead of maintaining a parallel ahjo-only account. Verified across both arches in spike #1.
+- **Feature trust persistence:** per-Feature-ID-pattern. `ghcr.io/devcontainers/features/*` is auto-trusted (curated upstream). Other patterns require one-time consent, persisted in registry (`FeatureConsent map[string]bool` keyed by glob, not hostname).
+
+## Phase 1 — Build pipeline rewrite; `ahjo-runtime` as a Feature
 
 ### What ahjo does
 
 1. **`ahjo init` and `ahjo update` build pipeline becomes:**
-   1. `incus image import` `mcr.microsoft.com/devcontainers/base:ubuntu` (cached locally; pull once per ahjo version bump).
-   2. `incus launch <base:ubuntu> ahjo-build-<rand>` — transient container.
-   3. Apply `ahjo-runtime` Feature using the same Feature-runner code path that user repos will use. The Feature's `install.sh` reproduces today's `internal/coi/assets/profiles/ahjo-base/build.sh`: `openssh-server`, `/etc/ssh/sshd_config.d/00-ahjo.conf`, host-keys directory at `/etc/ssh/ahjo-host-keys/`, `ahjo-claude-prepare` binary, corepack reconciliation. Reads `_REMOTE_USER` rather than hardcoding.
-   4. `incus stop ahjo-build-<rand>`; `incus publish ahjo-build-<rand> --alias ahjo-base`.
-   5. `incus delete ahjo-build-<rand>`.
+   1. Verify Incus + Lima are present and running. (No COI; per ahjo's "no silent host installs" rule, missing prereqs warn + prompt rather than auto-install.)
+   2. `incus image copy images:ubuntu/24.04 local: --alias ahjo-osbase` — pull once per ahjo version bump.
+   3. `incus launch ahjo-osbase ahjo-build-<rand>` — transient container. systemd boots normally.
+   4. Apply the `ahjo-runtime` Feature using the Feature runner. The Feature's `install.sh` is today's `internal/coi/assets/profiles/ahjo-base/build.sh`, ported: ensure `ubuntu` user exists at UID 1000 (use upstream's if present; create otherwise), `apt install openssh-server`, write `/etc/ssh/sshd_config.d/00-ahjo.conf`, create `/etc/ssh/ahjo-host-keys/`, install `ahjo-claude-prepare` (Claude Code preinstall + onboarding marker), set up corepack, `systemctl enable ssh`. Reads `_REMOTE_USER`/`_REMOTE_USER_HOME` from env rather than hardcoding the user.
+   5. `incus stop ahjo-build-<rand>`; `incus publish ahjo-build-<rand> --alias ahjo-base`.
+   6. `incus delete ahjo-build-<rand>`.
 
-2. **`ahjo repo add` and `ahjo new`** are unchanged in shape — they still launch from / copy from `ahjo-base`. The image's *contents* are bit-equivalent to today's `ahjo-base`; only the *definition* moves to standard format.
+2. **`ahjo repo add` and `ahjo new`** are unchanged in shape. They still launch from / copy from `ahjo-base`. The image's contents are functionally equivalent to today's `ahjo-base` (sshd as a service, `ubuntu` user at UID 1000, claude-prepare, corepack); only the build mechanism moves to standard format and the username changes from `code` to `ubuntu`.
 
-3. **In-image user becomes `vscode`** (matches `base:ubuntu`). raw.idmap continues to target UID 1000:1000. ahjo-runtime Feature reads `_REMOTE_USER` so a future Phase 4 can apply the same Feature against any image regardless of username.
+3. **In-image user is `ubuntu`** (canonical Ubuntu cloud-image name; replaces today's bespoke `code`). raw.idmap continues to target UID 1000:1000 — only the name moves. The `ahjo-runtime` Feature reads `_REMOTE_USER` from env, so future renames work without Feature edits.
 
 ### What disappears
 
-| Removed | Location |
-|---|---|
-| COI profile build script | `internal/coi/assets/profiles/ahjo-base/build.sh` |
-| COI profile config | `internal/coi/assets/profiles/ahjo-base/config.toml` |
-| `coi build --profile ahjo-base` invocation | `internal/cli/init.go`, `internal/cli/update.go` |
-| `code` user references in repo | various; replace with `vscode` |
+| Removed                                             | Location                                                 |
+|-----------------------------------------------------|----------------------------------------------------------|
+| COI profile build script                            | `internal/coi/assets/profiles/ahjo-base/build.sh`        |
+| COI profile config                                  | `internal/coi/assets/profiles/ahjo-base/config.toml`     |
+| `coi build --profile ahjo-base` invocation          | `internal/cli/init.go`, `internal/cli/update.go`         |
+| The `coi-default` image as ahjo's base              | implicit; replaced by `images:ubuntu/24.04`              |
 
 ### What changes shape
 
-| File | Change |
-|---|---|
-| `internal/ahjoruntime/feature/devcontainer-feature.json` (new) | Feature metadata: id, version, name, options (none), `containerEnv` for corepack vars |
-| `internal/ahjoruntime/feature/install.sh` (new) | Today's `build.sh` ported: apt installs, sshd config write, `ahjo-claude-prepare` install, corepack setup. Reads `_REMOTE_USER`. |
-| `internal/ahjoruntime/embed.go` (new) | `go:embed` the Feature directory; expose as in-memory artifact for the Feature runner |
-| `internal/devcontainer/features.go` (new) | Feature OCI fetch + dependency resolution + execution against an Incus container |
-| `internal/devcontainer/oci.go` (new) | Minimal OCI client (or vendored `go-containerregistry`); manifest pull, blob fetch, tar extract |
-| `internal/cli/init.go` | Replace `coi build` with the new build pipeline (import base, launch transient, apply Feature, publish, delete) |
-| `internal/cli/update.go` | Same replacement |
-| `internal/coi/template.go` | Stop using COI; `internal/coi/` becomes vestigial pending Phase 3 |
-| `CONTAINER-ISOLATION.md` | Note: `ahjo-runtime` Feature install runs at image-build time inside transient container; same trust posture as today's COI build |
+| File                                                            | Change                                                                                                                  |
+|-----------------------------------------------------------------|-------------------------------------------------------------------------------------------------------------------------|
+| `internal/ahjoruntime/feature/devcontainer-feature.json` (new)  | Feature metadata: `id: ahjo-runtime`, version, options (none yet), `containerEnv` for corepack vars                     |
+| `internal/ahjoruntime/feature/install.sh` (new)                 | Today's `build.sh` ported. Uses upstream `ubuntu` user (or creates at UID 1000 if absent); reads `_REMOTE_USER`/`_REMOTE_USER_HOME`; no hardcoded user account name |
+| `internal/ahjoruntime/embed.go` (new)                           | `go:embed` the Feature dir; expose as in-memory artifact for the Feature runner                                         |
+| `internal/devcontainer/features.go` (new)                       | Feature dependency resolution + execution against an Incus container                                                    |
+| `internal/devcontainer/oci.go` (new)                            | Vendored `go-containerregistry` wrapper: manifest pull, blob fetch, tar extract with path safety                        |
+| `internal/cli/init.go`                                          | Replace COI install + `coi build` with: verify Incus+Lima, image-copy upstream, launch transient, apply Feature, publish, delete |
+| `internal/cli/update.go`                                        | Same replacement for the rebuild path                                                                                    |
+| `internal/coi/template.go`                                      | Already retired in `no-more-worktrees.md` Phase 1; verify and ensure no callers                                          |
+| `CONTAINER-ISOLATION.md`                                        | Note: `ahjo-runtime` Feature install runs at image-build time inside transient container; same trust posture as today's COI build |
 
 ### Lifecycle hazards
 
-1. **Image-pull network dep at `ahjo init`/`update`.** Today: COI fetches `coi-default`. Tomorrow: ahjo fetches `base:ubuntu` from `mcr.microsoft.com`. Same posture; document the new registry.
-2. **`base:ubuntu` size.** Likely larger than `coi-default` (zsh, oh-my-zsh, sudo). One-time pull on Lima VM; acceptable.
-3. **UID assumption baked into the Feature.** `_REMOTE_USER=vscode` for `base:ubuntu`. Phase 4 generalizes; Phase 1 hardcodes the call site to pass `vscode`.
-4. **Existing dev installs need re-init.** `ahjo init` will pull a different base; existing `ahjo-base` becomes stale. Per ahjo dev-mode convention, users `ahjo nuke && ahjo init`.
+1. **Image-pull network dep at `ahjo init`/`update`.** Today: COI fetches `coi-default`. Tomorrow: ahjo fetches `images:ubuntu/24.04` from `images.linuxcontainers.org`. Same posture; document the new registry.
+2. **`ahjo-runtime` Feature must run before any user Feature** that assumes `ubuntu` exists. Encoded by sequencing: `ahjo-runtime` always first when building `ahjo-base`; user Features at `repo add` always run after, against a container with `ubuntu` already present at UID 1000.
+3. **Existing dev installs need re-init.** `ahjo init` will pull a different base; existing `ahjo-base` becomes stale. Per ahjo dev-mode convention, users `ahjo nuke && ahjo init`.
 
 ### Open questions
 
 1. **Where does `incus publish` write images?** Default storage; confirm size budget on the 50 GB Lima disk after both `ahjo-osbase` and `ahjo-base` exist.
-2. **`vscode` shell config.** `base:ubuntu` ships zsh + oh-my-zsh. Today ahjo doesn't impose a multiplexer; per existing memory, we should also avoid imposing a shell prompt. Verify `ahjo shell` drops into bash by default unless user opted into zsh.
-3. **`ahjo-claude-prepare` portability.** Bash today, references `/home/code/.claude.json`. Update for `vscode` and validate against `_REMOTE_USER_HOME`.
+2. **`ahjo-claude-prepare` portability.** Bash today, references `/home/code/.claude.json` (under the legacy `code` user). With the user switching to `ubuntu`, kill the hardcoded path entirely: read `_REMOTE_USER_HOME` from env, which resolves to `/home/ubuntu`.
 
-## Phase 2 — devcontainer.json as per-repo schema
+## Phase 2 — `devcontainer.json` as per-repo schema
 
 ### What ahjo does
 
 1. **`ahjo repo add foo/bar`** (added to existing flow):
-   1. After `git clone /repo`, parse `.devcontainer/devcontainer.json` (jsonc) using spec precedence: `.devcontainer/devcontainer.json` → `.devcontainer.json` → `.devcontainer/<name>/devcontainer.json`.
-   2. If `image:` / `build:` / `dockerComposeFile:` present, abort with explicit error referencing Phase 4. Better than silent ignore.
-   3. If `features:` present and any source isn't `ghcr.io/devcontainers/features/*`, prompt once for trust. Persist consent in registry.
-   4. Resolve Feature dependency graph (spec algorithm: `dependsOn` hard, `installsAfter` soft).
-   5. Apply each Feature via the runner from Phase 1.
+   1. After `git clone /repo`, refuse if a legacy `.ahjoconfig` exists with an explicit migration error; otherwise parse `.devcontainer/devcontainer.json` (lax JSONC: comments + trailing commas) using spec precedence: `.devcontainer/devcontainer.json` → `.devcontainer.json` → `.devcontainer/<name>/devcontainer.json`. ahjo-specific knobs (`forward_env`, `auto_expose`) live under `customizations.ahjo` — same JSON, no second file.
+   2. If `image:` / `build:` / `dockerComposeFile:` / `mounts:` / `runArgs:` / `secrets:` present, abort with explicit error linking to this doc and the README "honored / rejected / ignored" tables.
+   3. If `features:` present and any source doesn't match a trusted pattern in `FeatureConsent` (curated `ghcr.io/devcontainers/features/*` is auto-trusted), prompt once for trust. Persist consent in registry as a glob pattern.
+   4. Resolve Feature dep graph (`dependsOn` hard recursive, `installsAfter` soft conditional). Reject Features whose `devcontainer-feature.json` declares Docker-flavored fields (`mounts`, `privileged`, `capAdd`, `securityOpt`, `init`, `entrypoint`) with explicit error citing the Feature ID.
+   5. Apply each Feature via the Feature runner with `_REMOTE_USER=ubuntu _REMOTE_USER_HOME=/home/ubuntu _CONTAINER_USER=ubuntu _CONTAINER_USER_HOME=/home/ubuntu`.
    6. Run lockfile-detection warm install (existing logic, unchanged).
-   7. Run `postCreateCommand` if present; treat as concatenated with `.ahjoconfig` `run` (devcontainer.json wins on conflict, deprecation notice if both exist).
+   7. Run lifecycle hooks in spec order, all as `ubuntu` in `/repo`. Each supports the spec's three forms: string, array of args, or object map (parallel commands). A failed command aborts the chain.
+      a. `onCreateCommand`
+      b. `postCreateCommand`
    8. `incus stop`, register branch, done.
 
 2. **`ahjo shell` / `ahjo new`** (small additions):
-   - `prepareBranchContainer` runs `postStartCommand` if defined in the cached devcontainer config.
+   - `prepareBranchContainer` runs `postStartCommand` if defined (every container start).
    - `postAttachCommand` runs at the moment ahjo attaches the user shell.
 
-3. **`.ahjoconfig` parsing path remains** as a deprecated alias. One-time deprecation notice when both `.ahjoconfig` and `devcontainer.json` exist in the same repo.
+3. **`customizations.ahjo`** is the ahjo-only extension block inside `devcontainer.json`, following the spec's convention for tool-specific config (`customizations.vscode.*`, `customizations.codespaces.*`). Two fields: `forward_env` and `auto_expose`. See "`customizations.ahjo` schema" below.
+
+### `customizations.ahjo` schema
+
+ahjo's small per-repo extension lives under the spec's `customizations` namespace, adjacent to `customizations.vscode` and `customizations.codespaces`. No second file.
+
+```jsonc
+{
+  // Standard devcontainer.json fields...
+  "features": {
+    "ghcr.io/devcontainers/features/node:1": { "version": "20" }
+  },
+  "postCreateCommand": "echo hi",
+
+  // ahjo-only extensions:
+  "customizations": {
+    "ahjo": {
+      "forward_env": ["CLAUDE_CODE_OAUTH_TOKEN"],
+      "auto_expose": {
+        "enabled": true,
+        "min_port": 3000
+      }
+    }
+  }
+}
+```
+
+| Field | Type | Purpose |
+|---|---|---|
+| `forward_env` | `string[]` | Host env vars to forward into the container at launch. Static list; values resolved at container start. |
+| `auto_expose.enabled` | `bool` | Gate for the auto-expose machinery. When false, `forwardPorts` from devcontainer.json is ignored. |
+| `auto_expose.min_port` | `int` | Floor for auto-exposed ports. Ports below this in `forwardPorts` are silently dropped. |
+
+These fields also live in ahjo's global `~/.ahjo/config.toml` (under `[mac]` / `[linux]` per platform-namespacing convention); per-repo `customizations.ahjo` overrides global. Features that declare their own `customizations.ahjo` are merged per the spec's customizations rules.
 
 ### What disappears
 
-| Removed | Location |
-|---|---|
-| `.ahjoconfig`-only enforcement (no devcontainer fallback) | `internal/ahjoconfig/config.go` |
-| `forward_env` static list as the only way to set env | `internal/ahjoconfig/config.go`, README |
+| Removed                                            | Location                                          |
+|----------------------------------------------------|---------------------------------------------------|
+| `.ahjoconfig` TOML schema and parser               | `internal/ahjoconfig/` — entire package deleted   |
+| `.ahjoconfig` `run` as the primary lifecycle hook  | merged into `postCreateCommand`                   |
+| `.ahjoconfig` `forward_env` / `auto_expose` fields | moved to `customizations.ahjo` inside `devcontainer.json` |
 
-(The TOML parser stays, just demoted.)
+The TOML parser is deleted, not preserved as an alias. Presence of a legacy `.ahjoconfig` triggers an explicit migration error.
 
 ### What changes shape
 
-| File | Change |
-|---|---|
-| `internal/devcontainer/config.go` (new) | jsonc parser, spec-precedence file lookup, `Config` struct with the honored subset |
-| `internal/devcontainer/lifecycle.go` (new) | `RunPostCreate(ctx, container, cfg)`, `RunPostStart(ctx, container, cfg)`, `RunPostAttach(ctx, container, cfg)` thin wrappers around `incus exec` |
-| `internal/ahjoconfig/config.go` | Read both files; merge with devcontainer-derived fields as primary; emit one-time deprecation notice when both exist |
-| `internal/cli/repo.go:repoAddSetup()` | Insert devcontainer parse → trust prompt → features apply → lifecycle commands. Reject `image`/`build`/`dockerComposeFile` with explicit error. |
-| `internal/cli/shell.go:prepareBranchContainer()` | Run `postStartCommand` if cached config has it |
-| `internal/cli/claude.go`, other attach paths | `postAttachCommand` hook |
-| `internal/registry/registry.go` | Add `FeatureConsent map[string]bool` per `Repo` (key = registry hostname or pattern) |
-| `README.md` | `.devcontainer/devcontainer.json` example; ignored-fields list with rationale; `.ahjoconfig` migration note |
-| `CONTAINER-ISOLATION.md` | Document Features run with internet access during repo-add; trust-prompt policy |
+| File                                                | Change                                                                                                              |
+|-----------------------------------------------------|---------------------------------------------------------------------------------------------------------------------|
+| `internal/devcontainer/config.go` (new)             | Lax JSONC parser (`tailscale/hujson` with comments + trailing commas), spec-precedence file lookup, `Config` struct with the honored subset (incl. `Customizations.Ahjo`), validation/rejection of disallowed fields |
+| `internal/devcontainer/lifecycle.go` (new)          | `RunOnCreate`, `RunPostCreate`, `RunPostStart`, `RunPostAttach` thin wrappers around `incus exec`; supports string/array/object forms |
+| `internal/ahjoconfig/`                              | **Deleted.** Remaining `forward_env` / `auto_expose` consumers re-route to `cfg.Customizations.Ahjo` from the devcontainer parse |
+| `internal/cli/repo.go:repoAddSetup()`               | Insert: legacy `.ahjoconfig` check (error) → devcontainer parse → reject Docker-only fields → trust prompt → features apply → lifecycle commands (onCreate, postCreate) |
+| `internal/cli/shell.go:prepareBranchContainer()`    | Run `postStartCommand` if cached config has it                                                                       |
+| `internal/cli/claude.go`, other attach paths        | `postAttachCommand` hook                                                                                             |
+| `internal/registry/registry.go`                     | Add `FeatureConsent map[string]bool` per `Repo` (key = glob pattern, e.g. `ghcr.io/foo/*`)                          |
+| `README.md`                                         | `.devcontainer/devcontainer.json` example; honored / rejected / ignored field tables; `customizations.ahjo` schema; `.ahjoconfig` migration note |
+| `CONTAINER-ISOLATION.md`                            | Document Features run with internet access during repo-add; trust-prompt policy                                       |
 
 ### Lifecycle hazards
 
-1. **First non-curated Feature source = blocking prompt.** Persist consent so re-adds don't re-prompt. Skip prompt for `ghcr.io/devcontainers/features/*` (curated upstream).
+1. **First non-curated Feature source = blocking prompt.** Persist consent so re-adds don't re-prompt. Skip prompt for `ghcr.io/devcontainers/features/*` (curated upstream); other glob patterns require one-time user confirmation.
 2. **Features install during `repo add`.** Captured by `incus copy` for branch containers via btrfs CoW (one-time cost per repo). Confirm reflinks survive the install layer.
-3. **`postCreateCommand` ordering vs `.ahjoconfig` `run`.** When both exist, devcontainer.json wins; `.ahjoconfig` `run` ignored with deprecation notice. Don't try to merge the lists — confusing.
-4. **`remoteUser` mismatch.** If devcontainer.json declares `remoteUser: code`, warn and use `vscode` anyway. Fail loudly if mismatched — silently switching users breaks `git config`/keys.
-5. **Mirror still in flight.** Phase 2 of this doc must wait for `in-container-mirror.md` Phase 2 to stabilize. Don't compound regressions.
+3. **Legacy `.ahjoconfig` presence.** If a repo has `.ahjoconfig`, ahjo errors with a migration message. No silent merging, no fallback — users self-migrate.
+4. **`remoteUser` mismatch.** If devcontainer.json declares `remoteUser: vscode` (common in Codespaces-targeting repos), warn and use `ubuntu` anyway. Fail loudly if mismatched — silently switching users breaks `git config` / keys.
+5. **Docker-only fields in user repos.** Many existing `devcontainer.json` files (especially Codespaces-targeting) declare `image:` / `build:` / `mounts:`. The reject-with-explicit-error must point to a doc page explaining the subset and the Phase 4 escape hatch — otherwise users assume ahjo is broken.
+6. **Mirror still in flight.** Phase 2 of this doc must wait for `in-container-mirror.md` Phase 2 to stabilize. Don't compound regressions.
 
 ### Open questions
 
-1. **jsonc parser.** Does any well-maintained Go jsonc library exist? Or strip comments + parse as JSON?
-2. **`forwardPorts` semantics.** Devcontainer's `forwardPorts` declares ports the user *wants exposed*; ahjo's `auto_expose` is *allowed to expose* + min_port floor. Map devcontainer's list to ahjo's allowlist; preserve auto_expose's gating.
-3. **`containerEnv` vs ahjo's `forward_env`.** `containerEnv` is static values; `forward_env` is "forward this from the host." Two different mechanisms — keep both, document the distinction. ahjo continues to forward `CLAUDE_CODE_OAUTH_TOKEN` via `forward_env`.
-4. **Devcontainer caches the resolved config where?** Today nothing is cached; everything reads at use time. For `postStartCommand`, we need the config available at branch-container start time. Options: re-parse on each start (one extra `incus exec ... cat`), or persist the parsed config in registry. Lean: re-parse — it's an exec call, cheap, always fresh.
+1. **Where to cache the resolved devcontainer config?** For `postStartCommand`, we need it at branch-container start time. Lean: re-parse on each start (one extra `incus exec ... cat`), always fresh, no cache invalidation problem. Cost is one shell exec per shell start; cheap.
+
+(`forwardPorts` → `auto_expose` mapping and `containerEnv` vs `customizations.ahjo.forward_env` separation are documented decisions in the mapping table; no longer open.)
 
 ## Phase 3 — Drop COI
 
 ### What ahjo does
 
-After Phase 1 builds `ahjo-base` without COI's profile mechanism, COI's runtime contribution to ahjo is gone. Audit for residual usage:
+After Phase 1 builds `ahjo-base` without COI, COI's runtime contribution to ahjo is gone. Audit for residual usage:
 
-- Image management: replaced by direct `incus image import` and the Feature pipeline in Phase 1.
+- Image management: replaced by direct `incus image copy` and the Feature pipeline.
 - Container lifecycle: ahjo already drives this via `internal/incus/incus.go`.
 - `internal/coi/template.go` and the `coi.RenderConfig` callers: already retired in `no-more-worktrees.md` Phase 1.
 - Anything that survives Phase 1: refactor to direct Incus calls.
@@ -211,49 +285,58 @@ If clean, delete `internal/coi/` entirely.
 
 ### What disappears
 
-| Removed | Location |
-|---|---|
-| Entire COI integration | `internal/coi/` |
-| COI install step in init flow | `internal/cli/init.go` (the section that ensures COI is installed and at version `v0.8.1`) |
-| COI version pin | `internal/coi/coi.go:39` |
-| COI Lima auto-detect workaround documentation | reduce/inline; no longer relevant if COI isn't a dependency |
-| Any `coi` binary references in tests, fixtures, install docs | repo-wide grep |
+| Removed                                  | Location                                                          |
+|------------------------------------------|-------------------------------------------------------------------|
+| Entire COI integration                   | `internal/coi/`                                                   |
+| COI install step in init flow            | `internal/cli/init.go` (the section ensuring COI is at `v0.8.1`)  |
+| COI version pin                          | `internal/coi/coi.go:39`                                          |
+| COI Lima auto-detect workaround docs     | reduce/inline; no longer relevant                                 |
+| Any `coi` binary references              | repo-wide grep                                                    |
 
 ### What changes shape
 
-| File | Change |
-|---|---|
-| `internal/cli/init.go` | Remove COI install/update; init now ensures Incus + Lima only |
-| `internal/cli/update.go` | Remove COI rebuild step; only rebuild ahjo-base via the Phase 1 pipeline |
-| `internal/cli/nuke.go` | Remove COI artifacts from the teardown list |
-| `README.md`, `CLAUDE-SETTING.md`, install docs | Drop COI references |
+| File                                                | Change                                                                                          |
+|-----------------------------------------------------|-------------------------------------------------------------------------------------------------|
+| `internal/cli/init.go`                              | Remove COI install/update; init now ensures Incus + Lima only                                    |
+| `internal/cli/update.go`                            | Remove COI rebuild step; only rebuild `ahjo-base` via the Phase 1 pipeline                       |
+| `internal/cli/nuke.go`                              | Remove COI artifacts from the teardown list                                                     |
+| `README.md`, `CLAUDE-SETTING.md`, install docs      | Drop COI references; `CLAUDE-SETTING.md`'s "COI overwrites build.sh edits" warning becomes stale and is removed |
 
 ### Lifecycle hazards
 
 1. **Existing installs have COI installed.** Harmless — the binary just sits there unused. `ahjo nuke` removes it as part of teardown; otherwise a manual `apt remove` works.
-2. **CLAUDE-SETTING.md.** Today notes that "COI copies host→container and overwrites build.sh edits." That entire warning becomes stale after Phase 1; rewrite.
-3. **The "rolling-current toolchains" memory** — confirm this still applies. With COI gone, ahjo-runtime Feature is the only place tools could be pinned; keep using upstream Feature defaults to preserve rolling-current behavior.
+2. **CLAUDE-SETTING.md.** Today's "COI copies host→container and overwrites build.sh edits" warning becomes stale. Rewrite to describe Feature-based image building; the host-side `hasCompletedOnboarding` wiring stays unchanged (it edits the host VM's `~/.claude.json`, not a build artifact).
+3. **Rolling-current toolchains.** With COI gone, `ahjo-runtime` is the only place tools could be pinned. Keep using upstream Feature defaults (no `version:` pins) to preserve rolling-current behavior.
 
 ### Open questions
 
-1. **Anything else in `internal/coi/` that other packages still import?** Grep before deleting; expect zero, but verify.
-2. **Does `coi-default`'s Claude Code preinstall move to the ahjo-runtime Feature, or to a separate Claude-specific Feature?** Lean: separate Feature (`ahjo-claude`) so users can mix-and-match if a future variant doesn't want Claude. ahjo init applies both `ahjo-runtime` and `ahjo-claude` to build `ahjo-base`.
+1. **Anything in `internal/coi/` still imported elsewhere?** Grep before deleting; expect zero, but verify.
+
+(Claude bundling resolved: `ahjo-runtime` includes Claude prep. Splitting into a separate `ahjo-claude` Feature is deferred until a concrete opt-out need materializes.)
 
 ## Phase 4 (deferred, demand-driven) — Honor repo-supplied images
 
-Allow `image:` and `build:` in repo's devcontainer.json. Skipped here to keep scope tight; design when a concrete repo needs a base `ahjo-base` can't accommodate. Sketch:
+Allow `image:` and `build:` in repo `devcontainer.json`. Skipped here to keep scope tight.
 
-- Pull/build the declared image; `incus image import`.
-- Launch container from it.
-- Apply `ahjo-runtime` Feature as the final layer (provides sshd, host-keys dir, claude-prepare; reads `_REMOTE_USER` so any user account works).
-- Trust prompt once per repo when image isn't `ahjo-base`.
-- UID handling: ahjo-runtime Feature's `install.sh` ensures the container has a user at UID 1000 — create, rename, or accept depending on the source image. raw.idmap math unchanged.
+The hard part isn't Feature application — that's already built in Phases 1–2. The hard part is bridging Docker image semantics to Incus system containers. Sketch of options when demand materializes:
+
+- **Distrobuilder repack.** Add distrobuilder as a host dep. For a repo declaring `image: foo/bar`, run distrobuilder to produce an Incus system-container image from the OCI rootfs (installs systemd, ensures `/sbin/init`). Apply `ahjo-runtime` + repo Features on top.
+- **Drop-systemd opt-in.** Honor `image:` as-is; accept the resulting container is an Incus app container with no systemd. `ahjo-runtime` Feature runs sshd as a foreground process under Incus's fallback init. Real topology shift — the repo opts into it; default `ahjo-base` path stays system-container.
+- **Document non-support.** `image:` / `build:` permanently rejected; `ahjo-base` is the only base. Acceptable if the curated `ahjo-runtime` Feature plus user-declared Features cover all real demand.
+
+The right answer is "wait for a concrete repo that needs it" before deciding.
 
 ## What's deliberately omitted
 
+- **`mcr.microsoft.com/devcontainers/base:ubuntu` as ahjo's base.** Considered and rejected. It's an OCI app-container image (no `/sbin/init`, no CMD, `FROM buildpack-deps:noble-curl`). Importing into Incus produces `CONTAINER (APP)` where Incus's incusd is PID 1; sshd-as-a-service doesn't fit the model. Forcing it would mean either distrobuilder repack, dropping systemd, or reimplementing Docker semantics on Incus. We use upstream `images:ubuntu/24.04` (system container with systemd) instead.
 - **`@devcontainers/cli` as a build driver.** Adds Node + Docker assumptions. ahjo runs Features directly via `incus exec`.
-- **VS Code `customizations.vscode.*`.** Not relevant; ignored without warning.
-- **`initializeCommand`.** Spec defines it as host-side; under ahjo this would mean "on the Lima VM," which is awkward. Defer until demand.
-- **`dockerComposeFile`.** Multi-container repos require Docker semantics. Reject with clear error.
-- **Auto-migration of `.ahjoconfig`.** Per ahjo dev-mode convention, users self-migrate. Provide migration docs in README.
+- **VS Code `customizations.vscode.*` and other tools' customizations.** Not relevant; ignored without warning. Only `customizations.ahjo.*` is read.
+- **`initializeCommand`.** Spec defines it as host-side; under ahjo this means "on the Lima VM," which is awkward. Defer until demand.
+- **`updateContentCommand`.** No ahjo "refresh content" hook today; ignore until demand.
+- **`waitFor`.** ahjo runs lifecycle commands sequentially; the spec's wait semantics are implicit.
+- **`portsAttributes`, `hostRequirements`, `remoteEnv`.** Tool-side or out-of-scope; ignored without warning.
+- **`dockerComposeFile`, `mounts`, `runArgs`, `secrets`.** Docker-flavored or security-sensitive; reject with clear error rather than silent ignore.
+- **`.ahjoconfig` parsing or migration code.** The TOML parser is deleted, not preserved as an alias. Presence of a legacy file errors with a migration link. Per ahjo dev-mode convention, users self-migrate.
+- **Username change to `vscode`.** The previous draft adopted `vscode` because the Microsoft base ships it. With `images:ubuntu/24.04` as the base, ahjo adopts that image's canonical `ubuntu` user instead — see Phase 0 locked-in decisions. Today's bespoke `code` user is retired (parallel name for the same role; canonical wins per the reuse-canonical-names rule). Features are user-agnostic by design (read `_REMOTE_USER` from env), so no Feature-internal duplication of the username.
+- **`ahjo-claude` as a separate Feature.** Phase 1 bundles Claude prep into `ahjo-runtime`. Splitting is deferred until a concrete opt-out need materializes — premature otherwise.
 - **A separate `ahjo-invariants.md`** capturing implicit contracts in the kept code (SSH wiring, raw.idmap, branch CoW, registry, mirror). Independently valuable but not gating; written incrementally as each phase touches the relevant subsystem.
