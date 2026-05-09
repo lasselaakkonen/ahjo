@@ -586,10 +586,27 @@ func ExecAs(name string, uid int, env map[string]string, cwd string, argv ...str
 // against name, running argv as the given uid in cwd with optional env. Used
 // for `ahjo shell` / `ahjo claude` so signals + exit code passthrough are
 // automatic via execve.
+//
+// For uid 1000 (the canonical `ubuntu` user) we seed HOME/USER/LOGNAME/SHELL
+// because `incus exec` doesn't read /etc/passwd the way sshd+PAM does — without
+// these, `bash -l` runs with HOME="" and skips ~/.profile, so the user's
+// prompt and rc-driven setup never load. Caller env wins on collision.
 func ExecAttach(name string, uid int, env map[string]string, cwd string, argv ...string) error {
 	bin, err := exec.LookPath("incus")
 	if err != nil {
 		return fmt.Errorf("incus not on PATH: %w", err)
+	}
+	if uid == 1000 {
+		merged := map[string]string{
+			"HOME":    "/home/ubuntu",
+			"USER":    "ubuntu",
+			"LOGNAME": "ubuntu",
+			"SHELL":   "/bin/bash",
+		}
+		for k, v := range env {
+			merged[k] = v
+		}
+		env = merged
 	}
 	cliArgs := []string{"incus", "exec", name, "--force-interactive", "--user", strconv.Itoa(uid)}
 	if cwd != "" {
