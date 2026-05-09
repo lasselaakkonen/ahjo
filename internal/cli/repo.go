@@ -12,8 +12,8 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/lasselaakkonen/ahjo/internal/ahjoconfig"
 	"github.com/lasselaakkonen/ahjo/internal/config"
+	"github.com/lasselaakkonen/ahjo/internal/devcontainer"
 	"github.com/lasselaakkonen/ahjo/internal/incus"
 	"github.com/lasselaakkonen/ahjo/internal/lima"
 	"github.com/lasselaakkonen/ahjo/internal/lockfile"
@@ -116,10 +116,10 @@ func repoAddPlan(url, asAlias string) (slug, primary string, aliases []string, e
 }
 
 // repoAddSetup creates the default-branch container, clones the repo at /repo,
-// runs warm-install, .ahjoconfig run commands, then stops the container so
-// `incus copy` can COW it cheaply for branch creation. Inserts the repo +
-// default-branch rows into the registry only on success — a mid-flow
-// failure leaves no half-state.
+// runs warm-install, then the devcontainer.json lifecycle hooks (onCreate +
+// postCreate), then stops the container so `incus copy` can COW it cheaply
+// for branch creation. Inserts the repo + default-branch rows into the
+// registry only on success — a mid-flow failure leaves no half-state.
 //
 // Lockfile is acquired only for the final registry write; the long
 // container/network operations run unlocked so concurrent ahjo invocations
@@ -202,29 +202,79 @@ func repoAddSetup(slug, primary string, aliases []string, url, defaultBase strin
 		}
 	}
 
-	// Resolve the host-env keys to forward into warm-install (and any
-	// .ahjoconfig run commands). The clone has just landed, so
-	// LoadFromContainer can pick up /repo/.ahjoconfig if present.
+	// Refuse to set up against a legacy .ahjoconfig — Phase 2 retires the
+	// schema entirely. Users self-migrate per ahjo's no-runtime-migration
+	// rule; the design doc explains the move.
+	if has, err := devcontainer.HasLegacyAhjoconfig(containerName); err != nil {
+		return fmt.Errorf("probe legacy .ahjoconfig: %w", err)
+	} else if has {
+		return fmt.Errorf("/repo/.ahjoconfig is no longer supported. " +
+			"Migrate it to .devcontainer/devcontainer.json: " +
+			"`run` → `postCreateCommand`, `forward_env` / `auto_expose` → `customizations.ahjo.*`. " +
+			"See designdocs/adopt-devcontainer-spec.md.")
+	}
+
+	// Parse devcontainer.json (if present). Docker-flavored fields and
+	// `features:` (Phase 2b) are rejected by the parser itself, so by the
+	// time we have a *Config the schema is already valid for ahjo.
+	dcConf, _, err := devcontainer.LoadFromContainer(containerName)
+	if err != nil {
+		return err
+	}
+	if msg := remoteUserWarning(dcConf); msg != "" {
+		fmt.Fprintln(cobraOutErr(), msg)
+	}
+
+	// Apply containerEnv via Incus's `environment.<KEY>` config keys so
+	// every subsequent `incus exec` (including warm-install, lifecycle
+	// hooks, and the user's shell) sees the values. Already-running
+	// services aren't restarted; the spec doesn't promise that.
+	if err := dcConf.ApplyContainerEnv(func(k, v string) error {
+		return incus.ConfigSet(containerName, k, v)
+	}); err != nil {
+		return err
+	}
+
+	// Resolve the host-env keys to forward into warm-install and lifecycle
+	// hooks: global config.ForwardEnv ∪ customizations.ahjo.forward_env.
 	envKeys := append([]string(nil), cfg.ForwardEnv...)
-	var ahjoConf *ahjoconfig.Config
-	if rcfg, found, err := ahjoconfig.LoadFromContainer(containerName); err != nil {
-		fmt.Fprintf(cobraOutErr(), "warn: read /repo/.ahjoconfig: %v\n", err)
-	} else if found {
-		ahjoConf = rcfg
-		envKeys = append(envKeys, rcfg.ForwardEnv...)
+	if dcConf != nil {
+		envKeys = append(envKeys, dcConf.Customizations.Ahjo.ForwardEnv...)
 	}
 	hostEnv := resolveHostEnv(envKeys)
+	// Merge containerEnv into the per-exec env too — covers both stale
+	// containers and the case where Incus's environment.* propagation
+	// races a freshly-issued exec.
+	if dcConf != nil {
+		for k, v := range dcConf.ContainerEnv {
+			if _, set := hostEnv[k]; !set {
+				if hostEnv == nil {
+					hostEnv = map[string]string{}
+				}
+				hostEnv[k] = v
+			}
+		}
+	}
 
 	if err := runWarmInstall(containerName, hostEnv); err != nil {
 		fmt.Fprintf(cobraOutErr(), "warn: warm install: %v\n", err)
 	}
 
-	if ahjoConf != nil {
-		for _, cmd := range ahjoConf.Run {
-			fmt.Printf("→ %s\n", cmd)
-			if err := incus.ExecAs(containerName, 1000, hostEnv, paths.RepoMountPath, "bash", "-c", cmd); err != nil {
-				return fmt.Errorf(".ahjoconfig run %q: %w", cmd, err)
-			}
+	if dcConf != nil {
+		// onCreate runs before postCreate per spec. Sequential; a failure
+		// aborts so the half-set-up container surfaces a clear error
+		// rather than getting registered in a broken state.
+		if err := devcontainer.RunLifecycle(
+			containerName, devcontainer.StageOnCreate, dcConf.OnCreateCommand,
+			1000, hostEnv, paths.RepoMountPath, cobraOut(),
+		); err != nil {
+			return err
+		}
+		if err := devcontainer.RunLifecycle(
+			containerName, devcontainer.StagePostCreate, dcConf.PostCreateCommand,
+			1000, hostEnv, paths.RepoMountPath, cobraOut(),
+		); err != nil {
+			return err
 		}
 	}
 
@@ -427,6 +477,18 @@ func runWarmInstall(containerName string, hostEnv map[string]string) error {
 		fmt.Println("→ no lockfile detected; skipping warm install")
 	}
 	return nil
+}
+
+// remoteUserWarning returns the spec-vs-ahjo user-mismatch message for cfg
+// or empty string when there's no mismatch (or no devcontainer.json).
+// `ubuntu` is the canonical in-image account; ahjo never honors a different
+// remoteUser/containerUser declaration because git config / SSH keys are
+// pre-staged at /home/ubuntu.
+func remoteUserWarning(cfg *devcontainer.Config) string {
+	if cfg == nil {
+		return ""
+	}
+	return cfg.CheckRemoteUser("ubuntu")
 }
 
 // resolveHostEnv looks each key up in the host environment and returns the

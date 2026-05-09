@@ -7,8 +7,8 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/lasselaakkonen/ahjo/internal/ahjoconfig"
 	"github.com/lasselaakkonen/ahjo/internal/config"
+	"github.com/lasselaakkonen/ahjo/internal/devcontainer"
 	"github.com/lasselaakkonen/ahjo/internal/idmap"
 	"github.com/lasselaakkonen/ahjo/internal/incus"
 	"github.com/lasselaakkonen/ahjo/internal/lockfile"
@@ -43,9 +43,16 @@ func runShell(alias string, update bool) error {
 	if err != nil {
 		return err
 	}
-	env, err := branchEnv(containerName)
+	dcConf, err := loadDevcontainerSafe(containerName)
+	if err != nil {
+		return err
+	}
+	env, err := branchEnv(containerName, dcConf)
 	if err != nil {
 		fmt.Fprintf(cobraOutErr(), "warn: collect forward env: %v\n", err)
+	}
+	if err := runPostAttach(containerName, dcConf, env); err != nil {
+		return err
 	}
 	_ = br
 	return incus.ExecAttach(containerName, 1000, env, paths.RepoMountPath, "bash", "-l")
@@ -126,6 +133,21 @@ func prepareBranchContainer(alias string, update bool) (*registry.Branch, string
 		fmt.Fprintf(cobraOutErr(), "warn: could not start sshd: %v\n", err)
 	}
 
+	// devcontainer.json's postStartCommand fires every time the container
+	// starts (not just on first creation). Re-parse on each start — one
+	// extra `incus exec ... cat` and we never have a cache to invalidate.
+	if dcConf, err := loadDevcontainerSafe(containerName); err != nil {
+		return nil, "", err
+	} else if dcConf != nil {
+		env, _ := branchEnv(containerName, dcConf)
+		if err := devcontainer.RunLifecycle(
+			containerName, devcontainer.StagePostStart, dcConf.PostStartCommand,
+			1000, env, paths.RepoMountPath, cobraOut(),
+		); err != nil {
+			return nil, "", err
+		}
+	}
+
 	// Auto-expose: reconcile proxy devices for any pre-existing listeners.
 	// Best-effort — failures here must not block the user from getting their
 	// shell.
@@ -140,6 +162,43 @@ func prepareBranchContainer(alias string, update bool) (*registry.Branch, string
 	}
 
 	return br, containerName, nil
+}
+
+// loadDevcontainerSafe wraps devcontainer.LoadFromContainer with a warning
+// path: a parse / read failure is logged but not fatal at attach time. The
+// only attach-blocking case is a present-but-unsupported config; that's
+// reported as an error so the user knows to fix it.
+func loadDevcontainerSafe(container string) (*devcontainer.Config, error) {
+	cfg, found, err := devcontainer.LoadFromContainer(container)
+	if err != nil {
+		if found {
+			// parsed-but-rejected (e.g. `image:` declared) — surface so
+			// the user fixes the file before next start.
+			return nil, err
+		}
+		fmt.Fprintf(cobraOutErr(), "warn: read devcontainer.json: %v\n", err)
+		return nil, nil
+	}
+	if cfg != nil {
+		if msg := cfg.CheckRemoteUser("ubuntu"); msg != "" {
+			fmt.Fprintln(cobraOutErr(), msg)
+		}
+	}
+	return cfg, nil
+}
+
+// runPostAttach runs cfg.PostAttachCommand right before ahjo execs into
+// the user's shell. Sequential with the rest of the prep flow; failure
+// aborts the attach so the user sees the error rather than a silent
+// half-launch.
+func runPostAttach(container string, cfg *devcontainer.Config, env map[string]string) error {
+	if cfg == nil {
+		return nil
+	}
+	return devcontainer.RunLifecycle(
+		container, devcontainer.StagePostAttach, cfg.PostAttachCommand,
+		1000, env, paths.RepoMountPath, cobraOut(),
+	)
 }
 
 // applyRawIdmap stops the container, sets the per-container raw.idmap that
@@ -161,17 +220,19 @@ func applyRawIdmap(containerName string) error {
 }
 
 // branchEnv builds the env map propagated into the container at attach time:
-// global cfg.ForwardEnv ∪ /repo/.ahjoconfig forward_env, resolved against
-// the host's current environment. Keys that aren't set on the host fall
-// through silently.
-func branchEnv(containerName string) (map[string]string, error) {
+// global cfg.ForwardEnv ∪ customizations.ahjo.forward_env from the parsed
+// devcontainer.json, resolved against the host's current environment. Keys
+// that aren't set on the host fall through silently. dcConf may be nil when
+// the repo has no devcontainer.json; the global default still applies.
+func branchEnv(containerName string, dcConf *devcontainer.Config) (map[string]string, error) {
 	gcfg, err := config.Load()
 	if err != nil {
 		return nil, err
 	}
+	_ = containerName // dcConf is read by the caller; signature retained for symmetry
 	keys := append([]string(nil), gcfg.ForwardEnv...)
-	if rcfg, found, _ := ahjoconfig.LoadFromContainer(containerName); found && rcfg != nil {
-		keys = append(keys, rcfg.ForwardEnv...)
+	if dcConf != nil {
+		keys = append(keys, dcConf.Customizations.Ahjo.ForwardEnv...)
 	}
 	env := make(map[string]string, len(keys))
 	seen := make(map[string]struct{}, len(keys))

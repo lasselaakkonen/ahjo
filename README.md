@@ -145,13 +145,80 @@ enabled  = true   # default; set false to opt out globally
 min_port = 3000   # default; listeners below this are ignored
 ```
 
-A repo can override either field in its `.ahjoconfig` (per-worktree). When
-enabled, ahjo runs `ss -tlnH` inside the container at `ahjo shell` start and
-on `ahjo expose --sync`, then ensures one `ahjo-auto-<port>` Incus proxy
-device per qualifying listener (allocating Mac-side host ports from the same
-`port_range` as `ahjo expose`). Listeners that disappear get their proxy
-devices removed and their host ports freed; manual `ahjo expose` entries are
-never touched.
+A repo can override either field via its `.devcontainer/devcontainer.json`
+(per-repo, see "Per-repo config" below). When enabled, ahjo runs `ss -tlnH`
+inside the container at `ahjo shell` start and on `ahjo expose --sync`, then
+ensures one `ahjo-auto-<port>` Incus proxy device per qualifying listener
+(allocating Mac-side host ports from the same `port_range` as `ahjo expose`).
+Listeners that disappear get their proxy devices removed and their host
+ports freed; manual `ahjo expose` entries are never touched.
+
+## Per-repo config (devcontainer.json)
+
+ahjo reads `.devcontainer/devcontainer.json` (or `.devcontainer.json`) from
+each repo and honors a runtime-neutral subset of the [devcontainers.dev
+spec](https://containers.dev/implementors/json_reference/). Lax JSONC: `//`
+and `/* */` comments and trailing commas are accepted.
+
+Minimal example:
+
+```jsonc
+{
+  // Run after `git clone` lands inside the container.
+  "postCreateCommand": "pnpm install",
+
+  // Run on every `ahjo shell` / `ahjo claude` start.
+  "postStartCommand": "echo container ready",
+
+  // Per-process env visible to `incus exec` calls.
+  "containerEnv": { "NODE_ENV": "development" },
+
+  // ahjo's per-repo extension namespace, replacing the retired .ahjoconfig.
+  "customizations": {
+    "ahjo": {
+      "forward_env": ["MY_API_TOKEN"],
+      "auto_expose": { "enabled": true, "min_port": 3000 }
+    }
+  }
+}
+```
+
+| Field | Status | Behavior |
+| --- | --- | --- |
+| `onCreateCommand` | honored | Runs at `ahjo repo add` after `git clone`, before `postCreateCommand`, as `ubuntu` in `/repo`. |
+| `postCreateCommand` | honored | Same context as `onCreateCommand`; the user-facing one in most repos. |
+| `postStartCommand` | honored | Runs every `ahjo shell` / `ahjo claude`, after the container is ready. |
+| `postAttachCommand` | honored | Runs the moment ahjo execs into the user's shell. |
+| `containerEnv` | honored | Applied via Incus `environment.<KEY>` and merged into the per-exec env. |
+| `customizations.ahjo.forward_env` | honored | Appended to global `forward_env`; resolved against the host env per `incus exec`. |
+| `customizations.ahjo.auto_expose` | honored | Overrides the global `[auto_expose]` block (per-repo). |
+| `forwardPorts` | parsed | Captured for the future allowlist; not yet enforced. |
+| `remoteUser` / `containerUser` | warn-only | ahjo runs as `ubuntu`; mismatch is logged and ignored. |
+| `image`, `build`, `dockerComposeFile`, `mounts`, `runArgs`, `secrets` | rejected | Docker-flavored or security-sensitive. `ahjo repo add` aborts with an explicit error. |
+| `features` | rejected (Phase 2b) | OCI fetch + dependency resolution is deferred to Phase 2b of `designdocs/adopt-devcontainer-spec.md`. Remove the block to proceed. |
+| `customizations.vscode`, `customizations.codespaces`, etc. | ignored | ahjo isn't a VS Code host; only `customizations.ahjo` is read. |
+| `initializeCommand`, `updateContentCommand`, `waitFor`, `portsAttributes`, `hostRequirements`, `remoteEnv` | ignored | No matching ahjo concept; the spec field is silently dropped. |
+
+Lifecycle commands accept the spec's three forms: a string (`"pnpm install"`,
+runs via `bash -c`), an array (`["echo", "hi"]`, runs argv directly), or an
+object map (`{"a": "...", "b": "..."}`, runs each entry sequentially in
+sorted key order). A failed step aborts the chain so half-set-up containers
+surface a clear error.
+
+### Migrating from `.ahjoconfig`
+
+The retired TOML schema maps to the devcontainer.json fields above:
+
+| Old `.ahjoconfig` | New `.devcontainer/devcontainer.json` |
+| --- | --- |
+| `run = ["..."]` | `"postCreateCommand": "..."` (or array form) |
+| `forward_env = [...]` | `"customizations": { "ahjo": { "forward_env": [...] } }` |
+| `auto_expose.enabled` / `auto_expose.min_port` | `"customizations": { "ahjo": { "auto_expose": { ... } } }` |
+
+Per ahjo's no-runtime-migration convention, ahjo does not parse legacy
+`.ahjoconfig` files. `ahjo repo add` fails fast when one is present, with a
+pointer to this section. Existing branch containers continue to work but
+silently lose their per-repo overrides until you migrate.
 
 ## Rebuilding after a change
 

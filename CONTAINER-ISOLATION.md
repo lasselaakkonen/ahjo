@@ -112,6 +112,24 @@ limactl stop ahjo && limactl start ahjo
 
 Verify end-to-end with `ahjo doctor` — the host-side block compares host and in-VM key counts and points at the fix when they diverge.
 
+## devcontainer.json lifecycle hooks
+
+ahjo reads `.devcontainer/devcontainer.json` from each repo and executes the
+honored subset of [the spec's lifecycle commands](https://containers.dev/implementors/json_reference/#lifecycle-scripts):
+`onCreateCommand`, `postCreateCommand`, `postStartCommand`, `postAttachCommand`.
+These run inside the container as the `ubuntu` user in `/repo` with the
+forwarded env vars available, so they have full network egress and full
+write access to the per-branch checkout — the same posture as any other
+in-container code. Treat them as part of the workload: review them before
+running, and rely on the per-container boundary to bound blast radius.
+
+`features:` (the spec's mechanism for declaring upstream Feature artifacts
+fetched from `ghcr.io/devcontainers/features/*` or other registries) is
+*rejected* in Phase 2a — the OCI fetch path lands in Phase 2b. ahjo's own
+`ahjo-runtime` Feature is applied at image-build time inside the transient
+build container; that path's trust posture is unchanged. See
+`designdocs/adopt-devcontainer-spec.md` for the full picture.
+
 ## Out of scope
 
 ahjo isolates *workloads*, not the host CLI. Anything you `ahjo repo add` is code you've decided to bring in; ahjo doesn't sandbox `git clone` against a hostile remote. Treat container contents as you would any local checkout — review before running, and rely on the boundaries above to limit blast radius if you don't.

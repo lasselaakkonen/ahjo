@@ -109,8 +109,8 @@ func removeAllExposed(containerName, slug string, exposed []incus.ProxyDevice) (
 }
 
 // forceExposeAllListening mirrors the add-half of reconcileAutoExpose but
-// bypasses the global/.ahjoconfig "enabled" check so the user's `e` toggle
-// works even when auto-expose is disabled by config.
+// bypasses the global/customizations.ahjo "enabled" check so the user's `e`
+// toggle works even when auto-expose is disabled by config.
 func forceExposeAllListening(containerName string, br *registry.Branch) (string, error) {
 	listening, err := containerListeningPorts(containerName)
 	if err != nil {

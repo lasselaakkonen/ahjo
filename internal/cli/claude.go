@@ -35,9 +35,16 @@ func runClaude(alias string, update bool) error {
 	if err != nil {
 		return err
 	}
-	env, err := branchEnv(containerName)
+	dcConf, err := loadDevcontainerSafe(containerName)
+	if err != nil {
+		return err
+	}
+	env, err := branchEnv(containerName, dcConf)
 	if err != nil {
 		fmt.Fprintf(cobraOutErr(), "warn: collect forward env: %v\n", err)
+	}
+	if err := runPostAttach(containerName, dcConf, env); err != nil {
+		return err
 	}
 	_ = br
 	return incus.ExecAttach(containerName, 1000, env, paths.RepoMountPath, "claude")

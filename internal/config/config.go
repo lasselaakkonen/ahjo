@@ -37,8 +37,9 @@ type Range struct {
 // to the host. Reconciled from `ss -tlnH` inside the container on `ahjo shell`
 // and `ahjo expose --sync`.
 //
-// Enabled is a *bool so a per-repo .ahjoconfig can distinguish "unset" from
-// "explicitly disabled" when overriding the global default.
+// Enabled is a *bool so a per-repo `customizations.ahjo.auto_expose` block
+// in devcontainer.json can distinguish "unset" from "explicitly disabled"
+// when overriding the global default.
 type AutoExposeConfig struct {
 	Enabled *bool `toml:"enabled"`
 	MinPort int   `toml:"min_port"`

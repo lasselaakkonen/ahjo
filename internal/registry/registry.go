@@ -37,6 +37,12 @@ type Repo struct {
 	// `ahjo mirror`. Set on first activation; subsequent calls without
 	// --target reuse it.
 	MacMirrorTarget string `toml:"mac_mirror_target,omitempty"`
+	// FeatureConsent records the user's one-time trust decisions for
+	// non-curated devcontainer Feature sources, keyed by glob pattern
+	// (e.g. `ghcr.io/foo/*`). The curated `ghcr.io/devcontainers/features/*`
+	// set is auto-trusted and never appears here. Phase 2a reserves the
+	// schema; the consent prompt and OCI fetch land in Phase 2b.
+	FeatureConsent map[string]bool `toml:"feature_consent,omitempty"`
 }
 
 // Branch is a per-branch container holding a checkout at /repo. Replaces
