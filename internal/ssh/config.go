@@ -18,18 +18,18 @@ func RegenerateConfig(reg *registry.Registry) error {
 	if err := os.MkdirAll(paths.SharedDir(), 0o755); err != nil {
 		return fmt.Errorf("mkdir %s: %w", paths.SharedDir(), err)
 	}
-	wts := append([]registry.Worktree(nil), reg.Worktrees...)
-	sort.Slice(wts, func(i, j int) bool { return wts[i].Slug < wts[j].Slug })
+	bs := append([]registry.Branch(nil), reg.Branches...)
+	sort.Slice(bs, func(i, j int) bool { return bs[i].Slug < bs[j].Slug })
 
 	knownHosts := paths.KnownHostsPath()
 
 	var b strings.Builder
 	fmt.Fprintln(&b, "# ahjo-managed: do not edit")
 	fmt.Fprintf(&b, "# Generated %s\n\n", time.Now().UTC().Format(time.RFC3339))
-	for _, w := range wts {
-		fmt.Fprintf(&b, "Host ahjo-%s\n", w.Slug)
+	for _, br := range bs {
+		fmt.Fprintf(&b, "Host ahjo-%s\n", br.Slug)
 		fmt.Fprintln(&b, "  HostName 127.0.0.1")
-		fmt.Fprintf(&b, "  Port %d\n", w.SSHPort)
+		fmt.Fprintf(&b, "  Port %d\n", br.SSHPort)
 		fmt.Fprintln(&b, "  User code")
 		fmt.Fprintln(&b, "  IdentityFile ~/.ssh/id_ed25519")
 		fmt.Fprintf(&b, "  UserKnownHostsFile %s\n", knownHosts)
@@ -44,26 +44,26 @@ func RegenerateConfig(reg *registry.Registry) error {
 
 	var amap strings.Builder
 	fmt.Fprintln(&amap, "# ahjo-managed: alias\tslug, do not edit")
-	for _, w := range wts {
-		for _, a := range w.Aliases {
-			fmt.Fprintf(&amap, "%s\t%s\n", a, w.Slug)
+	for _, br := range bs {
+		for _, a := range br.Aliases {
+			fmt.Fprintf(&amap, "%s\t%s\n", a, br.Slug)
 		}
 	}
 	if err := writeAtomic(paths.AliasesPath(), amap.String(), 0o644); err != nil {
 		return err
 	}
 
-	return writeKnownHosts(knownHosts, wts)
+	return writeKnownHosts(knownHosts, bs)
 }
 
-// writeKnownHosts concatenates each worktree's per-slug known_hosts into a
-// single Mac-readable file. Worktrees with no host keys yet are skipped —
+// writeKnownHosts concatenates each branch's per-slug known_hosts into a
+// single Mac-readable file. Branches with no host keys yet are skipped —
 // they'll be picked up on the next regeneration.
-func writeKnownHosts(dst string, wts []registry.Worktree) error {
+func writeKnownHosts(dst string, bs []registry.Branch) error {
 	var b strings.Builder
 	fmt.Fprintln(&b, "# ahjo-managed: do not edit")
-	for _, w := range wts {
-		src := filepath.Join(w.SSHHostKeysDir, paths.KnownHostsFile)
+	for _, br := range bs {
+		src := filepath.Join(paths.SlugHostKeysDir(br.Slug), paths.KnownHostsFile)
 		c, err := os.ReadFile(src)
 		if err != nil {
 			if os.IsNotExist(err) {

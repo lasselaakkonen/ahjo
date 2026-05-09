@@ -1,11 +1,8 @@
-// Package mirror implements `ahjo mirror`: a one-way live mirror from a
-// VM-resident worktree onto a Mac directory under the writable virtiofs mount,
-// so that the user can run their app natively on macOS while the editing
-// happens inside an ahjo container.
-//
-// The watcher runs on the Lima VM. Container `/workspace` is a read-write
-// bind-mount of the VM worktree, so VM-side fsnotify catches container writes
-// for free. rsync writes to the Mac via the existing virtiofs share.
+// Package mirror implements `ahjo mirror`. Phase 1 (no-more-worktrees) ships
+// with mirror temporarily disabled: the old VM-resident worktree path is
+// gone, and the Phase 2 storage-pool-internal-path replacement is not yet
+// wired. The State struct here carries the container name so Phase 2 can
+// resume from existing per-repo MacMirrorTarget config without churn.
 package mirror
 
 import (
@@ -28,12 +25,12 @@ const (
 // State is the on-disk record of the currently active mirror, persisted at
 // ~/.ahjo/mirror.json. There is at most one active mirror at a time.
 type State struct {
-	Alias        string    `json:"alias"`
-	Slug         string    `json:"slug"`
-	WorktreePath string    `json:"worktree_path"`
-	Target       string    `json:"target"`
-	PID          int       `json:"pid,omitempty"`
-	StartedAt    time.Time `json:"started_at"`
+	Alias     string    `json:"alias"`
+	Slug      string    `json:"slug"`
+	Container string    `json:"container"`
+	Target    string    `json:"target"`
+	PID       int       `json:"pid,omitempty"`
+	StartedAt time.Time `json:"started_at"`
 }
 
 func StatePath() string { return filepath.Join(paths.AhjoDir(), stateFile) }

@@ -229,7 +229,7 @@ Signed-By: /etc/apt/keyrings/zabbly.asc
 				}
 				return false, "", nil
 			},
-			Show: "creates ~/.ahjo/{repos,worktrees,host-keys,profiles,shared}",
+			Show: "creates ~/.ahjo/{host-keys,profiles,shared}",
 			Action: func(_ io.Writer) error {
 				return paths.EnsureSkeleton()
 			},
@@ -322,7 +322,7 @@ Signed-By: /etc/apt/keyrings/zabbly.asc
 				fmt.Fprintln(out, "  → merged hasCompletedOnboarding=true into "+p)
 				return nil
 			},
-			Post: "\nDone. Try:\n  ahjo doctor                              # green check\n  ahjo repo add <name> <git-url>           # register a repo\n  ahjo new <name> <branch>                 # create a sandboxed worktree",
+			Post: "\nDone. Try:\n  ahjo doctor                              # green check\n  ahjo repo add <git-url>                  # clone into a default container\n  ahjo new <repo-alias> <branch>           # create a COW branch container",
 		},
 	}...)
 	return steps
@@ -330,18 +330,18 @@ Signed-By: /etc/apt/keyrings/zabbly.asc
 
 // subuidGrantStep ensures /etc/subuid + /etc/subgid grant the Incus daemon
 // permission to delegate the in-VM host UID/GID into a container's userns.
-// Required so the per-container `raw.idmap` ahjo applies after `coi.Setup`
-// (see internal/cli/shell.go and internal/cli/new.go) is honored at start;
-// without these lines, `newuidmap` rejects the mapping and the container
-// fails to come up.
+// Required so the per-container `raw.idmap` ahjo applies in cli/repo.go
+// (default container) and cli/new.go (COW-cloned branch containers) is
+// honored at start; without these lines, `newuidmap` rejects the mapping
+// and the container fails to come up.
 //
 // Shared between `ahjo init` and `ahjo update` — both need to assert the
 // invariant. The step is idempotent: re-runs detect the lines and skip the
 // daemon restart entirely.
 //
-// Background: COI v0.8.0 implements raw.idmap natively but auto-disables it
+// Background: COI v0.8.x implements raw.idmap natively but auto-disables it
 // on Lima/Colima (it assumes the workspace is on virtiofs and handled at the
-// VM level). ahjo's worktrees live on the VM's local filesystem, so the
+// VM level). ahjo's containers run on the VM's local btrfs pool, so the
 // assumption doesn't hold. See CONTAINER-ISOLATION.md "Workspace UID mapping".
 func subuidGrantStep() initflow.Step {
 	uid := os.Getuid()

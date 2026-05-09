@@ -259,7 +259,7 @@ func (m *model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	}
 
 	prevRepo := selectedRepoName(m.repos)
-	prevWt := selectedWorktreeSlug(m.containers)
+	prevWt := selectedBranchSlug(m.containers)
 
 	var cmd tea.Cmd
 	switch m.focus {
@@ -274,7 +274,7 @@ func (m *model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if selectedRepoName(m.repos) != prevRepo {
 		m.refreshContainers()
 		m.refreshDetails()
-	} else if selectedWorktreeSlug(m.containers) != prevWt {
+	} else if selectedBranchSlug(m.containers) != prevWt {
 		m.refreshDetails()
 	}
 	return m, cmd
@@ -293,9 +293,9 @@ func (m *model) startInput(mode inputMode) {
 		}
 		m.input.Placeholder = "branch (under " + repo.Aliases[0] + ")"
 	case inputMirrorTarget:
-		w := selectedWorktree(m.containers)
+		w := selectedBranch(m.containers)
 		if w == nil {
-			m.flash = "select a worktree first"
+			m.flash = "select a branch first"
 			return
 		}
 		repo := findRepoByName(m.snap.repos, w.Repo)
@@ -345,7 +345,7 @@ func (m *model) submitInput() (tea.Model, tea.Cmd) {
 		m.cancelInput()
 		return m, cmd
 	case inputMirrorTarget:
-		w := selectedWorktree(m.containers)
+		w := selectedBranch(m.containers)
 		if w == nil {
 			m.cancelInput()
 			return m, nil
@@ -391,8 +391,8 @@ func (m *model) refreshDetails() {
 			content = renderRepoDetail(*repo, m.snap)
 		}
 	case focusContainers:
-		if w := selectedWorktree(m.containers); w != nil {
-			content = renderWorktreeDetail(m.deps, *w, m.snap)
+		if w := selectedBranch(m.containers); w != nil {
+			content = renderBranchDetail(m.deps, *w, m.snap)
 		} else if repo := selectedRepo(m.repos); repo != nil {
 			content = renderRepoDetail(*repo, m.snap)
 		} else {
@@ -470,8 +470,8 @@ func (m *model) execRepoRm() tea.Cmd {
 		return nil
 	}
 	alias := repo.Aliases[0]
-	if hasWorktrees(m.snap, repo.Name) {
-		m.flash = "repo " + alias + " has worktrees; remove them first"
+	if hasBranches(m.snap, repo.Name) {
+		m.flash = "repo " + alias + " has branches; remove them first"
 		return nil
 	}
 	m.flash = "removing " + alias + "…"
@@ -484,7 +484,7 @@ func (m *model) execNewContainer(repoAlias, branch string) tea.Cmd {
 }
 
 func (m *model) execWorktreeRm() tea.Cmd {
-	w := selectedWorktree(m.containers)
+	w := selectedBranch(m.containers)
 	if w == nil {
 		return nil
 	}
@@ -494,7 +494,7 @@ func (m *model) execWorktreeRm() tea.Cmd {
 }
 
 func (m *model) execToggleExpose() tea.Cmd {
-	w := selectedWorktree(m.containers)
+	w := selectedBranch(m.containers)
 	if w == nil {
 		return nil
 	}
@@ -516,7 +516,7 @@ func (m *model) execToggleExpose() tea.Cmd {
 // runMirrorActivate stops any other active mirror itself, so this is purely
 // the dispatch.
 func (m *model) handleToggleMirror() (tea.Model, tea.Cmd) {
-	w := selectedWorktree(m.containers)
+	w := selectedBranch(m.containers)
 	if w == nil {
 		return m, nil
 	}
@@ -561,9 +561,9 @@ func lastNonEmptyLine(s string) string {
 	return ""
 }
 
-func hasWorktrees(snap snapshot, repoName string) bool {
-	for _, w := range snap.worktrees {
-		if w.Repo == repoName {
+func hasBranches(snap snapshot, repoName string) bool {
+	for _, br := range snap.branches {
+		if br.Repo == repoName {
 			return true
 		}
 	}
@@ -637,7 +637,7 @@ func (m *model) inputBlock() string {
 		title = detailTitle.Render("new container · " + repoAlias)
 		hint = detailLabel.Render("enter to submit · esc to cancel")
 	case inputMirrorTarget:
-		w := selectedWorktree(m.containers)
+		w := selectedBranch(m.containers)
 		alias := ""
 		if w != nil {
 			alias = w.Aliases[0]
@@ -658,7 +658,7 @@ func (m *model) renderFooter() string {
 	case focusContainers:
 		bindings = append(bindings, m.keys.NewContainer, m.keys.RemoveContainer)
 	case focusDetails:
-		if selectedWorktree(m.containers) != nil {
+		if selectedBranch(m.containers) != nil {
 			bindings = append(bindings, m.keys.ToggleExpose, m.keys.ToggleMirror)
 		}
 	}
@@ -737,8 +737,8 @@ func selectedRepoName(l list.Model) string {
 	return ""
 }
 
-func selectedWorktreeSlug(l list.Model) string {
-	if w := selectedWorktree(l); w != nil {
+func selectedBranchSlug(l list.Model) string {
+	if w := selectedBranch(l); w != nil {
 		return w.Slug
 	}
 	return ""

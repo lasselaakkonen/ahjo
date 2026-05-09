@@ -27,13 +27,13 @@ func (r repoItem) FilterValue() string {
 	return r.repo.Name
 }
 
-// containerItem represents one worktree row in the middle column.
+// containerItem represents one branch row in the middle column.
 type containerItem struct {
-	wt    registry.Worktree
+	br    registry.Branch
 	state string // "present" | "missing"
 }
 
-func (c containerItem) FilterValue() string { return strings.Join(c.wt.Aliases, ",") }
+func (c containerItem) FilterValue() string { return strings.Join(c.br.Aliases, ",") }
 
 // compactDelegate renders a single-line item with a `▸` caret on the focused row.
 type compactDelegate struct {
@@ -85,9 +85,9 @@ func itemLabel(item list.Item) string {
 		}
 		return v.repo.Name
 	case containerItem:
-		alias := v.wt.Slug
-		if len(v.wt.Aliases) > 0 {
-			alias = v.wt.Aliases[0]
+		alias := v.br.Slug
+		if len(v.br.Aliases) > 0 {
+			alias = v.br.Aliases[0]
 		}
 		marker := "·"
 		if v.state == "present" {
@@ -109,19 +109,19 @@ func repoItemsFrom(snap snapshot) []list.Item {
 	return out
 }
 
-// containerItemsFor returns the worktrees of a single repo, with their
+// containerItemsFor returns the branches of a single repo, with their
 // container-existence state pre-resolved.
 func containerItemsFor(snap snapshot, repoName string) []list.Item {
 	var out []list.Item
-	for _, w := range snap.worktrees {
-		if w.Repo != repoName {
+	for _, br := range snap.branches {
+		if br.Repo != repoName {
 			continue
 		}
 		state := "missing"
-		if snap.containers[w.Slug] {
+		if snap.containers[br.Slug] {
 			state = "present"
 		}
-		out = append(out, containerItem{wt: w, state: state})
+		out = append(out, containerItem{br: br, state: state})
 	}
 	return out
 }
@@ -137,19 +137,19 @@ func selectedRepo(l list.Model) *registry.Repo {
 	return &r
 }
 
-// selectedWorktree returns the worktree currently highlighted in the middle
+// selectedBranch returns the branch currently highlighted in the middle
 // column, or nil if no item is highlighted.
-func selectedWorktree(l list.Model) *registry.Worktree {
+func selectedBranch(l list.Model) *registry.Branch {
 	it, ok := l.SelectedItem().(containerItem)
 	if !ok {
 		return nil
 	}
-	w := it.wt
-	return &w
+	b := it.br
+	return &b
 }
 
 // findRepoByName returns the snapshot's copy of the repo with the given Name,
-// or nil if it isn't in the snapshot. Used when only a Worktree.Repo string
+// or nil if it isn't in the snapshot. Used when only a Branch.Repo string
 // is in hand (e.g. from the containers list).
 func findRepoByName(repos []registry.Repo, name string) *registry.Repo {
 	for i := range repos {

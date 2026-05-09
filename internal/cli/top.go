@@ -43,20 +43,20 @@ func hostStatusForTop() top.HostStatus {
 	return defaultMacHostStatus()
 }
 
-// toggleExposeForTop flips the worktree's container between "all listening
+// toggleExposeForTop flips the branch's container between "all listening
 // ports exposed" and "no ports exposed". The state is observed from the
 // container's current proxy devices: if any auto- or manual- expose device
 // exists, we strip them all; otherwise we add an auto-expose proxy for every
 // TCP listener inside the container above the configured min_port (skipping
 // SSH).
-func toggleExposeForTop(w *registry.Worktree) (string, error) {
+func toggleExposeForTop(br *registry.Branch) (string, error) {
 	release, err := lockfile.Acquire()
 	if err != nil {
 		return "", err
 	}
 	defer release()
 
-	containerName, err := resolveContainerName(w)
+	containerName, err := resolveContainerName(br)
 	if err != nil {
 		return "", err
 	}
@@ -75,9 +75,9 @@ func toggleExposeForTop(w *registry.Worktree) (string, error) {
 	}
 
 	if len(exposed) > 0 {
-		return removeAllExposed(containerName, w.Slug, exposed)
+		return removeAllExposed(containerName, br.Slug, exposed)
 	}
-	return forceExposeAllListening(containerName, w)
+	return forceExposeAllListening(containerName, br)
 }
 
 // removeAllExposed deletes every auto/manual expose proxy device on the
@@ -111,7 +111,7 @@ func removeAllExposed(containerName, slug string, exposed []incus.ProxyDevice) (
 // forceExposeAllListening mirrors the add-half of reconcileAutoExpose but
 // bypasses the global/.ahjoconfig "enabled" check so the user's `e` toggle
 // works even when auto-expose is disabled by config.
-func forceExposeAllListening(containerName string, w *registry.Worktree) (string, error) {
+func forceExposeAllListening(containerName string, br *registry.Branch) (string, error) {
 	listening, err := containerListeningPorts(containerName)
 	if err != nil {
 		return "", fmt.Errorf("scan listening ports: %w", err)
@@ -137,7 +137,7 @@ func forceExposeAllListening(containerName string, w *registry.Worktree) (string
 		if _, exists := have[cport]; exists {
 			continue
 		}
-		hostPort, err := pp.Allocate(w.Slug, ports.AutoExposePrefix+strconv.Itoa(cport))
+		hostPort, err := pp.Allocate(br.Slug, ports.AutoExposePrefix+strconv.Itoa(cport))
 		if err != nil {
 			return "", err
 		}

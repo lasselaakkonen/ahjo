@@ -8,7 +8,11 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"sort"
+	"strconv"
 	"strings"
+	"syscall"
+	"time"
 )
 
 // Exec runs a one-shot command in the container via `incus exec` and returns
@@ -189,9 +193,11 @@ func ConfigGet(container, key string) (string, error) {
 	return strings.TrimSpace(string(out)), nil
 }
 
-// ConfigSet writes a single container-level config key via `incus config set`.
+// ConfigSet writes a single container-level config key via `incus config
+// set`. Uses the `<key>=<value>` argv form — the older `<key> <value>`
+// form is deprecated and prints a warning per call on recent incus.
 func ConfigSet(container, key, value string) error {
-	cmd := exec.Command("incus", "config", "set", container, key, value)
+	cmd := exec.Command("incus", "config", "set", container, key+"="+value)
 	out, err := cmd.CombinedOutput()
 	if err == nil {
 		os.Stdout.Write(out)
@@ -341,60 +347,203 @@ func RemoveDevice(container, device string) error {
 	return fmt.Errorf("incus config device remove %s %s: %w", container, device, err)
 }
 
-// UpdateWorktreeMounts rebases all disk device source paths in a COW-copied
-// container from oldBase to newBase. Devices whose remapped source does not
-// exist on the host are removed — COI may have created protect-* bind-mounts
-// for directories (e.g. .husky, .vscode) that are absent in the new branch.
-func UpdateWorktreeMounts(container, oldBase, newBase string) error {
-	cmd := exec.Command("incus", "config", "device", "show", container)
-	out, err := cmd.Output()
-	if err != nil {
-		return fmt.Errorf("incus config device show %s: %w", container, err)
-	}
-
-	type devInfo struct {
-		name  string
-		props map[string]string
-	}
-	var devs []devInfo
-	var cur *devInfo
-	for _, line := range strings.Split(string(out), "\n") {
-		if len(line) > 0 && line[0] != ' ' && strings.HasSuffix(line, ":") {
-			devs = append(devs, devInfo{name: strings.TrimSuffix(line, ":"), props: map[string]string{}})
-			cur = &devs[len(devs)-1]
-			continue
+// EnsureSSHAgentProxy adds an `ssh-agent` proxy device on container,
+// forwarding hostSocket inside as /tmp/ssh-agent.sock owned by uid/gid
+// 1000. Verifies the listen socket actually materializes; if it doesn't
+// (incus's bind=container proxy occasionally races with the container's
+// init bringup), removes and re-adds up to a few times.
+//
+// On Lima the host SSH_AUTH_SOCK path changes per session, so callers
+// re-run this every shell/claude/repo-add to keep the device pointing at
+// the live socket. Always strips the existing device first so a stale
+// connect path (or a previous attempt's dead forkproxy) can't shadow the
+// new one.
+//
+// security.uid / security.gid are deliberately NOT set — on this incus
+// version they silently prevent the proxy from creating the listen
+// socket. uid/gid/mode are sufficient.
+func EnsureSSHAgentProxy(container, hostSocket string) error {
+	for attempt := 0; attempt < 3; attempt++ {
+		_ = RemoveDevice(container, "ssh-agent")
+		args := []string{
+			"config", "device", "add", container, "ssh-agent", "proxy",
+			"listen=unix:/tmp/ssh-agent.sock",
+			"connect=unix:" + hostSocket,
+			"bind=container",
+			"uid=1000", "gid=1000", "mode=0600",
 		}
-		if cur == nil {
-			continue
-		}
-		if kv := strings.SplitN(strings.TrimSpace(line), ": ", 2); len(kv) == 2 {
-			cur.props[kv[0]] = kv[1]
-		}
-	}
-
-	for _, d := range devs {
-		if d.props["type"] != "disk" {
-			continue
-		}
-		src := d.props["source"]
-		if !strings.HasPrefix(src, oldBase) {
-			continue
-		}
-		newSrc := newBase + src[len(oldBase):]
-		if _, serr := os.Stat(newSrc); serr != nil {
-			// Source path absent in new worktree — drop the device.
-			rmCmd := exec.Command("incus", "config", "device", "remove", container, d.name)
-			if rmOut, rmErr := rmCmd.CombinedOutput(); rmErr != nil {
-				return fmt.Errorf("incus config device remove %s %s: %w: %s", container, d.name, rmErr, rmOut)
+		cmd := exec.Command("incus", args...)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			os.Stderr.Write(out)
+			var ee *exec.ExitError
+			if errors.As(err, &ee) {
+				return fmt.Errorf("incus config device add ssh-agent: exit %d", ee.ExitCode())
 			}
-			continue
+			return fmt.Errorf("incus config device add ssh-agent: %w", err)
 		}
-		setCmd := exec.Command("incus", "config", "device", "set", container, d.name, "source="+newSrc)
-		if setOut, setErr := setCmd.CombinedOutput(); setErr != nil {
-			return fmt.Errorf("incus config device set %s %s source=%s: %w: %s", container, d.name, newSrc, setErr, setOut)
+		// Verify the listen socket actually appeared inside the container.
+		// Poll up to ~2s — incus reports success before forkproxy has
+		// finished namespace setup, and on a freshly-started container
+		// the first attempt commonly races and silently no-ops.
+		for i := 0; i < 20; i++ {
+			if probeErr := exec.Command("incus", "exec", container, "--", "test", "-S", "/tmp/ssh-agent.sock").Run(); probeErr == nil {
+				return nil
+			}
+			time.Sleep(100 * time.Millisecond)
 		}
+		// Wait progressively longer between retries so the container's
+		// init has more time to settle on each go.
+		time.Sleep(time.Duration(attempt+1) * time.Second)
+	}
+	return fmt.Errorf("ssh-agent proxy added but listen socket /tmp/ssh-agent.sock never appeared in %s", container)
+}
+
+// LaunchStopped runs `incus init <image> <name>`. The instance exists after
+// this returns but is not started, letting the caller apply per-container
+// config (raw.idmap, devices) before first boot.
+func LaunchStopped(image, name string) error {
+	cmd := exec.Command("incus", "init", image, name)
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		os.Stdout.Write(out)
+		return nil
+	}
+	os.Stderr.Write(out)
+	var ee *exec.ExitError
+	if errors.As(err, &ee) {
+		return fmt.Errorf("incus init %s %s: exit %d", image, name, ee.ExitCode())
+	}
+	return fmt.Errorf("incus init %s %s: %w", image, name, err)
+}
+
+// Start runs `incus start <name>`. Tolerant of "already running".
+func Start(name string) error {
+	cmd := exec.Command("incus", "start", name)
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		os.Stdout.Write(out)
+		return nil
+	}
+	low := strings.ToLower(string(out))
+	if strings.Contains(low, "already running") || strings.Contains(low, "is running") {
+		return nil
+	}
+	os.Stderr.Write(out)
+	var ee *exec.ExitError
+	if errors.As(err, &ee) {
+		return fmt.Errorf("incus start %s: exit %d", name, ee.ExitCode())
+	}
+	return fmt.Errorf("incus start %s: %w", name, err)
+}
+
+// WaitReady polls `incus exec <name> -- echo ready` until it succeeds or
+// timeout elapses. Used after Start to wait out PID 1 / network bring-up
+// before issuing the first real exec.
+func WaitReady(name string, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	var lastErr error
+	for time.Now().Before(deadline) {
+		cmd := exec.Command("incus", "exec", name, "--", "echo", "ready")
+		if err := cmd.Run(); err == nil {
+			return nil
+		} else {
+			lastErr = err
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+	if lastErr != nil {
+		return fmt.Errorf("container %s not ready after %s: %w", name, timeout, lastErr)
+	}
+	return fmt.Errorf("container %s not ready after %s", name, timeout)
+}
+
+// envArgs renders an env map into stable `--env KEY=VAL` argv pairs (sorted
+// for reproducibility). Keys with empty values fall through unchanged so the
+// caller can decide whether to drop them.
+func envArgs(env map[string]string) []string {
+	if len(env) == 0 {
+		return nil
+	}
+	keys := make([]string, 0, len(env))
+	for k := range env {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	args := make([]string, 0, 2*len(keys))
+	for _, k := range keys {
+		args = append(args, "--env", k+"="+env[k])
+	}
+	return args
+}
+
+// ExecAs runs argv inside name as the given uid, with optional env + cwd,
+// inheriting the caller's stdio. Non-interactive: stdin is the parent's,
+// no force-interactive flag. Use this for one-shot setup commands where
+// the child is expected to exit on its own.
+func ExecAs(name string, uid int, env map[string]string, cwd string, argv ...string) error {
+	args := []string{"exec", name, "--user", strconv.Itoa(uid)}
+	if cwd != "" {
+		args = append(args, "--cwd", cwd)
+	}
+	args = append(args, envArgs(env)...)
+	args = append(args, "--")
+	args = append(args, argv...)
+	cmd := exec.Command("incus", args...)
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		var ee *exec.ExitError
+		if errors.As(err, &ee) {
+			return fmt.Errorf("incus exec %s (uid %d) %s: exit %d", name, uid, strings.Join(argv, " "), ee.ExitCode())
+		}
+		return fmt.Errorf("incus exec %s (uid %d) %s: %w", name, uid, strings.Join(argv, " "), err)
 	}
 	return nil
+}
+
+// ExecAttach replaces the current process with `incus exec --force-interactive`
+// against name, running argv as the given uid in cwd with optional env. Used
+// for `ahjo shell` / `ahjo claude` so signals + exit code passthrough are
+// automatic via execve.
+func ExecAttach(name string, uid int, env map[string]string, cwd string, argv ...string) error {
+	bin, err := exec.LookPath("incus")
+	if err != nil {
+		return fmt.Errorf("incus not on PATH: %w", err)
+	}
+	cliArgs := []string{"incus", "exec", name, "--force-interactive", "--user", strconv.Itoa(uid)}
+	if cwd != "" {
+		cliArgs = append(cliArgs, "--cwd", cwd)
+	}
+	cliArgs = append(cliArgs, envArgs(env)...)
+	cliArgs = append(cliArgs, "--")
+	cliArgs = append(cliArgs, argv...)
+	return syscall.Exec(bin, cliArgs, os.Environ())
+}
+
+// FilePush copies hostPath into the container at containerPath via
+// `incus file push`. Tolerant of a missing host file: returns (false, nil)
+// so callers can skip optional config files (e.g. a host's ~/.claude.json
+// that doesn't exist yet).
+func FilePush(name, hostPath, containerPath string) (pushed bool, err error) {
+	if _, statErr := os.Stat(hostPath); statErr != nil {
+		if os.IsNotExist(statErr) {
+			return false, nil
+		}
+		return false, statErr
+	}
+	cmd := exec.Command("incus", "file", "push", hostPath, name+containerPath)
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		return true, nil
+	}
+	os.Stderr.Write(out)
+	var ee *exec.ExitError
+	if errors.As(err, &ee) {
+		return false, fmt.Errorf("incus file push %s %s%s: exit %d", hostPath, name, containerPath, ee.ExitCode())
+	}
+	return false, fmt.Errorf("incus file push %s %s%s: %w", hostPath, name, containerPath, err)
 }
 
 // StoragePoolDriver returns the driver of the default storage pool, e.g. "btrfs".

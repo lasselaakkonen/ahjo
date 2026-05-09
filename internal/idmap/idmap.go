@@ -3,11 +3,12 @@
 // daemon needs to honor a `raw.idmap` directive, and the raw.idmap value
 // itself.
 //
-// COI v0.8.0 implements `raw.idmap` for non-Lima environments but
+// COI v0.8.x implements `raw.idmap` for non-Lima environments but
 // auto-disables it on Lima/Colima (it assumes the workspace is a virtiofs
-// mount handled at the VM level). ahjo's worktrees live on the VM's local
-// filesystem, so the assumption doesn't hold and ahjo applies raw.idmap
-// itself after `coi.Setup`.
+// mount handled at the VM level). ahjo's containers live on the VM's local
+// btrfs pool, so the assumption doesn't hold; Phase 1 ahjo applies
+// raw.idmap itself in cli/repo.go (default container) and cli/new.go
+// (COW-cloned branch containers).
 package idmap
 
 import (

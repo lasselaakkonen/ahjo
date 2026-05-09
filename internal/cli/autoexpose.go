@@ -26,16 +26,16 @@ const autoExposeDevicePrefix = "ahjo-auto-"
 // Idempotent: safe to call repeatedly. Reads + writes ~/.ahjo/ports.toml so
 // callers should hold the ahjo lockfile when invoking this from a write
 // context (e.g. ahjo expose --sync).
-func reconcileAutoExpose(out io.Writer, w *registry.Worktree) error {
+func reconcileAutoExpose(out io.Writer, br *registry.Branch) error {
 	gcfg, err := config.Load()
 	if err != nil {
 		return err
 	}
-	enabled, minPort := autoExposeSettings(gcfg, w.WorktreePath)
-	containerName, err := resolveContainerName(w)
+	containerName, err := resolveContainerName(br)
 	if err != nil {
 		return err
 	}
+	enabled, minPort := autoExposeSettings(gcfg, containerName)
 
 	devices, err := incus.ListProxyDevices(containerName)
 	if err != nil {
@@ -70,7 +70,7 @@ func reconcileAutoExpose(out io.Writer, w *registry.Worktree) error {
 		if err := incus.RemoveDevice(containerName, autoExposeDevicePrefix+strconv.Itoa(cport)); err != nil {
 			return err
 		}
-		pp.FreePurpose(w.Slug, ports.AutoExposePrefix+strconv.Itoa(cport))
+		pp.FreePurpose(br.Slug, ports.AutoExposePrefix+strconv.Itoa(cport))
 		dirty = true
 		fmt.Fprintf(out, "auto-expose: drop container :%d\n", cport)
 	}
@@ -84,7 +84,7 @@ func reconcileAutoExpose(out io.Writer, w *registry.Worktree) error {
 		if _, exists := have[cport]; exists {
 			continue
 		}
-		hostPort, err := pp.Allocate(w.Slug, ports.AutoExposePrefix+strconv.Itoa(cport))
+		hostPort, err := pp.Allocate(br.Slug, ports.AutoExposePrefix+strconv.Itoa(cport))
 		if err != nil {
 			return err
 		}
@@ -109,14 +109,15 @@ func reconcileAutoExpose(out io.Writer, w *registry.Worktree) error {
 }
 
 // autoExposeSettings folds the global ~/.ahjo/config.toml [auto_expose]
-// section together with any per-repo .ahjoconfig override.
-func autoExposeSettings(gcfg *config.Config, worktreePath string) (enabled bool, minPort int) {
+// section together with any per-repo .ahjoconfig override read from
+// /repo/.ahjoconfig inside containerName.
+func autoExposeSettings(gcfg *config.Config, containerName string) (enabled bool, minPort int) {
 	enabled = gcfg.AutoExpose.Enabled == nil || *gcfg.AutoExpose.Enabled
 	minPort = gcfg.AutoExpose.MinPort
 	if minPort == 0 {
 		minPort = config.DefaultAutoExposeMinPort
 	}
-	if rcfg, found, _ := ahjoconfig.Load(worktreePath); found && rcfg != nil {
+	if rcfg, found, _ := ahjoconfig.LoadFromContainer(containerName); found && rcfg != nil {
 		if rcfg.AutoExpose.Enabled != nil {
 			enabled = *rcfg.AutoExpose.Enabled
 		}

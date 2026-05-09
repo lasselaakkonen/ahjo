@@ -7,7 +7,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/lasselaakkonen/ahjo/internal/coi"
+	"github.com/lasselaakkonen/ahjo/internal/incus"
 	"github.com/lasselaakkonen/ahjo/internal/lockfile"
 	"github.com/lasselaakkonen/ahjo/internal/paths"
 	"github.com/lasselaakkonen/ahjo/internal/ports"
@@ -19,18 +19,18 @@ func newNukeCmd() *cobra.Command {
 	var yes bool
 	cmd := &cobra.Command{
 		Use:   "nuke",
-		Short: "Tear down all containers, images, worktrees, and caches; keep configs",
+		Short: "Tear down all containers, images, host-keys, and caches; keep configs",
 		Long: `nuke removes everything ahjo built so a fresh 'ahjo init' can rebuild:
 
-  - stops and deletes every worktree container
+  - stops and deletes every branch container (default + per-branch)
   - deletes the ahjo-base and coi-default Incus images
-  - removes ~/.ahjo/{worktrees,host-keys}
-  - clears worktree entries from registry.toml and port allocations from ports.json
+  - removes ~/.ahjo/host-keys
+  - clears branch + repo entries from registry.toml (default containers
+    are not recoverable without re-cloning) and port allocations
   - regenerates ~/.ahjo-shared/ssh-config
 
 It KEEPS:
-  - ~/.ahjo/{config.toml,profiles,repos}
-  - registered repo entries in registry.toml
+  - ~/.ahjo/{config.toml,profiles}
   - ~/.coi/
 
 On macOS, 'ahjo nuke' is handled host-side: it tears down the Lima VM
@@ -61,19 +61,19 @@ func runNuke(yes bool) error {
 	}
 	defer release()
 
-	for _, w := range reg.Worktrees {
-		name, err := resolveContainerName(&w)
+	for _, br := range reg.Branches {
+		name, err := resolveContainerName(&br)
 		if err != nil {
-			fmt.Fprintf(cobraOutErr(), "note: skipping container ops for %s: %v\n", w.Slug, err)
+			fmt.Fprintf(cobraOutErr(), "note: skipping container ops for %s: %v\n", br.Slug, err)
 			continue
 		}
-		fmt.Printf("→ coi shutdown %s\n", name)
-		if err := coi.Shutdown(name); err != nil {
-			fmt.Fprintf(cobraOutErr(), "warn: coi shutdown %s: %v\n", name, err)
+		fmt.Printf("→ incus stop %s\n", name)
+		if err := incus.Stop(name); err != nil {
+			fmt.Fprintf(cobraOutErr(), "warn: incus stop %s: %v\n", name, err)
 		}
-		fmt.Printf("→ coi container delete -f %s\n", name)
-		if err := coi.ContainerDelete(name); err != nil {
-			fmt.Fprintf(cobraOutErr(), "warn: container delete %s: %v\n", name, err)
+		fmt.Printf("→ incus delete --force %s\n", name)
+		if err := incus.ContainerDeleteForce(name); err != nil {
+			fmt.Fprintf(cobraOutErr(), "warn: incus delete %s: %v\n", name, err)
 		}
 	}
 
@@ -85,14 +85,15 @@ func runNuke(yes bool) error {
 		}
 	}
 
-	for _, d := range []string{paths.WorktreesDir(), paths.HostKeysDir()} {
+	for _, d := range []string{paths.HostKeysDir()} {
 		fmt.Printf("→ rm -rf %s\n", d)
 		if err := os.RemoveAll(d); err != nil {
 			fmt.Fprintf(cobraOutErr(), "warn: rm %s: %v\n", d, err)
 		}
 	}
 
-	reg.Worktrees = nil
+	reg.Branches = nil
+	reg.Repos = nil
 	if err := reg.Save(); err != nil {
 		return fmt.Errorf("save registry: %w", err)
 	}
@@ -116,23 +117,22 @@ func runNuke(yes bool) error {
 
 func printNukePreview(reg *registry.Registry) {
 	fmt.Println("ahjo nuke will:")
-	if len(reg.Worktrees) == 0 {
-		fmt.Println("  - no worktree containers tracked in the registry")
+	if len(reg.Branches) == 0 {
+		fmt.Println("  - no branch containers tracked in the registry")
 	} else {
-		for _, w := range reg.Worktrees {
-			name, err := resolveContainerName(&w)
+		for _, br := range reg.Branches {
+			name, err := resolveContainerName(&br)
 			if err != nil {
-				fmt.Printf("  - (no container) remove worktree %s\n", w.WorktreePath)
+				fmt.Printf("  - (no container) drop branch %s\n", br.Aliases[0])
 				continue
 			}
-			fmt.Printf("  - delete container %s and worktree %s\n", name, w.WorktreePath)
+			fmt.Printf("  - delete container %s\n", name)
 		}
 	}
 	fmt.Println("  - delete incus images: ahjo-base, coi-default")
-	fmt.Printf("  - remove %s\n", paths.WorktreesDir())
 	fmt.Printf("  - remove %s\n", paths.HostKeysDir())
-	fmt.Printf("  - clear worktrees from %s and allocations from %s\n",
+	fmt.Printf("  - clear branches + repos from %s and allocations from %s\n",
 		paths.RegistryPath(), paths.PortsPath())
-	fmt.Println("It KEEPS: registered repos, config.toml, profiles, ~/.ahjo/repos, ~/.coi/")
+	fmt.Println("It KEEPS: config.toml, profiles, ~/.coi/")
 	fmt.Println("Re-run with -y to proceed.")
 }

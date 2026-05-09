@@ -56,11 +56,11 @@ func runExposeSync(alias string) error {
 	if err != nil {
 		return err
 	}
-	w := reg.FindWorktreeByAlias(alias)
-	if w == nil {
-		return fmt.Errorf("no worktree with alias %q", alias)
+	br := reg.FindBranchByAlias(alias)
+	if br == nil {
+		return fmt.Errorf("no branch with alias %q", alias)
 	}
-	return reconcileAutoExpose(cobraOut(), w)
+	return reconcileAutoExpose(cobraOut(), br)
 }
 
 func runExpose(alias string, cport int) error {
@@ -74,12 +74,12 @@ func runExpose(alias string, cport int) error {
 	if err != nil {
 		return err
 	}
-	w := reg.FindWorktreeByAlias(alias)
-	if w == nil {
-		return fmt.Errorf("no worktree with alias %q", alias)
+	br := reg.FindBranchByAlias(alias)
+	if br == nil {
+		return fmt.Errorf("no branch with alias %q", alias)
 	}
 
-	containerName, err := resolveContainerName(w)
+	containerName, err := resolveContainerName(br)
 	if err != nil {
 		return err
 	}
@@ -89,7 +89,7 @@ func runExpose(alias string, cport int) error {
 		return err
 	}
 	purpose := fmt.Sprintf("%s%d", ports.ExposePrefix, cport)
-	hostPort, err := pp.Allocate(w.Slug, purpose)
+	hostPort, err := pp.Allocate(br.Slug, purpose)
 	if err != nil {
 		return err
 	}

@@ -9,7 +9,7 @@ networks:
     ipv6.address: none
 storage_pools:
 - name: default
-  driver: dir
+  driver: btrfs
 profiles:
 - name: default
   devices:

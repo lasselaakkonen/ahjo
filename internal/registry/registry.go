@@ -15,19 +15,22 @@ import (
 	"github.com/lasselaakkonen/ahjo/internal/paths"
 )
 
-const Version = 1
+// Version 2 (2026-05-08): worktrees → branches; bare repo and worktree paths
+// dropped (containers hold the full clone at /repo). Existing v1 registries
+// are rejected with an upgrade error; users nuke ~/.ahjo/registry.toml and
+// re-add repos. See designdocs/no-more-worktrees.md.
+const Version = 2
 
 type Registry struct {
-	Version   int        `toml:"version"`
-	Repos     []Repo     `toml:"repos"`
-	Worktrees []Worktree `toml:"worktrees"`
+	Version  int      `toml:"version"`
+	Repos    []Repo   `toml:"repos"`
+	Branches []Branch `toml:"branches"`
 }
 
 type Repo struct {
 	Name              string   `toml:"name"`
 	Aliases           []string `toml:"aliases"`
 	Remote            string   `toml:"remote"`
-	BarePath          string   `toml:"bare_path"`
 	DefaultBase       string   `toml:"default_base"`
 	BaseContainerName string   `toml:"base_container_name,omitempty"`
 	// MacMirrorTarget is the per-repo default Mac path used by
@@ -36,17 +39,18 @@ type Repo struct {
 	MacMirrorTarget string `toml:"mac_mirror_target,omitempty"`
 }
 
-type Worktree struct {
+// Branch is a per-branch container holding a checkout at /repo. Replaces
+// the v1 Worktree struct (containers no longer bind-mount a host worktree).
+type Branch struct {
 	Repo           string    `toml:"repo"`
 	Aliases        []string  `toml:"aliases"`
 	Branch         string    `toml:"branch"`
 	Slug           string    `toml:"slug"`
-	WorktreePath   string    `toml:"worktree_path"`
 	ContainerAlias string    `toml:"container_alias"`
 	SSHPort        int       `toml:"ssh_port"`
-	SSHHostKeysDir string    `toml:"ssh_host_keys_dir"`
+	IncusName      string    `toml:"incus_name"`
+	IsDefault      bool      `toml:"is_default,omitempty"`
 	CreatedAt      time.Time `toml:"created_at"`
-	IncusName      string    `toml:"incus_name,omitempty"`
 }
 
 var (
@@ -122,51 +126,51 @@ func (r *Registry) FindRepoByAlias(alias string) *Repo {
 	return nil
 }
 
-// FindWorktreeByAlias resolves any alias (auto or manual) to a worktree.
-func (r *Registry) FindWorktreeByAlias(alias string) *Worktree {
-	for i := range r.Worktrees {
-		for _, a := range r.Worktrees[i].Aliases {
+// FindBranchByAlias resolves any alias (auto or manual) to a branch.
+func (r *Registry) FindBranchByAlias(alias string) *Branch {
+	for i := range r.Branches {
+		for _, a := range r.Branches[i].Aliases {
 			if a == alias {
-				return &r.Worktrees[i]
+				return &r.Branches[i]
 			}
 		}
 	}
 	return nil
 }
 
-// AliasInUse reports whether alias is registered on any repo or worktree.
+// AliasInUse reports whether alias is registered on any repo or branch.
 func (r *Registry) AliasInUse(alias string) bool {
-	return r.FindRepoByAlias(alias) != nil || r.FindWorktreeByAlias(alias) != nil
+	return r.FindRepoByAlias(alias) != nil || r.FindBranchByAlias(alias) != nil
 }
 
-// FindWorktree returns a worktree by (repo-name, branch). Used internally.
-func (r *Registry) FindWorktree(repo, branch string) *Worktree {
-	for i := range r.Worktrees {
-		if r.Worktrees[i].Repo == repo && r.Worktrees[i].Branch == branch {
-			return &r.Worktrees[i]
+// FindBranch returns a branch by (repo-name, branch). Used internally.
+func (r *Registry) FindBranch(repo, branch string) *Branch {
+	for i := range r.Branches {
+		if r.Branches[i].Repo == repo && r.Branches[i].Branch == branch {
+			return &r.Branches[i]
 		}
 	}
 	return nil
 }
 
-func (r *Registry) RepoHasWorktrees(repoName string) bool {
-	for i := range r.Worktrees {
-		if r.Worktrees[i].Repo == repoName {
+func (r *Registry) RepoHasBranches(repoName string) bool {
+	for i := range r.Branches {
+		if r.Branches[i].Repo == repoName {
 			return true
 		}
 	}
 	return false
 }
 
-func (r *Registry) RemoveWorktree(repoName, branch string) {
-	out := r.Worktrees[:0]
-	for _, w := range r.Worktrees {
-		if w.Repo == repoName && w.Branch == branch {
+func (r *Registry) RemoveBranch(repoName, branch string) {
+	out := r.Branches[:0]
+	for _, b := range r.Branches {
+		if b.Repo == repoName && b.Branch == branch {
 			continue
 		}
-		out = append(out, w)
+		out = append(out, b)
 	}
-	r.Worktrees = out
+	r.Branches = out
 }
 
 func (r *Registry) RemoveRepo(name string) {
@@ -305,8 +309,8 @@ func (r *Registry) repoSlugTaken(slug string) bool {
 	return false
 }
 
-// MakeWorktreeAlias builds the canonical worktree alias as "<repo-alias>@<branch>".
-func MakeWorktreeAlias(repoAlias, branch string) string {
+// MakeBranchAlias builds the canonical branch alias as "<repo-alias>@<branch>".
+func MakeBranchAlias(repoAlias, branch string) string {
 	return repoAlias + "@" + branch
 }
 
@@ -333,8 +337,8 @@ func (r *Registry) MakeSlug(repoSlug, branch string) string {
 }
 
 func (r *Registry) slugTaken(slug string) bool {
-	for i := range r.Worktrees {
-		if r.Worktrees[i].Slug == slug {
+	for i := range r.Branches {
+		if r.Branches[i].Slug == slug {
 			return true
 		}
 	}

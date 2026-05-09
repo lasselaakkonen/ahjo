@@ -22,11 +22,11 @@ type snapshotMsg struct {
 
 type snapshot struct {
 	repos       []registry.Repo
-	worktrees   []registry.Worktree
-	containers  map[string]bool // worktree slug -> container exists
+	branches    []registry.Branch
+	containers  map[string]bool // branch slug -> container exists
 	ports       *ports.Ports
 	host        HostStatus
-	mirrorSlug  string // slug of the worktree currently mirroring, "" if none
+	mirrorSlug  string // slug of the branch currently mirroring, "" if none
 	mirrorAlive bool   // mirror daemon is reachable (kill -0)
 }
 
@@ -48,7 +48,7 @@ func loadSnapshot(deps Deps) (snapshot, error) {
 		return snap, err
 	}
 	snap.repos = reg.Repos
-	snap.worktrees = reg.Worktrees
+	snap.branches = reg.Branches
 
 	pp, err := ports.Load()
 	if err != nil {
@@ -56,10 +56,10 @@ func loadSnapshot(deps Deps) (snapshot, error) {
 	}
 	snap.ports = pp
 
-	snap.containers = make(map[string]bool, len(reg.Worktrees))
-	for i := range reg.Worktrees {
-		w := &reg.Worktrees[i]
-		name, err := deps.ResolveContainerName(w)
+	snap.containers = make(map[string]bool, len(reg.Branches))
+	for i := range reg.Branches {
+		br := &reg.Branches[i]
+		name, err := deps.ResolveContainerName(br)
 		if err != nil {
 			continue
 		}
@@ -67,7 +67,7 @@ func loadSnapshot(deps Deps) (snapshot, error) {
 		if err != nil {
 			continue
 		}
-		snap.containers[w.Slug] = exists
+		snap.containers[br.Slug] = exists
 	}
 
 	if deps.HostStatus != nil {

@@ -1,15 +1,14 @@
-// Package coi wraps the host `coi` binary.
+// Package coi wraps the host `coi` binary. Phase 1 of no-more-worktrees
+// reduces this to image-build operations only — runtime container lifecycle
+// (creation, attach, exec) moved to direct `incus` calls in
+// internal/incus/incus.go and internal/cli/{repo,new,shell,claude}.go.
 package coi
 
 import (
-	"encoding/json"
-	"errors"
 	"fmt"
 	"os"
 	"os/exec"
-	"strconv"
 	"strings"
-	"syscall"
 )
 
 // PinnedVersion is the COI release ahjo targets. ahjo passes VERSION=<this>
@@ -30,17 +29,23 @@ import (
 //   - v0.8.0 (2026-04-16): pin established. Embeds the `npm:pnpm@latest`
 //     fix for mise's aqua backend, removing the need for ahjo's prior
 //     sed-patch on profiles/default/build.sh.
-const PinnedVersion = "v0.8.0"
+//   - v0.8.1 (2026-05-07): sandbox JSON merge moved from in-container
+//     `python3 -c` to pure Go (no python3 dependency in container; fixes
+//     intermittent exit-1). tmux env-var forwarding moved off `export …`
+//     onto `tmux new-session -e` (no longer leaks via ps). `sg` removed
+//     from incus invocations (must be in incus-admin group with active
+//     session). /etc/claude-code/managed-settings.json suppresses claude's
+//     auto-mode prompt.
+const PinnedVersion = "v0.8.1"
 
 // InstalledVersion returns the version reported by `coi --version`, normalized
-// to a tag like "v0.8.0". Returns "" when coi isn't on PATH or the output
+// to a tag like "v0.8.1". Returns "" when coi isn't on PATH or the output
 // can't be parsed; callers should treat that as "unknown" rather than failure.
 func InstalledVersion() string {
 	out, err := exec.Command("coi", "--version").Output()
 	if err != nil {
 		return ""
 	}
-	// `coi --version` prints e.g. "coi version v0.8.0".
 	for _, f := range strings.Fields(strings.TrimSpace(string(out))) {
 		if strings.HasPrefix(f, "v") {
 			return f
@@ -49,72 +54,9 @@ func InstalledVersion() string {
 	return ""
 }
 
-// ExecShell replaces the current process with
-// `coi shell --debug --tmux=false --container <name>` from worktreeDir. The
-// `--debug` flag skips COI's AI-tool launcher (which would otherwise start
-// `claude` per the container's `[tool.claude]` config) and drops straight to
-// an interactive bash. Use ExecClaude for the claude-launching variant.
-//
-// Pinning the container by name (not by --slot) is required because
-// `coi shell --slot N` auto-allocates a fresh slot whenever slot N already
-// has a running container — which is always, for an existing ahjo worktree.
-// `--container <name>` forces COI to reuse our prepared container instead.
-//
-// `--tmux=false` keeps the host terminal off the alternate screen: COI's
-// default-on tmux session puts the terminal on the alt-screen without
-// requesting mouse tracking, which makes terminal emulators (Ghostty, xterm,
-// …) translate scroll-wheel events into ↑/↓ arrow keypresses that then
-// nudge the inner app's input cursor. Users who want tmux can start it
-// themselves inside the container.
-//
-// Stdio + signals + exit code passthrough is automatic via execve.
-func ExecShell(worktreeDir, containerName string) error {
-	return execAttach(worktreeDir, containerName, true)
-}
-
-// ExecClaude replaces the current process with
-// `coi shell --tmux=false --container <name>` from worktreeDir, letting COI's
-// AI-tool launcher start `claude` inside the container.
-func ExecClaude(worktreeDir, containerName string) error {
-	return execAttach(worktreeDir, containerName, false)
-}
-
-func execAttach(worktreeDir, containerName string, debug bool) error {
-	bin, err := exec.LookPath("coi")
-	if err != nil {
-		return fmt.Errorf("coi not on PATH: %w", err)
-	}
-	if err := os.Chdir(worktreeDir); err != nil {
-		return fmt.Errorf("chdir %s: %w", worktreeDir, err)
-	}
-	argv := []string{"coi", "shell", "--tmux=false"}
-	if debug {
-		argv = append(argv, "--debug")
-	}
-	argv = append(argv, "--container", containerName)
-	return syscall.Exec(bin, argv, os.Environ())
-}
-
-// Setup triggers COI's container creation + session setup (claude config push,
-// sandbox injection, mounts) without launching the AI tool, by running
-// `coi shell --debug --tmux=false --slot <slot>` and feeding it `exit\n` on
-// stdin. The container persists after this returns. Use this on first
-// `ahjo shell` so subsequent steps (e.g. ahjo-claude-prepare) can run inside
-// the container before claude ever starts.
-func Setup(worktreeDir string, slot int) error {
-	bin, err := exec.LookPath("coi")
-	if err != nil {
-		return fmt.Errorf("coi not on PATH: %w", err)
-	}
-	cmd := exec.Command(bin, "shell", "--debug", "--tmux=false", "--slot", strconv.Itoa(slot))
-	cmd.Dir = worktreeDir
-	cmd.Stdin = strings.NewReader("exit\n")
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	return cmd.Run()
-}
-
-// Build runs `coi build --profile <name>` (optionally with --force) inheriting stdio.
+// Build runs `coi build --profile <name>` (optionally with --force)
+// inheriting stdio. The only runtime use of COI in Phase 1+ — image-build
+// pipeline only.
 func Build(profile string, force bool) error {
 	args := []string{"build", "--profile", profile}
 	if force {
@@ -126,97 +68,15 @@ func Build(profile string, force bool) error {
 	return cmd.Run()
 }
 
-// ContainerStart runs `coi container start <name>`. Tolerant of "already running".
-func ContainerStart(name string) error {
-	return runTolerant([]string{"container", "start", name}, "already running", "is already")
-}
-
-// ContainerStop runs `coi container stop <name>`. Tolerant of "not running".
-func ContainerStop(name string) error {
-	return runTolerant([]string{"container", "stop", name}, "not running", "is stopped")
-}
-
-// ContainerDelete runs `coi container delete -f <name>`. Tolerant of "not found".
-func ContainerDelete(name string) error {
-	return runTolerant([]string{"container", "delete", "-f", name}, "not found", "no such")
-}
-
-// Shutdown runs `coi shutdown <name>`. Tolerant of "not found".
-func Shutdown(name string) error {
-	return runTolerant([]string{"shutdown", name}, "not found", "no such")
-}
-
-// ContainerExec runs a one-shot command in the named container as the given uid.
-func ContainerExec(name string, asRoot bool, argv ...string) error {
-	args := []string{"container", "exec", name}
-	if asRoot {
-		args = append(args, "--user", "0")
-	}
-	args = append(args, "--")
-	args = append(args, argv...)
-	cmd := exec.Command("coi", args...)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	return cmd.Run()
-}
-
-// ContainerExecAs runs a one-shot command in the named container as the given
-// uid. Unlike ContainerExec(asRoot=false), this passes `--user <uid>` explicitly
-// so we don't depend on COI's default-user behavior.
-func ContainerExecAs(name string, uid int, argv ...string) error {
-	args := []string{"container", "exec", name, "--user", strconv.Itoa(uid), "--"}
-	args = append(args, argv...)
-	cmd := exec.Command("coi", args...)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	return cmd.Run()
-}
-
-// ResolveContainer asks COI for the incus instance name backing the given
-// workspace alias at the given slot. COI names containers `coi-<hash>-<slot>`
-// where the hash is derived from the workspace path; the alias from
-// `.coi/config.toml` is just a label. Returns ("", nil) when no matching
-// container is registered (caller treats that as "not yet created").
-func ResolveContainer(alias string, slot int) (string, error) {
-	out, err := exec.Command("coi", "list", "--format", "json").Output()
+// AhjoBaseAssets returns the embedded ahjo-base profile files (config.toml, build.sh).
+func AhjoBaseAssets() (configTOML, buildSh []byte, err error) {
+	configTOML, err = assets.ReadFile("assets/profiles/ahjo-base/config.toml")
 	if err != nil {
-		return "", fmt.Errorf("coi list: %w", err)
+		return nil, nil, fmt.Errorf("read embedded ahjo-base/config.toml: %w", err)
 	}
-	var payload struct {
-		ActiveContainers []struct {
-			Alias string `json:"alias"`
-			Name  string `json:"name"`
-		} `json:"active_containers"`
+	buildSh, err = assets.ReadFile("assets/profiles/ahjo-base/build.sh")
+	if err != nil {
+		return nil, nil, fmt.Errorf("read embedded ahjo-base/build.sh: %w", err)
 	}
-	if err := json.Unmarshal(out, &payload); err != nil {
-		return "", fmt.Errorf("parse coi list json: %w", err)
-	}
-	suffix := "-" + strconv.Itoa(slot)
-	for _, c := range payload.ActiveContainers {
-		if c.Alias == alias && strings.HasSuffix(c.Name, suffix) {
-			return c.Name, nil
-		}
-	}
-	return "", nil
-}
-
-func runTolerant(args []string, tolerantNeedles ...string) error {
-	cmd := exec.Command("coi", args...)
-	out, err := cmd.CombinedOutput()
-	if err == nil {
-		os.Stdout.Write(out)
-		return nil
-	}
-	low := strings.ToLower(string(out))
-	for _, n := range tolerantNeedles {
-		if strings.Contains(low, n) {
-			return nil
-		}
-	}
-	os.Stderr.Write(out)
-	var ee *exec.ExitError
-	if errors.As(err, &ee) {
-		return fmt.Errorf("coi %s: exit %d", strings.Join(args, " "), ee.ExitCode())
-	}
-	return fmt.Errorf("coi %s: %w", strings.Join(args, " "), err)
+	return configTOML, buildSh, nil
 }

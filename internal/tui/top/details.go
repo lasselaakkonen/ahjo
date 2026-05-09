@@ -47,7 +47,6 @@ func renderRepoDetail(repo registry.Repo, snap snapshot) string {
 	row("aliases", strings.Join(repo.Aliases, ", "))
 	row("remote", repo.Remote)
 	row("default", repo.DefaultBase)
-	row("bare", repo.BarePath)
 	if repo.MacMirrorTarget != "" {
 		row("mirror", repo.MacMirrorTarget)
 	}
@@ -55,16 +54,16 @@ func renderRepoDetail(repo registry.Repo, snap snapshot) string {
 		row("base ctr", repo.BaseContainerName)
 	}
 
-	wts := worktreesFor(snap, repo.Name)
-	row("worktrees", fmt.Sprintf("%d", len(wts)))
+	bs := branchesFor(snap, repo.Name)
+	row("branches", fmt.Sprintf("%d", len(bs)))
 	return b.String()
 }
 
-func renderWorktreeDetail(deps Deps, w registry.Worktree, snap snapshot) string {
+func renderBranchDetail(deps Deps, br registry.Branch, snap snapshot) string {
 	var b strings.Builder
-	alias := w.Slug
-	if len(w.Aliases) > 0 {
-		alias = w.Aliases[0]
+	alias := br.Slug
+	if len(br.Aliases) > 0 {
+		alias = br.Aliases[0]
 	}
 	b.WriteString(detailTitle.Render(alias))
 	b.WriteString("\n\n")
@@ -74,16 +73,16 @@ func renderWorktreeDetail(deps Deps, w registry.Worktree, snap snapshot) string 
 		b.WriteString(detailValue.Render(v))
 		b.WriteString("\n")
 	}
-	row("repo", w.Repo)
-	row("branch", w.Branch)
-	row("slug", w.Slug)
-	row("ssh", fmt.Sprintf("127.0.0.1:%d", w.SSHPort))
+	row("repo", br.Repo)
+	row("branch", br.Branch)
+	row("slug", br.Slug)
+	row("ssh", fmt.Sprintf("127.0.0.1:%d", br.SSHPort))
 
 	state := "missing"
-	if snap.containers[w.Slug] {
+	if snap.containers[br.Slug] {
 		state = "present"
 	}
-	if name, err := deps.ResolveContainerName(&w); err == nil {
+	if name, err := deps.ResolveContainerName(&br); err == nil {
 		row("container", fmt.Sprintf("%s (%s)", name, state))
 	} else {
 		row("container", state)
@@ -91,19 +90,22 @@ func renderWorktreeDetail(deps Deps, w registry.Worktree, snap snapshot) string 
 
 	exposed := "-"
 	if snap.ports != nil {
-		exposed = deps.FormatExposed(snap.ports.AllocationsForSlug(w.Slug))
+		exposed = deps.FormatExposed(snap.ports.AllocationsForSlug(br.Slug))
 	}
 	row("exposed", exposed)
-	row("path", w.WorktreePath)
-	row("created", w.CreatedAt.Format("2006-01-02 15:04"))
+	row("path", "/repo")
+	if br.IsDefault {
+		row("default", "yes")
+	}
+	row("created", br.CreatedAt.Format("2006-01-02 15:04"))
 	return b.String()
 }
 
-func worktreesFor(snap snapshot, repoName string) []registry.Worktree {
-	var out []registry.Worktree
-	for _, w := range snap.worktrees {
-		if w.Repo == repoName {
-			out = append(out, w)
+func branchesFor(snap snapshot, repoName string) []registry.Branch {
+	var out []registry.Branch
+	for _, br := range snap.branches {
+		if br.Repo == repoName {
+			out = append(out, br)
 		}
 	}
 	return out
