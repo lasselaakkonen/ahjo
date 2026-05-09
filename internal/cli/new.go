@@ -74,6 +74,7 @@ func runNew(repoAlias, branch, base, asAlias string, noFetch bool) error {
 		return err
 	}
 
+	fmt.Printf("→ starting container\n")
 	if err := incus.Start(containerName); err != nil {
 		return err
 	}
@@ -111,7 +112,8 @@ func runNew(repoAlias, branch, base, asAlias string, noFetch bool) error {
 		fmt.Fprintf(cobraOutErr(), "warn: could not start sshd: %v\n", err)
 	}
 
-	fmt.Fprintf(os.Stdout, "ssh port %d; run: ahjo shell %s\n", br.SSHPort, br.Aliases[0])
+	alias := br.Aliases[0]
+	fmt.Fprintf(os.Stdout, "\nahjo shell %s\nahjo claude %s\n", alias, alias)
 	return nil
 }
 
@@ -162,6 +164,8 @@ func newReserveBranch(cfg *config.Config, repoAlias, branch, asAlias string) (*r
 			aliases = append(aliases, asAlias)
 		}
 	}
+
+	fmt.Printf("Creating container %s\n", primary)
 
 	slug := reg.MakeSlug(repo.Name, branch)
 	hostKeysDir := paths.SlugHostKeysDir(slug)
@@ -231,6 +235,7 @@ func cloneFromBase(repo *registry.Repo, br *registry.Branch) error {
 		return err
 	}
 
+	fmt.Printf("→ configuring container\n")
 	hostKeysDir := paths.SlugHostKeysDir(br.Slug)
 	if err := incus.ConfigDeviceSet(containerName, "ahjo-host-keys", "source", hostKeysDir); err != nil {
 		return fmt.Errorf("rewire ahjo-host-keys mount: %w", err)
