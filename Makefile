@@ -5,7 +5,7 @@ GOFLAGS := -trimpath -ldflags '$(LDFLAGS)'
 
 PLATFORMS := darwin-arm64 darwin-amd64 linux-arm64 linux-amd64
 DIST_BINS := $(addprefix dist/ahjo-,$(PLATFORMS))
-GO_SRC    := $(shell find cmd internal -name '*.go') go.mod go.sum
+GO_SRC    := $(shell find cmd internal -name '*.go' -o -name '*.sh' -o -name '*.json' -o -name '*.toml' -o -name '*.yaml') go.mod go.sum
 
 HOST_GOOS   := $(shell go env GOOS)
 HOST_GOARCH := $(shell go env GOARCH)

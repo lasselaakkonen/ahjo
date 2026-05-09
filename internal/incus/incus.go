@@ -417,6 +417,85 @@ func LaunchStopped(image, name string) error {
 	return fmt.Errorf("incus init %s %s: %w", image, name, err)
 }
 
+// Launch runs `incus launch <image> <name>` (init + start in one). Used by
+// the image-build pipeline because the transient build container needs
+// systemd up so apt + systemctl in the Feature install.sh work.
+func Launch(image, name string) error {
+	cmd := exec.Command("incus", "launch", image, name)
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		os.Stdout.Write(out)
+		return nil
+	}
+	os.Stderr.Write(out)
+	var ee *exec.ExitError
+	if errors.As(err, &ee) {
+		return fmt.Errorf("incus launch %s %s: exit %d", image, name, ee.ExitCode())
+	}
+	return fmt.Errorf("incus launch %s %s: %w", image, name, err)
+}
+
+// ImageCopyRemote pulls remote (e.g. "images:ubuntu/24.04") into the local
+// image store and tags it with alias. Tolerant of "already exists" so
+// callers can use it as a "ensure" step without first checking.
+func ImageCopyRemote(remote, alias string) error {
+	cmd := exec.Command("incus", "image", "copy", remote, "local:", "--alias", alias)
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		os.Stdout.Write(out)
+		return nil
+	}
+	low := strings.ToLower(string(out))
+	if strings.Contains(low, "already exists") {
+		return nil
+	}
+	os.Stderr.Write(out)
+	var ee *exec.ExitError
+	if errors.As(err, &ee) {
+		return fmt.Errorf("incus image copy %s -> %s: exit %d", remote, alias, ee.ExitCode())
+	}
+	return fmt.Errorf("incus image copy %s -> %s: %w", remote, alias, err)
+}
+
+// FilePushRecursive copies a host directory into the container at
+// containerPath via `incus file push --recursive`. The container path is
+// passed as `<name>/<path>`, matching the form `incus file push` expects.
+func FilePushRecursive(name, hostDir, containerPath string) error {
+	cmd := exec.Command("incus", "file", "push", "--recursive", hostDir, name+containerPath)
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		return nil
+	}
+	os.Stderr.Write(out)
+	var ee *exec.ExitError
+	if errors.As(err, &ee) {
+		return fmt.Errorf("incus file push -r %s %s%s: exit %d", hostDir, name, containerPath, ee.ExitCode())
+	}
+	return fmt.Errorf("incus file push -r %s %s%s: %w", hostDir, name, containerPath, err)
+}
+
+// Publish runs `incus publish <name> --alias <alias>`. If alias already
+// exists it is force-deleted first — `incus publish` itself errors on a
+// pre-existing alias instead of replacing it. Used by the image-build
+// pipeline to write the freshly-baked ahjo-base over the previous one.
+func Publish(name, alias string) error {
+	if err := DeleteImageAlias(alias); err != nil {
+		return fmt.Errorf("clear alias %s before publish: %w", alias, err)
+	}
+	cmd := exec.Command("incus", "publish", name, "--alias", alias)
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		os.Stdout.Write(out)
+		return nil
+	}
+	os.Stderr.Write(out)
+	var ee *exec.ExitError
+	if errors.As(err, &ee) {
+		return fmt.Errorf("incus publish %s --alias %s: exit %d", name, alias, ee.ExitCode())
+	}
+	return fmt.Errorf("incus publish %s --alias %s: %w", name, alias, err)
+}
+
 // Start runs `incus start <name>`. Tolerant of "already running".
 func Start(name string) error {
 	cmd := exec.Command("incus", "start", name)

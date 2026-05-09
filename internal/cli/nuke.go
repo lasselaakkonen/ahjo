@@ -23,7 +23,8 @@ func newNukeCmd() *cobra.Command {
 		Long: `nuke removes everything ahjo built so a fresh 'ahjo init' can rebuild:
 
   - stops and deletes every branch container (default + per-branch)
-  - deletes the ahjo-base and coi-default Incus images
+  - deletes the ahjo-base and ahjo-osbase Incus images (and any leftover
+    coi-default from a pre-Phase-1 install)
   - removes ~/.ahjo/host-keys
   - clears branch + repo entries from registry.toml (default containers
     are not recoverable without re-cloning) and port allocations
@@ -31,7 +32,6 @@ func newNukeCmd() *cobra.Command {
 
 It KEEPS:
   - ~/.ahjo/{config.toml,profiles}
-  - ~/.coi/
 
 On macOS, 'ahjo nuke' is handled host-side: it tears down the Lima VM
 (making in-VM state moot) and removes ~/.ahjo/cache.`,
@@ -77,7 +77,7 @@ func runNuke(yes bool) error {
 		}
 	}
 
-	for _, alias := range []string{"ahjo-base", "coi-default"} {
+	for _, alias := range []string{"ahjo-base", "ahjo-osbase", "coi-default"} {
 		fmt.Printf("→ incus image delete %s\n", alias)
 		out, err := exec.Command("incus", "image", "delete", alias).CombinedOutput()
 		if err != nil {
@@ -129,10 +129,10 @@ func printNukePreview(reg *registry.Registry) {
 			fmt.Printf("  - delete container %s\n", name)
 		}
 	}
-	fmt.Println("  - delete incus images: ahjo-base, coi-default")
+	fmt.Println("  - delete incus images: ahjo-base, ahjo-osbase (and leftover coi-default if present)")
 	fmt.Printf("  - remove %s\n", paths.HostKeysDir())
 	fmt.Printf("  - clear branches + repos from %s and allocations from %s\n",
 		paths.RegistryPath(), paths.PortsPath())
-	fmt.Println("It KEEPS: config.toml, profiles, ~/.coi/")
+	fmt.Println("It KEEPS: config.toml, profiles")
 	fmt.Println("Re-run with -y to proceed.")
 }

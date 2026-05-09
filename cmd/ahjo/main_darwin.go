@@ -50,16 +50,14 @@ func main() {
 		return
 	case "init":
 		yes := hasFlag(args[1:], "-y", "--yes")
-		buildCOI := hasFlag(args[1:], "--build-coi")
-		if err := runMacInit(yes, buildCOI); err != nil {
+		if err := runMacInit(yes); err != nil {
 			fmt.Fprintln(os.Stderr, "ahjo:", err)
 			os.Exit(1)
 		}
 		return
 	case "update":
 		yes := hasFlag(args[1:], "-y", "--yes")
-		buildCOI := hasFlag(args[1:], "--build-coi")
-		if err := runMacUpdate(yes, buildCOI); err != nil {
+		if err := runMacUpdate(yes); err != nil {
 			fmt.Fprintln(os.Stderr, "ahjo:", err)
 			os.Exit(1)
 		}
@@ -126,24 +124,14 @@ func printUsage() {
 	fmt.Printf(`ahjo — sandboxed Claude Code branches on Incus, via the %q Lima VM.
 
 Usage:
-  ahjo init [--yes] [--build-coi]
-                                 one-time setup, host + VM, end-to-end
-                                 (--build-coi: build COI from source instead of downloading)
-  ahjo update [--yes] [--build-coi]
-                                 push the current ahjo binary into the VM, then refresh
-                                 claude + COI + coi-default + ahjo-base inside the VM
-                                 (--build-coi: build COI from source)
+  ahjo init [--yes]              one-time setup, host + VM, end-to-end
+  ahjo update [--yes]            push the current ahjo binary into the VM, then refresh
+                                 claude + the ahjo-base image (devcontainer Feature
+                                 pipeline) inside the VM
   ahjo nuke [--yes]              tear down the VM + cache; keep ~/.ahjo configs
-  ahjo ssh <alias>               ssh into a worktree by alias (resolves Mac-side via the generated config)
+  ahjo ssh <alias>               ssh into a branch by alias (resolves Mac-side via the generated config)
   ahjo <subcommand> [args...]    relayed into the VM and run there
 `, vmName)
-}
-
-func buildCOIArg(buildCOI bool) string {
-	if buildCOI {
-		return " --build-coi"
-	}
-	return ""
 }
 
 func hasFlag(args []string, flags ...string) bool {
@@ -314,19 +302,19 @@ func lookupAlias(path, alias string) (string, error) {
 
 // runMacInit drives the full host+VM setup. Each step detects its own
 // completion so re-runs are idempotent.
-func runMacInit(yes, buildCOI bool) error {
+func runMacInit(yes bool) error {
 	if _, err := exec.LookPath("brew"); err != nil {
 		return fmt.Errorf("Homebrew is required to install Lima. Install it from https://brew.sh and re-run `ahjo init`")
 	}
 	r := initflow.Runner{Yes: yes, In: os.Stdin, Out: os.Stdout, Err: os.Stderr}
-	return r.Execute(macInitSteps(yes, buildCOI))
+	return r.Execute(macInitSteps(yes))
 }
 
 // runMacUpdate is the macOS half of `ahjo update`: refresh the in-VM ahjo
 // binary (skipping the push if the VM already runs the same tagged version),
-// then relay `ahjo update` into the VM so it refreshes claude + COI +
-// coi-default + ahjo-base.
-func runMacUpdate(yes, buildCOI bool) error {
+// then relay `ahjo update` into the VM so it refreshes claude + the
+// ahjo-base image via the devcontainer Feature pipeline.
+func runMacUpdate(yes bool) error {
 	if _, err := exec.LookPath("limactl"); err != nil {
 		return fmt.Errorf("limactl not on PATH; run `ahjo init` first")
 	}
@@ -334,13 +322,13 @@ func runMacUpdate(yes, buildCOI bool) error {
 		return fmt.Errorf("VM %q does not exist; run `ahjo init` first", vmName)
 	}
 	r := initflow.Runner{Yes: yes, In: os.Stdin, Out: os.Stdout, Err: os.Stderr}
-	return r.Execute(macUpdateSteps(buildCOI))
+	return r.Execute(macUpdateSteps())
 }
 
 // macUpdateSteps reuses init's "Ensure VM running" + binary-resolve +
 // binary-install steps, then relays `ahjo update -y` into the VM so the
-// in-VM stack (claude, COI, coi-default, ahjo-base) gets refreshed.
-func macUpdateSteps(buildCOI bool) []initflow.Step {
+// in-VM stack (claude + ahjo-base image) gets refreshed.
+func macUpdateSteps() []initflow.Step {
 	var linuxBin string
 
 	return []initflow.Step{
@@ -415,13 +403,10 @@ func macUpdateSteps(buildCOI bool) []initflow.Step {
 			// describing the next step (`ahjo shell <alias> --update`),
 			// and that output bubbles up through limactl. We deliberately
 			// don't add another Post here so the user sees it only once.
-			Title: "Refresh in-VM stack (claude + COI + coi-default + ahjo-base)",
-			Show:  fmt.Sprintf("limactl shell %s ahjo update -y%s", vmName, buildCOIArg(buildCOI)),
+			Title: "Refresh in-VM stack (claude + ahjo-base via the devcontainer Feature pipeline)",
+			Show:  fmt.Sprintf("limactl shell %s ahjo update -y", vmName),
 			Action: func(out io.Writer) error {
 				argv := []string{"limactl", "shell", vmName, "ahjo", "update", "-y"}
-				if buildCOI {
-					argv = append(argv, "--build-coi")
-				}
 				if err := initflow.RunShellEnv(out, lima.Env(), "", argv...); err != nil {
 					return err
 				}
@@ -438,7 +423,7 @@ func macUpdateSteps(buildCOI bool) []initflow.Step {
 	}
 }
 
-func macInitSteps(yes, buildCOI bool) []initflow.Step {
+func macInitSteps(yes bool) []initflow.Step {
 	// linuxBin is resolved by the "Resolve" step and consumed by the "Install
 	// into VM" step. Captured by closure across steps.
 	var linuxBin string
@@ -553,14 +538,11 @@ func macInitSteps(yes, buildCOI bool) []initflow.Step {
 			},
 		},
 		{
-			Title: "Run in-VM bring-up (Incus + COI + ahjo-base + claude setup-token)",
-			Note:  "interactive only for claude setup-token: it prints a URL — open it in this Mac's browser, complete the flow, paste the code back, then paste the resulting sk-ant-oat01-… token when ahjo asks. The in-VM init detects it's running under Lima and runs COI's installer non-interactively (ufw disabled, NONINTERACTIVE=1) and sets COI to `mode = \"open\"`. After usermod the in-VM init re-execs itself under `sg incus-admin` so everything runs end-to-end in a single call.",
-			Show:  fmt.Sprintf("limactl shell %s ahjo init -y%s", vmName, buildCOIArg(buildCOI)),
+			Title: "Run in-VM bring-up (Incus + ahjo-base via the devcontainer Feature pipeline + claude setup-token)",
+			Note:  "interactive only for claude setup-token: it prints a URL — open it in this Mac's browser, complete the flow, paste the code back, then paste the resulting sk-ant-oat01-… token when ahjo asks. After usermod the in-VM init re-execs itself under `sg incus-admin` so everything runs end-to-end in a single call.",
+			Show:  fmt.Sprintf("limactl shell %s ahjo init -y", vmName),
 			Action: func(out io.Writer) error {
 				argv := []string{"limactl", "shell", vmName, "ahjo", "init", "-y"}
-				if buildCOI {
-					argv = append(argv, "--build-coi")
-				}
 				if err := initflow.RunShellEnv(out, lima.Env(), "", argv...); err != nil {
 					return err
 				}

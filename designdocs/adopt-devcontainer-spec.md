@@ -94,12 +94,15 @@ Schemas retired: COI profile bash, `.ahjoconfig` TOML (deleted, not aliased), pe
 
 ### Feature runner contract
 
-The Feature runner is the new code. ~350 LoC of Go (with vendored OCI library).
+The Feature runner is the new code. The fetch + dependency-graph layers are
+deferred to Phase 2 (no Phase 1 caller exercises them — only the embedded
+`ahjo-runtime` Feature is applied at image-bake time). Phase 1 ships only
+Apply; Phase 2 adds Fetch + Resolve on top.
 
-1. **Fetch.** Vendor `github.com/google/go-containerregistry` for OCI manifest pull + blob fetch (no Docker daemon dep). Tar extraction enforces path safety: reject entries with `..`, absolute paths, or symlinks pointing outside the Feature dir.
-2. **Resolve.** Build dependency graph from `dependsOn` (hard, recursive) and `installsAfter` (soft, conditional — only enforced if both Features are in the install set). Topological sort with cycle detection. Restart-between-rounds is not supported; if a Feature requires it, ahjo errors with "Feature X requires restart between install rounds; ahjo doesn't support this."
-3. **Apply.** For each Feature in resolved order:
-   - `incus file push` the unpacked Feature dir into `/tmp/feature-<id>/`
+1. **Fetch (Phase 2).** Vendor `github.com/google/go-containerregistry` for OCI manifest pull + blob fetch (no Docker daemon dep). Tar extraction enforces path safety: reject entries with `..`, absolute paths, or symlinks pointing outside the Feature dir.
+2. **Resolve (Phase 2).** Build dependency graph from `dependsOn` (hard, recursive) and `installsAfter` (soft, conditional — only enforced if both Features are in the install set). Topological sort with cycle detection. Restart-between-rounds is not supported; if a Feature requires it, ahjo errors with "Feature X requires restart between install rounds; ahjo doesn't support this."
+3. **Apply (Phase 1).** For each Feature in resolved order (Phase 1: a single Feature, ahjo-runtime):
+   - `incus file push --recursive` the unpacked Feature dir into `/tmp/feature-<id>/`
    - `incus exec <container> --env _REMOTE_USER=ubuntu --env _REMOTE_USER_HOME=/home/ubuntu --env _CONTAINER_USER=ubuntu --env _CONTAINER_USER_HOME=/home/ubuntu --env <OPTION_KEY>=<value> ... -- bash /tmp/feature-<id>/install.sh`
    - 10-minute default timeout per Feature, configurable via ahjo flag
    - Stream stdout/stderr to ahjo's log; buffer per-Feature for error reporting
@@ -158,12 +161,13 @@ If all three pass, the design is proven. If #2 fails because the Feature assumes
 | `internal/ahjoruntime/feature/devcontainer-feature.json` (new)  | Feature metadata: `id: ahjo-runtime`, version, options (none yet), `containerEnv` for corepack vars                     |
 | `internal/ahjoruntime/feature/install.sh` (new)                 | Today's `build.sh` ported. Uses upstream `ubuntu` user (or creates at UID 1000 if absent); reads `_REMOTE_USER`/`_REMOTE_USER_HOME`; no hardcoded user account name |
 | `internal/ahjoruntime/embed.go` (new)                           | `go:embed` the Feature dir; expose as in-memory artifact for the Feature runner                                         |
-| `internal/devcontainer/features.go` (new)                       | Feature dependency resolution + execution against an Incus container                                                    |
-| `internal/devcontainer/oci.go` (new)                            | Vendored `go-containerregistry` wrapper: manifest pull, blob fetch, tar extract with path safety                        |
-| `internal/cli/init.go`                                          | Replace COI install + `coi build` with: verify Incus+Lima, image-copy upstream, launch transient, apply Feature, publish, delete |
-| `internal/cli/update.go`                                        | Same replacement for the rebuild path                                                                                    |
-| `internal/coi/template.go`                                      | Already retired in `no-more-worktrees.md` Phase 1; verify and ensure no callers                                          |
-| `CONTAINER-ISOLATION.md`                                        | Note: `ahjo-runtime` Feature install runs at image-build time inside transient container; same trust posture as today's COI build |
+| `internal/devcontainer/features.go` (new)                       | Feature execution against an Incus container — `Apply(container, feature, env, out)`. Validates the Feature's metadata (rejects Docker-flavored fields) before running install.sh. Phase 2 adds dependency resolution on top. |
+| `internal/devcontainer/build.go` (new)                          | `BuildAhjoBase(out, force)` orchestrator: image-copy upstream → launch transient → apply embedded ahjo-runtime → publish → delete. Called by both init.go and update.go.                                                       |
+| `internal/devcontainer/oci.go`                                  | Deferred to Phase 2. No Phase 1 caller exercises OCI fetch — only the embedded ahjo-runtime Feature is applied. Vendoring `go-containerregistry` happens when user repos start declaring `features:` from the OCI ecosystem. |
+| `internal/cli/init.go`                                          | Replace COI install + `coi build` with: verify Incus+Lima, image-copy upstream, launch transient, apply Feature, publish, delete (single step calling `devcontainer.BuildAhjoBase`)                                            |
+| `internal/cli/update.go`                                        | Same replacement for the rebuild path; force-replace ahjo-base alias                                                                                                                                                          |
+| `internal/coi/`                                                 | Phase 1 deletes the package outright (was only retained transitionally for preflight; preflight's COI checks go away in this phase too)                                                                                       |
+| `CONTAINER-ISOLATION.md`                                        | Note: `ahjo-runtime` Feature install runs at image-build time inside transient container; same trust posture as today's COI build                                                                                            |
 
 ### Lifecycle hazards
 

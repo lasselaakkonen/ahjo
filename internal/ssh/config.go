@@ -30,7 +30,7 @@ func RegenerateConfig(reg *registry.Registry) error {
 		fmt.Fprintf(&b, "Host ahjo-%s\n", br.Slug)
 		fmt.Fprintln(&b, "  HostName 127.0.0.1")
 		fmt.Fprintf(&b, "  Port %d\n", br.SSHPort)
-		fmt.Fprintln(&b, "  User code")
+		fmt.Fprintln(&b, "  User ubuntu")
 		fmt.Fprintln(&b, "  IdentityFile ~/.ssh/id_ed25519")
 		fmt.Fprintf(&b, "  UserKnownHostsFile %s\n", knownHosts)
 		fmt.Fprintln(&b, "  StrictHostKeyChecking yes")

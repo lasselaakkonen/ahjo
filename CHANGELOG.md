@@ -1,5 +1,67 @@
 # Changelog
 
+## Unreleased — adopt-devcontainer-spec Phase 1: build pipeline rewrite
+
+### Breaking
+
+- **COI removed from the build pipeline.** `ahjo init` and `ahjo update` no
+  longer install COI or call `coi build`. Image baking moves to a
+  devcontainer-Features pipeline: pull `images:ubuntu/24.04` once into the
+  local image store as alias `ahjo-osbase`, launch a transient container,
+  apply the embedded `ahjo-runtime` Feature (sshd-as-a-service, the
+  ahjo-claude-prepare hook, Node + corepack), publish the result as
+  `ahjo-base`, delete the transient. Existing dev installs must `ahjo
+  nuke -y && ahjo init` — there is no migration code.
+- **In-image user `code` → `ubuntu`.** `ahjo-base` now uses the upstream
+  Ubuntu cloud-image's canonical `ubuntu` user (UID 1000) instead of
+  ahjo's bespoke `code` (also UID 1000). Bind-mount paths move from
+  `/home/code/...` to `/home/ubuntu/...`; `ssh-config` writes
+  `User ubuntu`; `raw.idmap` continues to target UID 1000:1000. No
+  per-Feature edits — the Feature contract reads `_REMOTE_USER` from env.
+
+### Changed
+
+- **Image stack collapses two layers.** `coi-default → ahjo-base` becomes
+  `images:ubuntu/24.04 (alias ahjo-osbase) → ahjo-base`. The
+  upstream-mirror layer pulls once per ahjo version bump; only `ahjo-base`
+  rebuilds on `ahjo update`.
+- **`ahjo doctor` no longer checks for `coi` or the `coi-default` image.**
+  COI is no longer a runtime dependency.
+- **`ahjo nuke` now also clears the `ahjo-osbase` image** (and still
+  clears any leftover `coi-default` from a pre-Phase-1 install).
+
+### Added
+
+- `internal/ahjoruntime/` — embeds the `ahjo-runtime` devcontainer Feature
+  (`devcontainer-feature.json` + `install.sh`) plus a `Materialize(dir)`
+  helper that writes the Feature into a host tempdir for the runner to
+  push into the build container.
+- `internal/devcontainer/` — Phase 1 of the devcontainer Feature runner.
+  `Apply(container, feature, env, out)` validates the Feature metadata
+  (rejecting Docker-flavored fields), pushes the dir into the container,
+  and runs `install.sh` as root with `_REMOTE_USER` / `_REMOTE_USER_HOME`
+  / `_CONTAINER_USER` / `_CONTAINER_USER_HOME` set. `BuildAhjoBase(out,
+  force)` orchestrates the full image-bake recipe.
+- `incus.Launch`, `incus.ImageCopyRemote`, `incus.FilePushRecursive`,
+  `incus.Publish` wrappers.
+
+### Removed
+
+- `internal/coi/` package (assets + binary wrapper + Go embed) —
+  deleted outright; nothing in ahjo's runtime touches `coi` anymore.
+  The `ahjo init` step that installed `coi` and the `coi-default` image
+  also goes.
+- `internal/profile/` package — no longer needed; the embedded Feature
+  is materialized by `internal/ahjoruntime/embed.go` directly into a
+  tempdir per build.
+- `internal/initflow/assets/coi-config.toml` and the
+  `initflow.CoiOpenNetworkConfig` helper — only the COI install step
+  consumed it.
+- `paths.CoiProfilesSubdir`, `paths.CoiProfilesDir`, `paths.CoiProfilePath`,
+  `paths.ProfilesDir`, `paths.ProfilePath` — there is no on-disk profile
+  layout anymore; the Feature lives entirely embedded in the binary.
+- `--build-coi` flag on `ahjo init` / `ahjo update`.
+
 ## Unreleased — Phase 1: drop worktrees, container holds the repo
 
 ### Breaking

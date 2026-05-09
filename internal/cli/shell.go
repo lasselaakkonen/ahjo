@@ -22,7 +22,7 @@ func newShellCmd() *cobra.Command {
 		Use:   "shell <alias>",
 		Short: "Start (if needed) and attach an interactive shell to the branch's container",
 		Long: `Start the container if needed, wire SSH proxy + sshd, attach an interactive
-bash via ` + "`incus exec --force-interactive`" + ` as the in-container ` + "`code`" + ` user
+bash via ` + "`incus exec --force-interactive`" + ` as the in-container ` + "`ubuntu`" + ` user
 in /repo. Use ` + "`ahjo claude`" + ` to launch ` + "`claude`" + ` instead.
 
 Pass --update to discard the existing container before attaching: ahjo stops

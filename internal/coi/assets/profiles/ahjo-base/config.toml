@@ -1,6 +1,0 @@
-[container]
-image = "ahjo-base"
-
-[container.build]
-base = "coi-default"
-script = "./build.sh"

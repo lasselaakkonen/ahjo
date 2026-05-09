@@ -9,17 +9,16 @@ import (
 )
 
 const (
-	AhjoDirName       = ".ahjo"
-	SharedDirName     = ".ahjo-shared"
-	RegistryFile      = "registry.toml"
-	PortsFile         = "ports.json"
-	ConfigFile        = "config.toml"
-	LockFile          = ".lock"
-	SSHConfigFile     = "ssh-config"
-	AliasesFile       = "aliases"
-	KnownHostsFile    = "known_hosts"
-	AhjoBaseProfile   = "ahjo-base"
-	CoiProfilesSubdir = "profiles"
+	AhjoDirName     = ".ahjo"
+	SharedDirName   = ".ahjo-shared"
+	RegistryFile    = "registry.toml"
+	PortsFile       = "ports.json"
+	ConfigFile      = "config.toml"
+	LockFile        = ".lock"
+	SSHConfigFile   = "ssh-config"
+	AliasesFile     = "aliases"
+	KnownHostsFile  = "known_hosts"
+	AhjoBaseProfile = "ahjo-base"
 
 	// RepoMountPath is where each branch container holds its checkout.
 	// Containers no longer bind-mount a host worktree — `git clone` runs
@@ -62,25 +61,21 @@ func SharedDir() string {
 	}
 	return filepath.Join(home(), SharedDirName)
 }
-func RegistryPath() string    { return filepath.Join(AhjoDir(), RegistryFile) }
-func PortsPath() string       { return filepath.Join(AhjoDir(), PortsFile) }
-func ConfigPath() string      { return filepath.Join(AhjoDir(), ConfigFile) }
-func LockPath() string        { return filepath.Join(AhjoDir(), LockFile) }
-func SSHConfigPath() string   { return filepath.Join(SharedDir(), SSHConfigFile) }
-func AliasesPath() string     { return filepath.Join(SharedDir(), AliasesFile) }
-func KnownHostsPath() string  { return filepath.Join(SharedDir(), KnownHostsFile) }
+func RegistryPath() string   { return filepath.Join(AhjoDir(), RegistryFile) }
+func PortsPath() string      { return filepath.Join(AhjoDir(), PortsFile) }
+func ConfigPath() string     { return filepath.Join(AhjoDir(), ConfigFile) }
+func LockPath() string       { return filepath.Join(AhjoDir(), LockFile) }
+func SSHConfigPath() string  { return filepath.Join(SharedDir(), SSHConfigFile) }
+func AliasesPath() string    { return filepath.Join(SharedDir(), AliasesFile) }
+func KnownHostsPath() string { return filepath.Join(SharedDir(), KnownHostsFile) }
 func HostKeysDir() string    { return filepath.Join(AhjoDir(), "host-keys") }
-func ProfilesDir() string    { return filepath.Join(AhjoDir(), "profiles") }
-func CoiProfilesDir() string { return filepath.Join(home(), ".coi", CoiProfilesSubdir) }
 
 func SlugHostKeysDir(slug string) string { return filepath.Join(HostKeysDir(), slug) }
-func ProfilePath(name string) string     { return filepath.Join(ProfilesDir(), name) }
-func CoiProfilePath(name string) string  { return filepath.Join(CoiProfilesDir(), name) }
 
 // EnsureSkeleton creates the ~/.ahjo/ directory tree (idempotent).
 func EnsureSkeleton() error {
 	for _, d := range []string{
-		AhjoDir(), HostKeysDir(), ProfilesDir(),
+		AhjoDir(), HostKeysDir(),
 	} {
 		if err := os.MkdirAll(d, 0o755); err != nil {
 			return fmt.Errorf("mkdir %s: %w", d, err)

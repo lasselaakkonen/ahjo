@@ -6,8 +6,8 @@ How ahjo wires Claude Code into containers, and why this exact approach.
 
 Each ahjo container runs Claude Code with two pieces of state:
 
-1. `CLAUDE_CODE_OAUTH_TOKEN` — a 1-year static bearer minted by `claude setup-token`, forwarded into every container via COI's `forward_env`.
-2. `hasCompletedOnboarding: true` — written into the **host VM's** `~/.claude.json` once. COI copies that file into each container at startup, so containers inherit the marker.
+1. `CLAUDE_CODE_OAUTH_TOKEN` — a 1-year static bearer minted by `claude setup-token`, forwarded into every container via the `forward_env` knob (set per repo, applied with `incus exec --env`).
+2. `hasCompletedOnboarding: true` — written into the **host VM's** `~/.claude.json` once. `ahjo repo add` pushes that file into each container's `/home/ubuntu/.claude.json`, so containers inherit the marker.
 
 Both are set by `ahjo init`. No `claude /login`. No per-container JSON writes. No `oauthAccount` propagation.
 
@@ -54,30 +54,18 @@ in `~/.claude.json`. `setup-token` does not write this. `/login` writes it as a 
 
 ## Why the marker lives on the host VM, not in the image
 
-COI **copies the host's `~/.claude.json` into every container at startup**, overwriting whatever was baked into the `ahjo-base` image. So:
+`ahjo repo add` **copies the host VM's `~/.claude.json` into each container at creation** (see `pushClaudeConfig` in `internal/cli/repo.go`), overwriting whatever was baked into the `ahjo-base` image. So:
 
-- Putting the marker in `ahjo-base/build.sh` → no-op (overwritten).
-- Putting the marker in the host VM's `~/.claude.json` → propagates into every container via COI's copy.
+- Putting the marker in the `ahjo-runtime` Feature's `install.sh` → no-op (overwritten at repo-add time).
+- Putting the marker in the host VM's `~/.claude.json` → propagates into every container via the per-repo file push.
 
 `ahjo init` merges `hasCompletedOnboarding: true` and `lastOnboardingVersion` into the host VM's `~/.claude.json` once. See `internal/cli/init.go` (`mergeClaudeOnboardingMarker`).
 
 ## Per-container defaults (model, effort, prompt suppressors)
 
-COI's claude integration writes `~/.claude/settings.json` and `~/.claude.json` during session setup. Among other things, it injects:
+**`ahjo-claude-prepare`** is baked into `ahjo-base` by the `ahjo-runtime` devcontainer Feature (see `internal/ahjoruntime/feature/install.sh`) and run once per container by `ahjo repo add` immediately before claude ever launches. It plants ahjo's defaults that the user *can* change later: `model: "opusplan"`, `effortLevel: "high"`, plus `skipDangerousModePermissionPrompt: true` and `projects["/repo"].hasTrustDialogAccepted: true` to silence the two first-run prompts. All settings.json fields, so `/model` and `/effort` overwrite cleanly from the TUI.
 
-- `effortLevel: "<level>"` (configured-tier setting)
-- `env: { CLAUDE_CODE_EFFORT_LEVEL: "<level>" }` (env-var override block)
-
-driven by `[tool.claude] effort_level` in the per-worktree `.coi/config.toml`, defaulting to `"medium"` when unset. Both fields are written to the same value. The env-var block is the problem: env-var values have the **highest precedence** in claude's effort resolution, so any value persisted there locks the user's `/effort` slider — every change shows "CLAUDE_CODE_EFFORT_LEVEL=… overrides this session". This is true regardless of which level COI was configured to write.
-
-**`ahjo-claude-prepare`** (baked into the `ahjo-base` image, run once per container by `ahjo shell` / `ahjo claude` immediately after COI's first session-setup, before claude ever launches) repairs this. In a single pass it:
-
-1. Strips the `CLAUDE_CODE_EFFORT_LEVEL` key out of the `env` blocks in both `~/.claude/settings.json` and `~/.claude.json` (and removes the surrounding `env` object if that was its only key — but preserves any other env vars the user may have).
-2. Plants ahjo's defaults that the user *can* change later: `model: "opusplan"`, `effortLevel: "high"`, plus `skipDangerousModePermissionPrompt: true` and `projects["/workspace"].hasTrustDialogAccepted: true` to silence the two first-run prompts.
-
-After this runs, `/model` and `/effort` work cleanly from the TUI — no env-var override warning, the user can pick any level. Because ahjo containers are persistent, COI's session-setup pipeline only fires on first creation, so a one-shot strip via the `$HOME/.ahjo-claude-prepared` marker is sufficient — there's no resume path that would re-inject the env block.
-
-The reason ahjo doesn't try to set `[tool.claude] effort_level` in the COI config is that doing so still leaves the env block in place — COI writes it unconditionally. The only way to give the user a usable `/effort` slider is to delete the block after COI writes it.
+The script is idempotent via `$HOME/.ahjo-claude-prepared`. It reads `HOME` from `getent` so it works even under `incus exec --user 1000` with a sparse environment, and never names a user — every path is derived from `$HOME`, so a future user rename touches only the build pipeline.
 
 ## End-to-end
 
@@ -86,19 +74,22 @@ ahjo init  (interactive, on Mac's Lima VM or Linux host):
   step:  claude setup-token              → token saved in ~/.ahjo/.env
   step:  merge {hasCompletedOnboarding}  → host VM's ~/.claude.json
 
-ahjo new <repo> <branch>:
-  → writes .coi/config.toml with forward_env = ["CLAUDE_CODE_OAUTH_TOKEN"]
+ahjo repo add <repo>:
+  → incus init ahjo-base, then push host's ~/.claude.json into
+    /home/ubuntu/.claude.json (and ~/.claude/* into /home/ubuntu/.claude/)
+  → run ahjo-claude-prepare once to plant model/effort defaults
+  → forward_env from ~/.ahjo/config.toml is applied via incus exec --env
+    on every shell/claude invocation
 
 ahjo shell <alias>  (or ahjo claude <alias>):
   → tokenstore.Load() exports the token from ~/.ahjo/.env into the VM shell
-  → coi shell forwards exported env var into the container shell
-  → COI copies host's ~/.claude.json into /home/code/.claude.json
-  → ahjo shell drops to bash; ahjo claude (or `claude` from the shell) →
-    prompt, "Claude API" header, no friction
+  → incus exec --force-interactive forwards CLAUDE_CODE_OAUTH_TOKEN via
+    --env, then drops to bash (or directly to `claude`) as the in-container
+    `ubuntu` user — prompt, "Claude API" header, no friction
 ```
 
 ## When something breaks
 
 - **Container prompts for theme/login on first run** → host VM's `~/.claude.json` is missing `hasCompletedOnboarding`. Re-run `ahjo init`; the marker step is idempotent.
-- **TUI says "Not logged in", header reads "API Usage Billing"** → env var isn't reaching `claude`'s process. From inside the container, `export -p | grep CLAUDE_CODE_OAUTH` should print one line; if it doesn't, exit and re-enter via `ahjo shell` so COI re-runs `forward_env`.
+- **TUI says "Not logged in", header reads "API Usage Billing"** → env var isn't reaching `claude`'s process. From inside the container, `export -p | grep CLAUDE_CODE_OAUTH` should print one line; if it doesn't, exit and re-enter via `ahjo shell` so the `--env` forwarding runs again.
 - **Future Claude release introduces a new onboarding gate** → bump `claudeOnboardingVersion` in `internal/cli/init.go` to the new version.

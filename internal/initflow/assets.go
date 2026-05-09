@@ -13,13 +13,3 @@ func IncusPreseed() string {
 	}
 	return string(b)
 }
-
-// CoiOpenNetworkConfig returns the body of ~/.coi/config.toml that
-// switches COI's network mode to "open" (required on macOS / Lima).
-func CoiOpenNetworkConfig() string {
-	b, err := assetsFS.ReadFile("assets/coi-config.toml")
-	if err != nil {
-		panic(err)
-	}
-	return string(b)
-}

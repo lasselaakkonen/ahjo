@@ -14,54 +14,49 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/lasselaakkonen/ahjo/internal/coi"
+	"github.com/lasselaakkonen/ahjo/internal/devcontainer"
 	"github.com/lasselaakkonen/ahjo/internal/idmap"
 	"github.com/lasselaakkonen/ahjo/internal/incus"
 	"github.com/lasselaakkonen/ahjo/internal/initflow"
-	"github.com/lasselaakkonen/ahjo/internal/lima"
 	"github.com/lasselaakkonen/ahjo/internal/paths"
-	"github.com/lasselaakkonen/ahjo/internal/profile"
 	"github.com/lasselaakkonen/ahjo/internal/tokenstore"
 )
 
 func newInitCmd() *cobra.Command {
 	var yes bool
-	var buildCOI bool
 	cmd := &cobra.Command{
 		Use:   "init",
-		Short: "One-time setup: Incus, COI, ahjo-base image, ~/.ahjo/ skeleton, claude setup-token",
+		Short: "One-time setup: Incus, ahjo-base image (devcontainer Feature pipeline), ~/.ahjo/ skeleton, claude setup-token",
 		Long: `init walks through the verified bring-up sequence step by step:
 
   1. Zabbly apt signing key + sources list
   2. apt install incus
   3. incus admin init via preseed (fixed subnet 10.20.30.1/24)
   4. usermod -aG incus-admin (re-exec under sg, no re-shell required)
-  5. install COI (under Lima: non-interactive — ufw disabled, NONINTERACTIVE=1; on bare-metal Linux: interactive, you pick ufw/firewalld). Pre-built COI binary by default; pass --build-coi to build from source instead.
-  6. configure ~/.coi/config.toml for open networking (required on macOS)
-  7. coi build (builds coi-default image, ~5 min)
-  8. ahjo-base image (extends coi-default with sshd)
-  9. create ~/.ahjo/ skeleton
- 10. install Claude Code if missing (curl -fsSL https://claude.ai/install.sh | bash — Anthropic's native installer, auto-updating)
- 11. claude setup-token (saves token to ~/.ahjo/.env)
+  5. ahjo-base image: pull images:ubuntu/24.04, launch a transient
+     container, apply the embedded ahjo-runtime devcontainer Feature,
+     publish as ahjo-base
+  6. create ~/.ahjo/ skeleton
+  7. install Claude Code if missing (curl -fsSL https://claude.ai/install.sh | bash — Anthropic's native installer, auto-updating)
+  8. claude setup-token (saves token to ~/.ahjo/.env)
 
 Each step detects whether it's already done and skips, so re-runs are safe.
 The flow runs end-to-end in a single invocation.
 
 Use 'ahjo update' afterwards whenever you change the host binary or the
-embedded ahjo-base profile — it pushes the new binary into the VM (on macOS)
-and rebuilds the ahjo-base image without re-running the rest of the init
-pipeline.`,
+embedded ahjo-runtime Feature — it pushes the new binary into the VM (on
+macOS) and rebuilds the ahjo-base image without re-running the rest of
+the init pipeline.`,
 		Args: cobra.NoArgs,
 		RunE: func(_ *cobra.Command, _ []string) error {
 			if !insideLinuxVM() {
 				return fmt.Errorf("the in-VM phase of `ahjo init` only runs on Linux; on macOS the same `ahjo init` first brings up the Lima VM and tells you to enter it before re-running")
 			}
 			r := initflow.Runner{Yes: yes, In: os.Stdin, Out: os.Stdout, Err: os.Stderr}
-			return r.Execute(vmInitSteps(yes, buildCOI))
+			return r.Execute(vmInitSteps(yes))
 		},
 	}
 	cmd.Flags().BoolVarP(&yes, "yes", "y", false, "skip per-step confirmation prompts")
-	cmd.Flags().BoolVar(&buildCOI, "build-coi", false, "build COI from source instead of downloading the pre-built binary")
 	return cmd
 }
 
@@ -70,9 +65,8 @@ func insideLinuxVM() bool {
 	return runtimeIsLinux()
 }
 
-func vmInitSteps(yes, buildCOI bool) []initflow.Step {
+func vmInitSteps(yes bool) []initflow.Step {
 	username := currentUsername()
-	onLima := lima.IsGuest()
 	steps := []initflow.Step{
 		{
 			Title: "Install Zabbly apt signing key",
@@ -174,29 +168,11 @@ Signed-By: /etc/apt/keyrings/zabbly.asc
 			},
 		},
 	}
-	steps = append(steps, coiInstallSteps(onLima, buildCOI)...)
 	steps = append(steps, []initflow.Step{
 		{
-			Title: "Build coi-default image (~5 min on first run)",
+			Title: "Build ahjo-base image via the ahjo-runtime devcontainer Feature (~5 min on first run)",
 			Skip: func() (bool, string, error) {
-				exists, err := incus.ImageAliasExists("coi-default")
-				if err != nil {
-					return false, "", err
-				}
-				if exists {
-					return true, "coi-default image present", nil
-				}
-				return false, "", nil
-			},
-			Show: "coi build",
-			Action: func(out io.Writer) error {
-				return runCoiBuildDefault(out)
-			},
-		},
-		{
-			Title: "Materialize ahjo-base profile and build the ahjo-base image",
-			Skip: func() (bool, string, error) {
-				exists, err := incus.ImageAliasExists("ahjo-base")
+				exists, err := incus.ImageAliasExists(devcontainer.AhjoBaseAlias)
 				if err != nil {
 					return false, "", err
 				}
@@ -205,17 +181,14 @@ Signed-By: /etc/apt/keyrings/zabbly.asc
 				}
 				return false, "", nil
 			},
-			Show: "writes ~/.ahjo/profiles/ahjo-base/{config.toml,build.sh}\n" +
-				"mirrors them as file-level symlinks under ~/.coi/profiles/ahjo-base/ (COI's loader skips dir-symlinks)\n" +
-				"coi build --profile ahjo-base",
+			Note: "pulls images:ubuntu/24.04 once into the local image store (alias " + devcontainer.OSBaseAlias + "), launches a transient container, runs the embedded ahjo-runtime install.sh as root, publishes the result as ahjo-base, and deletes the transient container.",
+			Show: "incus image copy " + devcontainer.UpstreamRemote + " local: --alias " + devcontainer.OSBaseAlias + "\n" +
+				"incus launch " + devcontainer.OSBaseAlias + " ahjo-build-<rand>\n" +
+				"apply ahjo-runtime Feature (sshd + ahjo-claude-prepare + Node + corepack)\n" +
+				"incus publish ahjo-build-<rand> --alias " + devcontainer.AhjoBaseAlias + "\n" +
+				"incus delete ahjo-build-<rand>",
 			Action: func(out io.Writer) error {
-				if err := paths.EnsureSkeleton(); err != nil {
-					return err
-				}
-				if err := profile.Materialize(); err != nil {
-					return err
-				}
-				return coi.Build(paths.AhjoBaseProfile, false)
+				return devcontainer.BuildAhjoBase(out, false)
 			},
 		},
 		{
@@ -339,10 +312,10 @@ Signed-By: /etc/apt/keyrings/zabbly.asc
 // invariant. The step is idempotent: re-runs detect the lines and skip the
 // daemon restart entirely.
 //
-// Background: COI v0.8.x implements raw.idmap natively but auto-disables it
-// on Lima/Colima (it assumes the workspace is on virtiofs and handled at the
-// VM level). ahjo's containers run on the VM's local btrfs pool, so the
-// assumption doesn't hold. See CONTAINER-ISOLATION.md "Workspace UID mapping".
+// Background: ahjo's containers run on the VM's local btrfs pool, not on a
+// VM-level virtiofs share, so workspace UID mapping must happen at the
+// container userns layer rather than at the VM mount layer. See
+// CONTAINER-ISOLATION.md "Workspace UID mapping".
 func subuidGrantStep() initflow.Step {
 	uid := os.Getuid()
 	gid := os.Getgid()
@@ -361,9 +334,7 @@ func subuidGrantStep() initflow.Step {
 			return false, "", nil
 		},
 		Note: "Required so each ahjo container's `raw.idmap` (which maps the VM " +
-			"host user onto the in-container `code` user) is honored at start. " +
-			"COI's Lima auto-detect skips raw.idmap; ahjo applies it itself, but " +
-			"only works if the daemon has these subuid/subgid grants.",
+			"host user onto the in-container `ubuntu` user) is honored at start.",
 		Show: fmt.Sprintf("echo '%s' | sudo tee -a /etc/subuid\n", subuidLine) +
 			fmt.Sprintf("echo '%s' | sudo tee -a /etc/subgid\n", subgidLine) +
 			"sudo systemctl restart incus  (only if either file changed)",
@@ -439,170 +410,6 @@ func mergeClaudeOnboardingMarker(path string) error {
 	}
 	out = append(out, '\n')
 	return os.WriteFile(path, out, 0o600)
-}
-
-// coiInstallSteps returns the COI install (and, under Lima, open-mode config)
-// steps. Under Lima we know the VM is already firewalled by macOS/vzNAT and
-// only `mode = "open"` is useful, so we pre-disable ufw and run install.sh
-// with NONINTERACTIVE=1 — every prompt flows through defaults. On bare-metal
-// Linux the user's ufw/firewalld setup may matter, so we let install.sh
-// prompt and skip the open-mode override.
-//
-// install.sh exposes only one knob for the install-method choice: the second
-// arg to its `prompt_choice` helper (the "default"). With NONINTERACTIVE=1
-// that default is what gets used. To pick "build from source" we sed-patch
-// the script's default from "1" to "2" before piping to bash; in interactive
-// mode the same patch flips which choice gets picked when the user hits enter.
-func coiInstallSteps(onLima, buildCOI bool) []initflow.Step {
-	pipeline := func(env string) string { return coiInstallPipeline(env, buildCOI) }
-
-	if onLima {
-		return []initflow.Step{
-			{
-				Title: "Install COI (Lima: non-interactive)",
-				Skip: func() (bool, string, error) {
-					if _, err := exec.LookPath("coi"); err == nil {
-						return true, "coi already on PATH", nil
-					}
-					return false, "", nil
-				},
-				Note: coiNote(true, buildCOI),
-				Show: "sudo systemctl disable --now ufw\n" + pipeline("NONINTERACTIVE=1 "),
-				Action: func(out io.Writer) error {
-					// Best-effort: ufw may already be inactive on minimal images.
-					_ = initflow.RunShell(out, "", "sudo", "systemctl", "disable", "--now", "ufw")
-					return initflow.RunBash(out, "", pipeline("NONINTERACTIVE=1 "))
-				},
-			},
-			{
-				Title: "Configure COI for open networking",
-				Skip: func() (bool, string, error) {
-					h, err := os.UserHomeDir()
-					if err != nil {
-						return false, "", err
-					}
-					b, err := os.ReadFile(filepath.Join(h, ".coi", "config.toml"))
-					if err != nil {
-						return false, "", nil
-					}
-					if strings.Contains(string(b), `mode = "open"`) {
-						return true, `~/.coi/config.toml has mode = "open"`, nil
-					}
-					return false, "", nil
-				},
-				Note: "required under Lima — firewalld isn't usable in the VM and the Mac edge already firewalls it",
-				Show: "writes ~/.coi/config.toml with [network] mode = \"open\"",
-				Action: func(_ io.Writer) error {
-					h, err := os.UserHomeDir()
-					if err != nil {
-						return err
-					}
-					dir := filepath.Join(h, ".coi")
-					if err := os.MkdirAll(dir, 0o755); err != nil {
-						return err
-					}
-					return os.WriteFile(filepath.Join(dir, "config.toml"), []byte(initflow.CoiOpenNetworkConfig()), 0o644)
-				},
-			},
-		}
-	}
-	return []initflow.Step{
-		{
-			Title: "Install COI (Linux: interactive)",
-			Skip: func() (bool, string, error) {
-				if _, err := exec.LookPath("coi"); err == nil {
-					return true, "coi already on PATH", nil
-				}
-				return false, "", nil
-			},
-			Note: coiNote(false, buildCOI),
-			Show: pipeline(""),
-			Action: func(out io.Writer) error {
-				return initflow.RunBash(out, "", pipeline(""))
-			},
-		},
-	}
-}
-
-func coiNote(onLima, buildCOI bool) string {
-	source := "pre-built binary"
-	if buildCOI {
-		source = "build from source (--build-coi)"
-	}
-	pin := "pinned to " + coi.PinnedVersion + " (install.sh URL + VERSION env)"
-	if onLima {
-		return pin + ". ufw is disabled first (Lima/vzNAT already firewalls the VM and ahjo runs COI in `mode = \"open\"`), then install.sh runs with NONINTERACTIVE=1 so ufw/firewalld prompts flow through defaults. Install method: " + source + "."
-	}
-	return pin + ". Interactive: COI's installer prompts for ufw vs firewalld. Install method: " + source + " (you can still hit enter to accept it). ahjo does not write `mode = \"open\"` on bare-metal Linux — if you keep ufw and skip firewalld you may want to set it manually in ~/.coi/config.toml afterwards."
-}
-
-// coiInstallPipeline returns the bash one-liner that fetches COI's install.sh
-// and runs it with VERSION=<coi.PinnedVersion>. install.sh itself is fetched
-// from master (it defaults VERSION to "latest", so pinning only the URL
-// would NOT pin the downloaded binary — the binary version is what matters
-// because the build script for `coi build` is embedded in the binary).
-// envPrefix is "NONINTERACTIVE=1 " under Lima (so the script's ufw/firewalld
-// prompts flow through defaults), "" on bare-metal Linux. When buildCOI is
-// true we sed-patch the install-method default from "1" (pre-built binary)
-// to "2" (build from source) before piping to bash.
-func coiInstallPipeline(envPrefix string, buildCOI bool) string {
-	curl := "curl -fsSL https://raw.githubusercontent.com/mensfeld/code-on-incus/master/install.sh"
-	patch := `sed 's|prompt_choice "Choose \[1/2\] (default: 1): " "1"|prompt_choice "Choose [1/2] (default: 2): " "2"|'`
-	env := "VERSION=" + coi.PinnedVersion + " " + envPrefix
-	if buildCOI {
-		return curl + " | " + patch + " | " + env + "bash"
-	}
-	return curl + " | " + env + "bash"
-}
-
-// coiReinstallStep is the always-run variant used by `ahjo update`. Unlike
-// coiInstallSteps' install step, this has no Skip — the entire point of
-// `ahjo update` is to (re-)pin COI to coi.PinnedVersion. Under Lima we still
-// pre-disable ufw and run NONINTERACTIVE so the re-run is non-blocking.
-func coiReinstallStep(onLima, buildCOI bool) initflow.Step {
-	note := "always runs — re-pins COI to " + coi.PinnedVersion + ". Bump the pin in internal/cli/init.go to track upstream after vetting a new release."
-	if onLima {
-		return initflow.Step{
-			Title: "Reinstall COI " + coi.PinnedVersion + " (Lima: non-interactive)",
-			Note:  note + " ufw is disabled first; NONINTERACTIVE=1 keeps install.sh from prompting.",
-			Show:  "sudo systemctl disable --now ufw\n" + coiInstallPipeline("NONINTERACTIVE=1 ", buildCOI),
-			Action: func(out io.Writer) error {
-				_ = initflow.RunShell(out, "", "sudo", "systemctl", "disable", "--now", "ufw")
-				return initflow.RunBash(out, "", coiInstallPipeline("NONINTERACTIVE=1 ", buildCOI))
-			},
-		}
-	}
-	return initflow.Step{
-		Title: "Reinstall COI " + coi.PinnedVersion + " (Linux: interactive)",
-		Note:  note + " install.sh will prompt for ufw/firewalld; hit enter to keep your current choice.",
-		Show:  coiInstallPipeline("", buildCOI),
-		Action: func(out io.Writer) error {
-			return initflow.RunBash(out, "", coiInstallPipeline("", buildCOI))
-		},
-	}
-}
-
-// runCoiBuildDefault runs `coi build` for the default profile. We deliberately
-// run from an empty temp dir so COI's resolveAsset cannot find a stray
-// CWD-relative profiles/default/build.sh and falls through to its embedded
-// copy. (Earlier ahjo wrote a patched script here to work around upstream's
-// broken `mise use … pnpm@latest …` line; upstream now uses `npm:pnpm@latest`
-// directly so the patch is no longer needed and was actually corrupting the
-// script — sed turned `npm:pnpm@latest` into `npm:npm:pnpm@latest`, which
-// fails npm with E404.)
-func runCoiBuildDefault(out io.Writer) error {
-	tmpdir, err := os.MkdirTemp("", "ahjo-coi-build-")
-	if err != nil {
-		return fmt.Errorf("mktemp: %w", err)
-	}
-	defer os.RemoveAll(tmpdir)
-
-	cmd := exec.Command("coi", "build")
-	cmd.Dir = tmpdir
-	cmd.Stdout = out
-	cmd.Stderr = out
-	cmd.Stdin = os.Stdin
-	return cmd.Run()
 }
 
 // reExecUnderSg replaces the current process with `sg incus-admin -c "<self> init [-y]"`

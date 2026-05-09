@@ -186,11 +186,11 @@ func repoAddSetup(slug, primary string, aliases []string, url, defaultBase strin
 	}
 
 	// /repo is at the container root, where uid 1000 can't `mkdir`. Create
-	// it as code:code first so `git clone` runs unprivileged.
-	if err := incus.ExecAs(containerName, 0, nil, "/", "install", "-d", "-m", "0755", "-o", "code", "-g", "code", paths.RepoMountPath); err != nil {
+	// it as ubuntu:ubuntu first so `git clone` runs unprivileged.
+	if err := incus.ExecAs(containerName, 0, nil, "/", "install", "-d", "-m", "0755", "-o", "ubuntu", "-g", "ubuntu", paths.RepoMountPath); err != nil {
 		return fmt.Errorf("create %s: %w", paths.RepoMountPath, err)
 	}
-	fmt.Printf("→ git clone %s %s (in container as code)\n", url, paths.RepoMountPath)
+	fmt.Printf("→ git clone %s %s (in container as ubuntu)\n", url, paths.RepoMountPath)
 	if err := incus.ExecAs(containerName, 1000, nil, "/", "git", "clone", url, paths.RepoMountPath); err != nil {
 		return wrapCloneErr(err)
 	}
@@ -326,7 +326,7 @@ func wireBranchContainer(containerName, hostKeysDir string) error {
 	}
 	if err := incus.AddDiskDevice(
 		containerName, "ahjo-authorized-keys",
-		hostKeysDir+"/authorized_keys", "/home/code/.ssh/authorized_keys",
+		hostKeysDir+"/authorized_keys", "/home/ubuntu/.ssh/authorized_keys",
 		true,
 	); err != nil {
 		return err
@@ -374,8 +374,8 @@ func securityConfigFlags() [][2]string {
 
 // detectContainerDefaultBranch runs `git symbolic-ref --short HEAD` inside
 // containerName's /repo so the caller doesn't need a host-side bare clone.
-// Runs as the `code` user (uid 1000) — `/repo` is owned by code, and git
-// refuses to run on a tree it considers "dubiously owned" when invoked
+// Runs as the `ubuntu` user (uid 1000) — `/repo` is owned by ubuntu, and
+// git refuses to run on a tree it considers "dubiously owned" when invoked
 // from another uid.
 func detectContainerDefaultBranch(containerName string) (string, error) {
 	out, err := exec.Command(
@@ -449,23 +449,23 @@ func resolveHostEnv(keys []string) map[string]string {
 }
 
 // pushClaudeConfig copies the host's ~/.claude/* and ~/.claude.json into
-// containerName at the corresponding paths under /home/code, then chowns
-// the files that actually pushed to uid 1000. Replaces COI's setupCLIConfig
-// pipeline with `incus file push` calls. Files missing on the host silently
-// no-op (the chown step skips them so it doesn't error on partial coverage).
+// containerName at the corresponding paths under /home/ubuntu, then chowns
+// the files that actually pushed to uid 1000. Files missing on the host
+// silently no-op (the chown step skips them so it doesn't error on partial
+// coverage).
 func pushClaudeConfig(containerName string) error {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return err
 	}
-	if err := incus.ExecAs(containerName, 0, nil, "/", "install", "-d", "-m", "0755", "-o", "code", "-g", "code", "/home/code/.claude"); err != nil {
-		return fmt.Errorf("mkdir /home/code/.claude: %w", err)
+	if err := incus.ExecAs(containerName, 0, nil, "/", "install", "-d", "-m", "0755", "-o", "ubuntu", "-g", "ubuntu", "/home/ubuntu/.claude"); err != nil {
+		return fmt.Errorf("mkdir /home/ubuntu/.claude: %w", err)
 	}
 	files := []struct{ src, dst string }{
-		{home + "/.claude/settings.json", "/home/code/.claude/settings.json"},
-		{home + "/.claude/.credentials.json", "/home/code/.claude/.credentials.json"},
-		{home + "/.claude/CLAUDE.md", "/home/code/.claude/CLAUDE.md"},
-		{home + "/.claude.json", "/home/code/.claude.json"},
+		{home + "/.claude/settings.json", "/home/ubuntu/.claude/settings.json"},
+		{home + "/.claude/.credentials.json", "/home/ubuntu/.claude/.credentials.json"},
+		{home + "/.claude/CLAUDE.md", "/home/ubuntu/.claude/CLAUDE.md"},
+		{home + "/.claude.json", "/home/ubuntu/.claude.json"},
 	}
 	var pushed []string
 	for _, f := range files {

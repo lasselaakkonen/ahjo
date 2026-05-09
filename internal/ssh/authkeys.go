@@ -22,7 +22,7 @@ import (
 // by key bytes so a key loaded from multiple sources lands once.
 //
 // Writes in place (O_TRUNC) rather than via tempfile+rename so incus
-// single-file bind mounts (path /home/code/.ssh/authorized_keys) keep
+// single-file bind mounts (path /home/ubuntu/.ssh/authorized_keys) keep
 // pointing at the same inode and observe the new content live.
 func WriteAuthorizedKeys(slugDir string) error {
 	body, sources, err := collectAuthorizedKeys()

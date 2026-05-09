@@ -22,15 +22,15 @@ import (
 )
 
 // RawIdmapValue is the per-container raw.idmap value to apply: maps the
-// in-VM host UID/GID onto the in-container `code` user (1000:1000). Emits
+// in-VM host UID/GID onto the in-container `ubuntu` user (1000:1000). Emits
 // two lines (`uid <hostuid> 1000` + `gid <hostgid> 1000`) rather than the
 // shorter `both <hostid> 1000` because incus's `both` form takes a single
 // host id and uses it for both UID and GID — fine when the in-VM user has
-// uid == gid (COI's lima default of 1000:1000), but wrong on Lima setups
-// that propagate the macOS uid (e.g. 501) while keeping a separate gid
-// (e.g. 1000): the resulting `gid 501 1000` then fails because /etc/subgid
-// only grants the user's actual gid (1000), not the uid (501), so
-// newgidmap rejects the mapping and `incus start` aborts.
+// uid == gid (the default 1000:1000), but wrong on Lima setups that
+// propagate the macOS uid (e.g. 501) while keeping a separate gid (e.g.
+// 1000): the resulting `gid 501 1000` then fails because /etc/subgid only
+// grants the user's actual gid (1000), not the uid (501), so newgidmap
+// rejects the mapping and `incus start` aborts.
 func RawIdmapValue(uid, gid int) string {
 	return fmt.Sprintf("uid %d 1000\ngid %d 1000", uid, gid)
 }

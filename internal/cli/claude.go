@@ -16,7 +16,7 @@ func newClaudeCmd() *cobra.Command {
 		Short: "Start (if needed) and launch `claude` inside the branch's container",
 		Long: `Start the container if needed, wire SSH proxy + sshd, then ` +
 			"`incus exec --force-interactive`" + ` directly into ` + "`claude`" + ` as the
-in-container ` + "`code`" + ` user in /repo. Use ` + "`ahjo shell`" + ` for an interactive
+in-container ` + "`ubuntu`" + ` user in /repo. Use ` + "`ahjo shell`" + ` for an interactive
 shell instead.
 
 Pass --update to discard the existing container before attaching: ahjo stops

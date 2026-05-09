@@ -1,0 +1,7 @@
+{
+  "id": "ahjo-runtime",
+  "version": "1.0.0",
+  "name": "ahjo runtime",
+  "description": "Bakes ahjo's runtime expectations into an Incus system container: sshd as a service, the host-key bind-mount dir, the ahjo-claude-prepare hook, and Node + corepack. Applied to images:ubuntu/24.04 to produce ahjo-base.",
+  "options": {}
+}

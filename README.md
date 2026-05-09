@@ -45,13 +45,11 @@ export SSH_AUTH_SOCK="$HOME/Library/Group Containers/2BUA8C4S2C.com.1password/t/
 
 `ahjo doctor` verifies this end-to-end. See [CONTAINER-ISOLATION.md](CONTAINER-ISOLATION.md#the-ssh-agent-hole) for why.
 
-On macOS the same command does both the host setup (Homebrew check → `brew install lima` → `limactl start`) and the in-VM bring-up (Zabbly + Incus, `incus admin init`, COI install, `coi-default` build, `ahjo-base` image, `claude setup-token`). It pulls the matching `ahjo-linux-<arch>` from the GitHub release that built your host binary, verifies it against `SHA256SUMS`, drops it into the VM at `/usr/local/bin/ahjo`, and drives the rest by relaying through `limactl shell`. No second invocation, no shelling into the VM.
+On macOS the same command does both the host setup (Homebrew check → `brew install lima` → `limactl start`) and the in-VM bring-up (Zabbly + Incus, `incus admin init`, build the `ahjo-base` image by applying the embedded `ahjo-runtime` devcontainer Feature on top of `images:ubuntu/24.04`, `claude setup-token`). It pulls the matching `ahjo-linux-<arch>` from the GitHub release that built your host binary, verifies it against `SHA256SUMS`, drops it into the VM at `/usr/local/bin/ahjo`, and drives the rest by relaying through `limactl shell`. No second invocation, no shelling into the VM.
 
-On Linux there's no VM — `ahjo init` runs the bring-up directly. After `usermod -aG incus-admin` it re-execs itself under `sg incus-admin` so the new group activates without a re-shell, then continues to COI, `ahjo-base`, and `claude setup-token` in the same pass.
+On Linux there's no VM — `ahjo init` runs the bring-up directly. After `usermod -aG incus-admin` it re-execs itself under `sg incus-admin` so the new group activates without a re-shell, then continues with the `ahjo-base` build and `claude setup-token` in the same pass.
 
-ahjo detects whether it's running inside a Lima VM (via `/mnt/lima-cidata/lima.env`) and tunes the COI install accordingly. Under Lima the VM is already firewalled by macOS/vzNAT, so init disables ufw and runs COI's installer non-interactively, then sets COI's network mode to `open`. On bare-metal Linux it runs COI's installer interactively — you pick ufw vs firewalld and pre-built vs source — and leaves COI's network mode at the installer's default.
-
-`claude setup-token` requires the `claude` CLI on PATH inside the VM. ahjo will not auto-install it — if it's missing the step fails with install instructions. The resulting `sk-ant-oat01-…` token is saved to `~/.ahjo/.env` (mode 0600) and loaded automatically on every ahjo invocation, so containers receive it via COI's `forward_env` without any shellrc edits.
+`claude setup-token` requires the `claude` CLI on PATH inside the VM. ahjo will not auto-install it — if it's missing the step fails with install instructions. The resulting `sk-ant-oat01-…` token is saved to `~/.ahjo/.env` (mode 0600) and loaded automatically on every ahjo invocation, so containers receive it via the `forward_env` mechanism (applied with `incus exec --env`) without any shellrc edits.
 
 ### Verify
 
@@ -118,14 +116,14 @@ State lives under `~/.ahjo/` (registry, ports, host keys, profiles). The Mac shi
 
 | Command | What it does |
 | --- | --- |
-| `ahjo init [-y] [--build-coi]` | One-time setup. Mac: Lima + VM, then drop `ahjo-linux-<arch>` into the VM and relay the in-VM bring-up. In VM (or directly on Linux): Incus + COI + `ahjo-base` image + `~/.ahjo/` skeleton. Resumable. `--build-coi` builds COI from source instead of downloading. |
-| `ahjo update [-y]` | Refresh in-place. Mac: push the current `ahjo-linux-<arch>` into the VM (no-op if the version already matches). VM: re-materialize the embedded `ahjo-base` profile and rebuild the `ahjo-base` image. Run after editing the host binary or any embedded asset. |
+| `ahjo init [-y]` | One-time setup. Mac: Lima + VM, then drop `ahjo-linux-<arch>` into the VM and relay the in-VM bring-up. In VM (or directly on Linux): Incus + `ahjo-base` image (built from `images:ubuntu/24.04` by applying the embedded `ahjo-runtime` devcontainer Feature) + `~/.ahjo/` skeleton. Resumable. |
+| `ahjo update [-y]` | Refresh in-place. Mac: push the current `ahjo-linux-<arch>` into the VM (no-op if the version already matches). VM: rebuild the `ahjo-base` image by force-replaying the `ahjo-runtime` Feature on top of the local `ahjo-osbase` mirror of upstream Ubuntu. Run after editing the host binary or the embedded Feature. |
 | `ahjo doctor` | Read-only host check. Reports anything `init` would fix. |
 | `ahjo repo add <git-url> [--as <alias>] [--default-base <branch>]` | Register a repo and bare-clone it under `~/.ahjo/repos/`. Auto alias is `<owner>/<repo>` from the URL; `--as` adds a second alias. On collision (e.g. github vs gitlab `acme/api`), ahjo suffixes `-2`/`-3`/… |
 | `ahjo repo ls` | List registered repos with their aliases. |
 | `ahjo repo rm <alias> [--force]` | Drop a repo by any of its aliases. Refuses if worktrees still exist. |
 | `ahjo new <repo-alias> <branch> [--as <alias>] [--base <ref>] [--no-fetch]` | Create the worktree and render `.coi/config.toml`. Auto alias is `<repo-primary-alias>@<branch>`; `--as` adds a second alias. Idempotent. |
-| `ahjo shell <alias> [--update]` | Start the container if needed, wire SSH proxy + sshd, attach an interactive shell via `coi shell --debug` (skips COI's AI-tool launcher). `--update` shuts down and deletes the existing container first so the next attach builds a fresh one from the current `ahjo-base` image; the worktree, host keys, registry entry, and ssh port are preserved. |
+| `ahjo shell <alias> [--update]` | Start the container if needed, wire SSH proxy + sshd, attach an interactive bash via `incus exec --force-interactive` as the in-container `ubuntu` user. `--update` shuts down and deletes the existing container first so the next attach builds a fresh one from the current `ahjo-base` image; the host keys, registry entry, and ssh port are preserved. |
 | `ahjo claude <alias> [--update]` | Same prep as `ahjo shell`, but launches `claude` inside the container instead of dropping to a shell. |
 | `ahjo ssh <alias>` | `exec ssh` into the container using the generated ssh-config (Mac-side or in-VM). |
 | `ahjo expose <alias> <container-port>` | Manually add an Incus proxy device exposing a container port on `127.0.0.1`. |
@@ -133,7 +131,7 @@ State lives under `~/.ahjo/` (registry, ports, host keys, profiles). The Mac shi
 | `ahjo ls` | Worktrees with aliases, slug, SSH port, container state, creation time. |
 | `ahjo rm <alias>` | Stop + delete the container, remove the worktree, free ports, drop the registry entry. |
 | `ahjo gc [--older-than DUR] [--prune] [--dry-run]` | Report (and optionally remove) stale worktrees. Defaults to dry-run. |
-| `ahjo nuke [-y]` | Tear down everything `init` built so it can be rebuilt: containers, `ahjo-base`/`coi-default` images, worktrees, host keys, port allocations. On macOS this also stops + deletes the Lima VM. Keeps `~/.ahjo/{config.toml,profiles,repos}` and registered repos. |
+| `ahjo nuke [-y]` | Tear down everything `init` built so it can be rebuilt: containers, `ahjo-base` + `ahjo-osbase` images (and any leftover `coi-default` from a pre-Phase-1 install), host keys, port allocations. On macOS this also stops + deletes the Lima VM. Keeps `~/.ahjo/{config.toml,profiles}` and registered repos. |
 | `ahjo version` | Print the version baked into the binary. |
 
 Global config: `~/.ahjo/config.toml` (optional). See [`internal/config/config.go`](internal/config/config.go) for fields — currently `forward_env`, `port_range`, and `auto_expose`.
@@ -162,11 +160,10 @@ ahjo has four state layers: the host binary, the `ahjo-base` Incus image, each w
 | Scenario | Command |
 | --- | --- |
 | Full reset (wipe everything, rebuild from scratch) | `ahjo nuke -y && ahjo init` |
-| Host binary or any embedded asset changed (`build.sh`, `ahjo-claude-prepare`, `coi-config-template.toml`, anything under `internal/coi/assets/`) | `ahjo update` |
-| Per-worktree `.coi/config.toml` is stale | `ahjo new <repo-alias> <branch>` (idempotent — re-renders for an existing worktree) |
+| Host binary or any embedded asset changed (`internal/ahjoruntime/feature/install.sh`, `ahjo-claude-prepare`, anything under `internal/ahjoruntime/`) | `ahjo update` |
 | Existing container should run on the new image | `ahjo shell <alias> --update` |
 
-`ahjo update` is the brew-style "bring everything to current" verb: on macOS it pushes the matching `ahjo-linux-<arch>` into the VM (no-op when versions match) and then runs `ahjo update` inside the VM, which re-materializes the embedded `ahjo-base` profile and rebuilds the image. On Linux it skips the binary push and goes straight to the rebuild.
+`ahjo update` is the brew-style "bring everything to current" verb: on macOS it pushes the matching `ahjo-linux-<arch>` into the VM (no-op when versions match) and then runs `ahjo update` inside the VM, which force-rebuilds `ahjo-base` by re-applying the embedded `ahjo-runtime` Feature on top of the local `ahjo-osbase` mirror. On Linux it skips the binary push and goes straight to the rebuild.
 
 `ahjo shell --update` is granular by design — `ahjo update` rebuilds the image but leaves running containers alone, so you can decide per-worktree whether to recreate. The worktree, host keys, registry entry, and ssh port are preserved. Worktrees you don't recreate keep running on the old image until you do.
 

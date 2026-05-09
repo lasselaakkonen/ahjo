@@ -7,7 +7,6 @@ import (
 	"os"
 	"os/exec"
 
-	"github.com/lasselaakkonen/ahjo/internal/coi"
 	"github.com/lasselaakkonen/ahjo/internal/incus"
 	"github.com/lasselaakkonen/ahjo/internal/paths"
 )
@@ -31,8 +30,6 @@ type Problem struct {
 // internal/lima and are run by ahjo-mac.
 func Run() []Problem {
 	var ps []Problem
-	ps = append(ps, checkBinary("coi", "Install COI: see https://github.com/mensfeld/code-on-incus"))
-	ps = append(ps, checkCoiVersion())
 	ps = append(ps, checkBinary("incus", "sudo apt install incus"))
 	ps = append(ps, checkBinary("git", "sudo apt install git"))
 	ps = append(ps, checkBinary("ssh-keygen", "sudo apt install openssh-client"))
@@ -40,7 +37,6 @@ func Run() []Problem {
 	ps = append(ps, checkOAuthToken())
 	ps = append(ps, checkStoragePool())
 	ps = append(ps, checkAhjoBase())
-	ps = append(ps, checkCoiDefault())
 	return ps
 }
 
@@ -121,47 +117,10 @@ func checkAhjoBase() Problem {
 		return Problem{
 			Severity: Warn,
 			Title:    "ahjo-base image not built",
-			Fix:      "ahjo doctor --init  # builds ahjo-base via coi build",
+			Fix:      "ahjo init  # builds ahjo-base via the ahjo-runtime devcontainer Feature pipeline",
 		}
 	}
 	return Problem{Severity: OK, Title: "ahjo-base image present"}
-}
-
-func checkCoiVersion() Problem {
-	if _, err := exec.LookPath("coi"); err != nil {
-		return Problem{Severity: Warn, Title: "skipped: coi version check (coi missing)"}
-	}
-	got := coi.InstalledVersion()
-	if got == "" {
-		return Problem{Severity: Warn, Title: "coi version unknown", Detail: "`coi --version` did not return a parseable tag"}
-	}
-	if got != coi.PinnedVersion {
-		return Problem{
-			Severity: Warn,
-			Title:    fmt.Sprintf("coi version drift: installed %s, pinned %s", got, coi.PinnedVersion),
-			Detail:   "`ahjo update` will re-pin to " + coi.PinnedVersion + "; this is informational only.",
-			Fix:      "ahjo update",
-		}
-	}
-	return Problem{Severity: OK, Title: "coi pinned to " + coi.PinnedVersion}
-}
-
-func checkCoiDefault() Problem {
-	if _, err := exec.LookPath("incus"); err != nil {
-		return Problem{Severity: Warn, Title: "skipped: coi-default image check (incus missing)"}
-	}
-	exists, err := incus.ImageAliasExists("coi-default")
-	if err != nil {
-		return Problem{Severity: Warn, Title: "could not query incus image aliases", Detail: err.Error()}
-	}
-	if !exists {
-		return Problem{
-			Severity: Fail,
-			Title:    "coi-default image not built",
-			Fix:      "coi build  # builds coi-default per COI's README",
-		}
-	}
-	return Problem{Severity: OK, Title: "coi-default image present"}
 }
 
 // Format renders a Problem as a single line for printing.
