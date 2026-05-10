@@ -52,7 +52,13 @@ func runClaude(alias string, update bool) error {
 	}
 	_ = br
 	model := promptStartingModel(cobraOut(), os.Stdin)
-	return incus.ExecAttach(containerName, 1000, env, paths.RepoMountPath, "claude", "--dangerously-skip-permissions", "--model", model)
+	// Launch through `bash -lc 'exec claude …'` so ~/.profile fires and
+	// ~/.local/bin lands on PATH — otherwise claude's self-check ("native
+	// install exists but ~/.local/bin not in PATH") prints on every start.
+	// `exec` replaces bash with claude so signals + exit codes still pass
+	// through unchanged.
+	return incus.ExecAttach(containerName, 1000, env, paths.RepoMountPath,
+		"bash", "-lc", `exec claude --dangerously-skip-permissions --model "$1"`, "bash", model)
 }
 
 // promptStartingModel asks which alias to pass to `claude` via --model on
@@ -60,27 +66,27 @@ func runClaude(alias string, update bool) error {
 // setup-token` and forwarded via `forward_env`) doesn't propagate Max-tier
 // metadata into claude's /model picker, so the 1M Opus entry is hidden even
 // on a Max plan — see https://github.com/anthropics/claude-code/issues/5625.
-// Asking here is a per-session opt-in to opus[1m] without touching
-// settings.json. Returns "opusplan" on non-TTY stdin or any read failure so
-// piped invocations don't hang.
+// Asking here is a per-session pick without touching settings.json. Returns
+// "opus[1m]" on non-TTY stdin or any read failure so piped invocations don't
+// hang.
 func promptStartingModel(out io.Writer, in *os.File) string {
 	if !isTerminal(in) {
-		return "opusplan"
+		return "opus[1m]"
 	}
 	fmt.Fprintln(out, "ahjo asks because anthropics/claude-code#5625: long-lived OAuth tokens")
 	fmt.Fprintln(out, "don't surface the Max-tier 1M Opus entry in claude's /model picker.")
 	fmt.Fprintln(out, "  https://github.com/anthropics/claude-code/issues/5625")
 	fmt.Fprintln(out)
 	fmt.Fprintln(out, "Pick a starting model:")
-	fmt.Fprintln(out, "  1) opusplan   — Opus for plan, Sonnet for execution (200K)")
-	fmt.Fprintln(out, "  2) opus[1m]   — Opus 4.7 with 1M context window")
+	fmt.Fprintln(out, "  1) opus[1m]   — Opus 4.7 with 1M context window")
+	fmt.Fprintln(out, "  2) opusplan   — Opus for plan, Sonnet for execution (200K)")
 	fmt.Fprint(out, "Choice [1/2, default 1]: ")
 	line, _ := bufio.NewReader(in).ReadString('\n')
 	switch strings.TrimSpace(line) {
-	case "2", "opus[1m]":
-		return "opus[1m]"
+	case "2", "opusplan":
+		return "opusplan"
 	}
-	return "opusplan"
+	return "opus[1m]"
 }
 
 func isTerminal(f *os.File) bool {
