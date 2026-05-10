@@ -27,8 +27,13 @@ if [ "$remote_uid" != "1000" ]; then
 fi
 
 apt-get update -qq
+# git is provided by the upstream `ghcr.io/devcontainers/features/git:1`
+# Feature applied earlier in the base-bake chain — no need to apt-install
+# it again here. jq is kept because ahjo-claude-prepare (defined below)
+# uses it on every container's first shell, so it's an ahjo runtime
+# dependency, not opinionated dev tooling.
 DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
-    openssh-server jq curl ca-certificates gnupg git
+    openssh-server jq curl ca-certificates gnupg
 
 mkdir -p /etc/ssh/ahjo-host-keys
 chmod 755 /etc/ssh/ahjo-host-keys

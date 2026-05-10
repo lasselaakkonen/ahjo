@@ -1,0 +1,7 @@
+{
+  "id": "ahjo-default-dev-tools",
+  "version": "1.0.0",
+  "name": "ahjo default dev tools",
+  "description": "Bundles small CLI utilities ahjo's preferred workflows assume (rg, fd, eza, yq, ast-grep, httpie, make). Tools with their own curated upstream Feature (common-utils, git, github-cli) are not duplicated here. Applied at base-bake time after the upstream Features and before ahjo-runtime.",
+  "options": {}
+}

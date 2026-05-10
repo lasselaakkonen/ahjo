@@ -24,10 +24,11 @@ func newUpdateCmd() *cobra.Command {
 		Long: `update brings every layer downstream of the host ahjo binary up to date:
 
   - re-runs Anthropic's claude installer on the VM (idempotent — pulls latest)
-  - rebuilds the ahjo-base image by force-replaying the ahjo-runtime
-    devcontainer Feature on top of images:ubuntu/24.04 (the local
-    ahjo-osbase mirror of upstream is reused — re-pulling it would slow
-    update for no gain)
+  - rebuilds the ahjo-base image by force-replaying the devcontainer
+    Feature pipeline (curated upstream Features + ahjo's embedded
+    Features) on top of images:ubuntu/24.04 (the local ahjo-osbase
+    mirror of upstream is reused — re-pulling it would slow update for
+    no gain)
 
 It does not touch worktrees, containers, registry entries, or host claude
 credentials. To pick up the new image in an existing container, recreate
@@ -65,15 +66,18 @@ func vmUpdateSteps() []initflow.Step {
 			},
 		},
 		{
-			Title: "Rebuild ahjo-base via the ahjo-runtime devcontainer Feature",
-			Note: "applies the embedded ahjo-runtime install.sh (sshd, ahjo-claude-prepare, " +
+			Title: "Rebuild ahjo-base via the devcontainer Feature pipeline",
+			Note: "applies the curated upstream Features (common-utils, git, github-cli) " +
+				"followed by ahjo's embedded ahjo-default-dev-tools (rg, fd, eza, yq, " +
+				"ast-grep, httpie, make) and ahjo-runtime (sshd, ahjo-claude-prepare, " +
 				"Node + corepack) to a fresh transient container off " + devcontainer.OSBaseAlias + ", " +
 				"then publishes the result as ahjo-base. The local " + devcontainer.OSBaseAlias + " " +
 				"mirror of " + devcontainer.UpstreamRemote + " is reused — re-pulling it would " +
 				"slow update for no gain.",
 			Show: "delete incus image alias '" + devcontainer.AhjoBaseAlias + "' (if present)\n" +
 				"incus launch " + devcontainer.OSBaseAlias + " ahjo-build-<rand>\n" +
-				"apply ahjo-runtime Feature\n" +
+				"apply ghcr.io/devcontainers/features/{common-utils,git,github-cli}\n" +
+				"apply embedded ahjo-default-dev-tools + ahjo-runtime\n" +
 				"incus publish ahjo-build-<rand> --alias " + devcontainer.AhjoBaseAlias + "\n" +
 				"incus delete ahjo-build-<rand>",
 			Action: func(out io.Writer) error {
