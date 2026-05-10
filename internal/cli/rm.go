@@ -47,6 +47,13 @@ func runRm(alias string, forceDefault bool) error {
 		fmt.Printf("no branch with alias %q; nothing to do\n", alias)
 		return nil
 	}
+	return removeBranchLocked(reg, br, forceDefault)
+}
+
+// removeBranchLocked tears down one branch's container + ports + host-keys +
+// registry rows, persists the registry, and regenerates ssh-config. Caller
+// must already hold the ahjo lockfile.
+func removeBranchLocked(reg *registry.Registry, br *registry.Branch, forceDefault bool) error {
 	if br.IsDefault && !forceDefault {
 		return fmt.Errorf("%s is the repo's default-branch container; pass --force-default to remove it (other branches in this repo will need `ahjo repo add` again before new branches can be spawned)", br.Aliases[0])
 	}
@@ -78,12 +85,13 @@ func runRm(alias string, forceDefault bool) error {
 
 	primary := br.Aliases[0]
 	repoName := br.Repo
+	wasDefault := br.IsDefault
 	reg.RemoveBranch(repoName, br.Branch)
 
 	// If we just removed the default branch, the repo entry can no longer
 	// spawn new branches. Drop the repo row too so `ahjo repo ls` doesn't
 	// dangle a half-broken entry.
-	if br.IsDefault {
+	if wasDefault {
 		reg.RemoveRepo(repoName)
 	}
 

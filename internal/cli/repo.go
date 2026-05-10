@@ -635,35 +635,92 @@ func newRepoRmCmd() *cobra.Command {
 	var force bool
 	cmd := &cobra.Command{
 		Use:   "rm <alias>",
-		Short: "Remove a repo by any of its aliases (refuses if any branches exist; --force overrides)",
-		Args:  cobra.ExactArgs(1),
-		RunE: func(_ *cobra.Command, args []string) error {
-			alias := args[0]
-			release, err := lockfile.Acquire()
-			if err != nil {
-				return err
-			}
-			defer release()
+		Short: "Stop+delete every branch container in the repo (including the default), free ports, drop registry entries",
+		Long: `Removes a repo end-to-end: every branch container in the repo (including the
+default-branch container that 'repo add' created as the COW source) is stopped
+and deleted, its SSH port is freed, host-keys are removed, the registry rows
+are dropped, and ssh-config is regenerated.
 
-			reg, err := registry.Load()
-			if err != nil {
-				return err
-			}
-			repo := reg.FindRepoByAlias(alias)
-			if repo == nil {
-				return fmt.Errorf("no repo with alias %q", alias)
-			}
-			if reg.RepoHasBranches(repo.Name) && !force {
-				return fmt.Errorf("repo %q has branches; remove them or pass --force", repo.Aliases[0])
-			}
-			name := repo.Name
-			fmt.Printf("Removed repo %s (%s) from registry (containers were not touched; use `ahjo rm` per-branch)\n", repo.Aliases[0], name)
-			reg.RemoveRepo(name)
-			return reg.Save()
+If any non-default branch containers exist, the command refuses unless --force
+is passed — those branches typically hold in-flight work.`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(_ *cobra.Command, args []string) error {
+			return runRepoRm(args[0], force)
 		},
 	}
-	cmd.Flags().BoolVar(&force, "force", false, "remove even if branches exist (registry only — does NOT touch branch containers)")
+	cmd.Flags().BoolVar(&force, "force", false, "also delete non-default branch containers in this repo (loses any in-flight work in those branches)")
 	return cmd
+}
+
+func runRepoRm(alias string, force bool) error {
+	release, err := lockfile.Acquire()
+	if err != nil {
+		return err
+	}
+	defer release()
+
+	reg, err := registry.Load()
+	if err != nil {
+		return err
+	}
+	repo := reg.FindRepoByAlias(alias)
+	if repo == nil {
+		return fmt.Errorf("no repo with alias %q", alias)
+	}
+
+	var defaultBranchKey string
+	var nonDefaultKeys []string
+	for _, b := range reg.Branches {
+		if b.Repo != repo.Name {
+			continue
+		}
+		if b.IsDefault {
+			defaultBranchKey = b.Branch
+		} else {
+			nonDefaultKeys = append(nonDefaultKeys, b.Branch)
+		}
+	}
+	if len(nonDefaultKeys) > 0 && !force {
+		return fmt.Errorf("repo %q has %d branch container(s) besides default; pass --force to delete them too", repo.Aliases[0], len(nonDefaultKeys))
+	}
+
+	// Remove non-default branches first so the default-branch row is the
+	// last write that also drops the repo row (see removeBranchLocked).
+	for _, branchKey := range nonDefaultKeys {
+		br := reg.FindBranch(repo.Name, branchKey)
+		if br == nil {
+			continue
+		}
+		if err := removeBranchLocked(reg, br, false); err != nil {
+			return err
+		}
+	}
+
+	if defaultBranchKey != "" {
+		br := reg.FindBranch(repo.Name, defaultBranchKey)
+		if br != nil {
+			return removeBranchLocked(reg, br, true)
+		}
+	}
+
+	// Legacy state: repo row exists with no default-branch row (e.g. left
+	// behind by the old registry-only repo rm). Best-effort: delete the
+	// base container if its name is recorded, then drop the repo row.
+	if name := repo.BaseContainerName; name != "" {
+		fmt.Printf("→ incus delete --force %s\n", name)
+		if err := incus.ContainerDeleteForce(name); err != nil {
+			fmt.Fprintf(cobraOutErr(), "warn: incus delete %s: %v\n", name, err)
+		}
+	}
+	reg.RemoveRepo(repo.Name)
+	if err := reg.Save(); err != nil {
+		return err
+	}
+	if err := sshpkg.RegenerateConfig(reg); err != nil {
+		return err
+	}
+	fmt.Printf("removed repo %s\n", repo.Aliases[0])
+	return nil
 }
 
 // EnsureRepo returns the repo registered under repoAlias. If the repo
