@@ -3,12 +3,11 @@
 // daemon needs to honor a `raw.idmap` directive, and the raw.idmap value
 // itself.
 //
-// COI v0.8.x implements `raw.idmap` for non-Lima environments but
-// auto-disables it on Lima/Colima (it assumes the workspace is a virtiofs
-// mount handled at the VM level). ahjo's containers live on the VM's local
-// btrfs pool, so the assumption doesn't hold; Phase 1 ahjo applies
-// raw.idmap itself in cli/repo.go (default container) and cli/new.go
-// (COW-cloned branch containers).
+// ahjo applies raw.idmap on every container (cli/repo.go for default
+// containers, cli/new.go for COW-cloned branch containers) so the in-VM
+// host UID/GID maps onto the in-container `ubuntu` user. The mapping is
+// per-container and re-applied after `incus copy` because raw.idmap is one
+// of the few config keys that doesn't propagate via copy.
 package idmap
 
 import (

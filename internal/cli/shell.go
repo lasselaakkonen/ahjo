@@ -202,12 +202,12 @@ func runPostAttach(container string, cfg *devcontainer.Config, env map[string]st
 }
 
 // applyRawIdmap stops the container, sets the per-container raw.idmap that
-// maps the in-VM host UID/GID onto the container's `code` user, and starts
+// maps the in-VM host UID/GID onto the container's `ubuntu` user, and starts
 // it back up. raw.idmap is honored at next start, so the stop/start cycle is
 // what makes it take effect on a container that's currently running.
 //
-// See CONTAINER-ISOLATION.md "Workspace UID mapping" for why ahjo applies
-// this itself rather than relying on COI.
+// See CONTAINER-ISOLATION.md "Workspace UID mapping" for the host-side
+// mechanics ahjo wires (subuid/subgid + the per-container raw.idmap value).
 func applyRawIdmap(containerName string) error {
 	val := idmap.RawIdmapValue(os.Getuid(), os.Getgid())
 	if err := incus.Stop(containerName); err != nil {

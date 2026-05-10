@@ -1,7 +1,6 @@
 // Package ahjoruntime embeds the ahjo-runtime devcontainer Feature so the
 // build pipeline can apply it against a fresh images:ubuntu/24.04 container
-// without depending on a checked-out repo. This is the in-tree replacement
-// for the old internal/coi/assets/profiles/ahjo-base profile.
+// without depending on a checked-out repo.
 package ahjoruntime
 
 import (

@@ -1,10 +1,10 @@
 // Package lima holds Lima-specific in-guest helpers.
 //
-// ahjo's in-VM init runs in two contexts: inside a Lima VM driven from a
-// macOS host, and on bare-metal Linux. A few steps (auto-disabling ufw,
-// forcing COI's open networking mode) only make sense under Lima where
-// macOS/vzNAT already firewalls the VM and there's no useful firewalld
-// path. Other steps are identical. IsGuest is the gate.
+// ahjo's in-VM code runs in two contexts: inside a Lima VM driven from a
+// macOS host, and on bare-metal Linux. A few code paths only make sense
+// under Lima (e.g. ssh-agent forwarding diagnostics, where the agent
+// socket comes from the host Mac via lima's SSH master); IsGuest is the
+// gate.
 package lima
 
 import "os"

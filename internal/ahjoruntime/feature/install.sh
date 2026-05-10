@@ -1,7 +1,6 @@
 #!/bin/bash
 # ahjo-runtime devcontainer Feature: produces ahjo's `ahjo-base` image when
-# applied to a fresh `images:ubuntu/24.04` system container. Replaces the COI
-# profile build that previously layered on top of `coi-default`.
+# applied to a fresh `images:ubuntu/24.04` system container.
 #
 # Per the devcontainer Feature contract this script runs as root with these
 # env vars set by the runner (see internal/devcontainer/features.go):
@@ -67,8 +66,8 @@ else
     rm -f /etc/ssh/ssh_known_hosts.tmp
 fi
 
-# Node + corepack from NodeSource. images:ubuntu/24.04 ships no node; coi-default
-# used to provide it via mise. Corepack reads `packageManager: pnpm@x.y.z` from
+# Node + corepack from NodeSource. images:ubuntu/24.04 ships no node, so we
+# install the LTS line here. Corepack reads `packageManager: pnpm@x.y.z` from
 # each project's package.json and activates the pinned version on demand —
 # matches what production Docker / CI sees. Suppress the corepack download
 # prompt so non-interactive contexts don't hang on first use of a new pnpm.

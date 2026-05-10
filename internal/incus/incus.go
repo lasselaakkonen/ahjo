@@ -305,30 +305,6 @@ func ListProxyDevices(container string) ([]ProxyDevice, error) {
 	return proxies, nil
 }
 
-// FindMountDevice scans `incus config device show <container>` and returns the
-// name of the first disk device whose source path equals sourcePath. This is
-// used to find the worktree bind-mount that COI created so its source can be
-// updated after an `incus copy`.
-func FindMountDevice(container, sourcePath string) (string, error) {
-	cmd := exec.Command("incus", "config", "device", "show", container)
-	out, err := cmd.Output()
-	if err != nil {
-		return "", fmt.Errorf("incus config device show %s: %w", container, err)
-	}
-	needle := "source: " + sourcePath
-	var currentDevice string
-	for _, line := range strings.Split(string(out), "\n") {
-		// Device name: non-space-prefixed line ending with ":"
-		if len(line) > 0 && line[0] != ' ' && strings.HasSuffix(line, ":") {
-			currentDevice = strings.TrimSuffix(line, ":")
-		}
-		if strings.TrimSpace(line) == needle && currentDevice != "" {
-			return currentDevice, nil
-		}
-	}
-	return "", fmt.Errorf("no disk device with source %q in container %q", sourcePath, container)
-}
-
 // RemoveDevice removes a named device from a container. Tolerant of "not found".
 func RemoveDevice(container, device string) error {
 	cmd := exec.Command("incus", "config", "device", "remove", container, device)

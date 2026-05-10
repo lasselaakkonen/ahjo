@@ -122,7 +122,7 @@ State lives under `~/.ahjo/` (registry, ports, host keys, profiles). The Mac shi
 | `ahjo repo add <git-url> [--as <alias>] [--default-base <branch>]` | Register a repo and bare-clone it under `~/.ahjo/repos/`. Auto alias is `<owner>/<repo>` from the URL; `--as` adds a second alias. On collision (e.g. github vs gitlab `acme/api`), ahjo suffixes `-2`/`-3`/… |
 | `ahjo repo ls` | List registered repos with their aliases. |
 | `ahjo repo rm <alias> [--force]` | Drop a repo by any of its aliases. Refuses if worktrees still exist. |
-| `ahjo new <repo-alias> <branch> [--as <alias>] [--base <ref>] [--no-fetch]` | Create the worktree and render `.coi/config.toml`. Auto alias is `<repo-primary-alias>@<branch>`; `--as` adds a second alias. Idempotent. |
+| `ahjo new <repo-alias> <branch> [--as <alias>] [--base <ref>] [--no-fetch]` | Create a COW branch container by copying the repo's default container (`incus copy`) and checking out `<branch>` inside it. Auto alias is `<repo-primary-alias>@<branch>`; `--as` adds a second alias. Idempotent. |
 | `ahjo shell <alias> [--update]` | Start the container if needed, wire SSH proxy + sshd, attach an interactive bash via `incus exec --force-interactive` as the in-container `ubuntu` user. `--update` shuts down and deletes the existing container first so the next attach builds a fresh one from the current `ahjo-base` image; the host keys, registry entry, and ssh port are preserved. |
 | `ahjo claude <alias> [--update]` | Same prep as `ahjo shell`, but launches `claude` inside the container instead of dropping to a shell. |
 | `ahjo ssh <alias>` | `exec ssh` into the container using the generated ssh-config (Mac-side or in-VM). |
@@ -222,7 +222,7 @@ silently lose their per-repo overrides until you migrate.
 
 ## Rebuilding after a change
 
-ahjo has four state layers: the host binary, the `ahjo-base` Incus image, each worktree's `.coi/config.toml`, and the live containers. Three commands cover everything — pick the smallest one that covers your change.
+ahjo has three state layers: the host binary, the `ahjo-base` Incus image, and the live containers (each branch container holds its repo's `.devcontainer/devcontainer.json`). Three commands cover everything — pick the smallest one that covers your change.
 
 | Scenario | Command |
 | --- | --- |

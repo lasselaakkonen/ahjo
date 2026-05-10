@@ -278,7 +278,7 @@ Signed-By: /etc/apt/keyrings/zabbly.asc
 				}
 				return false, "", nil
 			},
-			Note: "COI copies the host's ~/.claude.json into every container at startup, " +
+			Note: "ahjo repo add pushes the host's ~/.claude.json into every container, " +
 				"overwriting whatever the ahjo-base image baked in. Without `hasCompletedOnboarding: true` " +
 				"on the host, every container greets the user with claude's first-run flow (theme + login picker). " +
 				"This step writes the marker once on the host so containers start post-onboarding. " +

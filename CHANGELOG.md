@@ -1,5 +1,34 @@
 # Changelog
 
+## Unreleased — adopt-devcontainer-spec Phase 3: drop COI residue
+
+### Changed
+
+- `ahjo --help` short description now reads "via Incus" (no longer "via
+  coi/Incus") — COI is no longer involved in any code path.
+- `ahjo init`'s onboarding-marker step now attributes the host →
+  container `~/.claude.json` push to ahjo's own `pushClaudeConfig`
+  instead of COI.
+- `internal/mirror`: dropped `.coi` from the rsync skip list and the
+  inotify watch skiplist — nothing creates a `.coi/` directory anymore.
+
+### Removed
+
+- `incus.FindMountDevice` — dead since worktrees were retired (no
+  callers).
+
+### Internal
+
+- Stale COI-vs-ahjo comments swept across `internal/cli/repo.go`,
+  `internal/cli/shell.go`, `internal/devcontainer/build.go`,
+  `internal/tokenstore/tokenstore.go`, `internal/idmap/idmap.go`,
+  `internal/lima/lima.go`, `internal/incus/incus.go`,
+  `internal/ahjoruntime/embed.go`, `internal/ahjoruntime/feature/install.sh`.
+- README, Makefile, RELEASING.md, guidelines/lima-ssh-master.md updated
+  to drop or correct stale COI references. The `ahjo nuke` cleanup of
+  any leftover `coi-default` image is intentionally retained for users
+  upgrading from a pre-Phase-1 install.
+
 ## Unreleased — adopt-devcontainer-spec Phase 1: build pipeline rewrite
 
 ### Breaking

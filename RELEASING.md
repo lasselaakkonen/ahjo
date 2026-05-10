@@ -16,7 +16,7 @@ The version string baked into the binary comes from `git describe --tags --alway
 On macOS, the host binary is a thin shim that relays into a Lima VM where the real CLI lives at `/usr/local/bin/ahjo`. There are two flows:
 
 - **End-user upgrade**: download the new Mac shim from a release, then run `ahjo init`. The install step's version check notices the mismatch and reinstalls the matching `ahjo-linux-<arch>` into the VM. No nuke needed.
-- **Developer iteration**: after `make build`, run `make install-vm` to push `dist/ahjo-linux-<host-arch>` straight into the VM at `/usr/local/bin/ahjo`. This skips every other init step (Lima/Incus/COI/etc.) — use it when you've only changed Go code. Alternatively, `./ahjo init` works too: `*-dirty` and `dev` versions always reinstall, so a fresh `make build` followed by `./ahjo init` reliably refreshes the in-VM bytes even when the version string didn't change.
+- **Developer iteration**: after `make build`, run `make install-vm` to push `dist/ahjo-linux-<host-arch>` straight into the VM at `/usr/local/bin/ahjo`. This skips every other init step (Lima/Incus/ahjo-base/etc.) — use it when you've only changed Go code. Alternatively, `./ahjo init` works too: `*-dirty` and `dev` versions always reinstall, so a fresh `make build` followed by `./ahjo init` reliably refreshes the in-VM bytes even when the version string didn't change.
 
 ## Release artifacts
 

@@ -22,7 +22,6 @@ import (
 // doesn't exhaust fs.inotify.max_user_watches before the first sync runs.
 var SkipDirNames = map[string]bool{
 	".git":          true,
-	".coi":          true,
 	"node_modules":  true,
 	".next":         true,
 	".nuxt":         true,
@@ -144,7 +143,7 @@ func addRecursive(w *fsnotify.Watcher, root string) error {
 //     gitignored paths survive)
 //   - --filter=':- .gitignore': per-dir merge of .gitignore as exclude rules,
 //     respected at every level of the tree
-//   - hard-coded `.git` and `.coi` excludes regardless of gitignore
+//   - hard-coded `.git` exclude regardless of gitignore
 func rsync(src, dst string, out io.Writer) error {
 	if !strings.HasSuffix(src, "/") {
 		src += "/"
@@ -157,7 +156,6 @@ func rsync(src, dst string, out io.Writer) error {
 		"--delete-during",
 		"--filter=:- .gitignore",
 		"--exclude=.git",
-		"--exclude=.coi",
 		src, dst,
 	)
 	cmd.Stdout = out

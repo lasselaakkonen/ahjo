@@ -372,11 +372,11 @@ func repoAddSetup(slug, primary string, aliases []string, url, defaultBase strin
 	return nil
 }
 
-// wireBranchContainer applies the per-container config + devices that COI
-// used to set up via its [mounts.default] block, runtime security flags,
-// and ssh-agent proxy. Runs while the container is still in `incus
-// init`-stopped state so first start honors raw.idmap and the security
-// keys.
+// wireBranchContainer applies the per-container config + devices ahjo
+// needs on every container: runtime security flags, host-keys disk
+// devices, and ssh-agent proxy. Runs while the container is still in
+// `incus init`-stopped state so first start honors raw.idmap and the
+// security keys.
 //
 // `incus copy` propagates instance config + device definitions to branch
 // containers, so flags applied here on the default container are inherited
@@ -424,8 +424,7 @@ func attachSSHAgent(containerName string) error {
 	return incus.EnsureSSHAgentProxy(containerName, sock)
 }
 
-// securityConfigFlags are the per-container Incus config keys ahjo applies
-// so containers have the same posture COI wired at runtime in v0.8.x:
+// securityConfigFlags are the per-container Incus config keys ahjo applies:
 // nesting (for docker-in-container), mknod/setxattr syscall intercepts (so
 // pnpm/npm postinstall scripts that touch xattrs work), unprivileged-port
 // binding (so a dev server on :80 works without sudo), and disabling the

@@ -1,6 +1,6 @@
 // Package tokenstore persists CLAUDE_CODE_OAUTH_TOKEN in ~/.ahjo/.env so the
 // in-VM ahjo can pick it up automatically (and forward it into containers via
-// COI's forward_env) without requiring the user to edit shellrc.
+// the forward_env mechanism) without requiring the user to edit shellrc.
 package tokenstore
 
 import (

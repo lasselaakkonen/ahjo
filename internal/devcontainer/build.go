@@ -31,8 +31,7 @@ const (
 
 // BuildAhjoBase pulls upstream Ubuntu (idempotently), launches a transient
 // container, applies the embedded ahjo-runtime Feature, publishes the
-// result as `ahjo-base`, and deletes the transient container. Replaces
-// the prior `coi build --profile ahjo-base` invocation.
+// result as `ahjo-base`, and deletes the transient container.
 //
 // Force-rebuilds when force is true: deletes the ahjo-base alias before
 // publishing so a stale image doesn't shadow the new one. The osbase

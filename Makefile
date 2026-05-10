@@ -29,8 +29,8 @@ dist: $(DIST_BINS) dist/SHA256SUMS
 
 # Push the freshly-built dist/ahjo-linux-<host-arch> into the Lima VM at
 # /usr/local/bin/ahjo. Fast path for iterating on the in-VM binary without
-# the full `ahjo update` rebuild (claude reinstall + coi-default rebuild +
-# ahjo-base rebuild). Mac-only — Linux hosts run ahjo directly with no VM.
+# the full `ahjo update` rebuild (ahjo-runtime Feature re-application +
+# ahjo-base republish). Mac-only — Linux hosts run ahjo directly with no VM.
 install-vm: dist/ahjo-linux-$(HOST_GOARCH)
 ifneq ($(HOST_GOOS),darwin)
 	@echo "install-vm is only meaningful on macOS hosts (current: $(HOST_GOOS))" >&2

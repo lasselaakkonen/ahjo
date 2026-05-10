@@ -7,7 +7,7 @@ import "github.com/spf13/cobra"
 func NewRoot(version string) *cobra.Command {
 	root := &cobra.Command{
 		Use:           "ahjo",
-		Short:         "Manage sandboxed Claude Code branches across repos via coi/Incus",
+		Short:         "Manage sandboxed Claude Code branches across repos via Incus",
 		SilenceUsage:  true,
 		SilenceErrors: false,
 		Version:       version,
