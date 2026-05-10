@@ -1,0 +1,6 @@
+{
+  "name": "ahjo",
+  "features": {
+    "ghcr.io/devcontainers/features/go:1": {}
+  }
+}

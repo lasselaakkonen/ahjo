@@ -90,7 +90,12 @@ Schemas retired: COI profile bash, `.ahjoconfig` TOML (deleted, not aliased), pe
 | `customizations.vscode.*`     | Ignored without warning                                                                                                                               |
 | `customizations.<other>.*`    | Ignored without warning                                                                                                                               |
 
-**Feature-level Docker fields.** If a Feature's own `devcontainer-feature.json` declares `mounts`, `privileged`, `capAdd`, `securityOpt`, `init`, or `entrypoint`, ahjo refuses to apply that Feature with an explicit error citing the Feature ID. Curated `ghcr.io/devcontainers/features/*` Features don't use these in practice; community Features that do are explicitly out of scope.
+**Feature-level Docker fields.** A Feature's own `devcontainer-feature.json` is filtered in two tiers:
+
+- **Hard-reject** (errors out at metadata-parse, before fetch): `mounts`, `privileged`. The Feature genuinely relies on these at runtime (docker-in-docker needs its `/var/lib/docker` volume; nix needs `/nix` bound; minikube needs `/home/vscode/.minikube`). Letting `install.sh` succeed without them would leave a Feature that looks installed but breaks on first use.
+- **Warn-and-ignore** (one `warn:` line per field, then proceed): `capAdd`, `securityOpt`, `init`, `entrypoint`. These are Docker-runtime hints with no Incus equivalent under ahjo's profile, or already provided by systemd. Known values get value-specific notes (e.g. `SYS_PTRACE` → "in-container ptrace already works"; `seccomp=unconfined` → "Incus seccomp is profile-managed"; `label=disable` → "no SELinux on ahjo"; `init: true` → "systemd is PID 1"); unknown values fall through to a generic "no Incus equivalent, ignoring" note. This is what lets curated language Features (`go:1`, `rust:1`, …) install on ahjo — they declare debugger-related caps that the Incus topology already satisfies differently.
+
+The original draft of this doc rejected all six fields uniformly, citing "curated Features don't use these in practice." That assumption broke as soon as the curated `go:1` Feature (which declares `init: true`, `capAdd: [SYS_PTRACE]`, `securityOpt: [seccomp=unconfined]` purely for delve support) was tried — most curated language Features now ship the same trio. The two-tier split keeps the hard guard where it matters (real semantic dependencies) and turns the rest into informative warnings rather than a wall.
 
 ### Feature runner contract
 

@@ -24,6 +24,7 @@ import (
 	"strings"
 	"syscall"
 
+	"github.com/lasselaakkonen/ahjo/internal/git"
 	"github.com/lasselaakkonen/ahjo/internal/initflow"
 	"github.com/lasselaakkonen/ahjo/internal/lima"
 )
@@ -113,7 +114,27 @@ func main() {
 		fmt.Fprintln(os.Stderr, "ahjo: limactl not on PATH; run `ahjo init` first")
 		os.Exit(1)
 	}
-	relayArgs := append([]string{"shell", vmName, "ahjo"}, args...)
+	// Bridge the host's git identity into the VM. The in-VM ahjo's
+	// `git config --global` and `gh auth status` see a clean Linux user
+	// home that nothing else maintains, so VM-side identity-resolution
+	// would always come up empty. Resolving here (where `git` and `gh`
+	// actually live) and stuffing the result into env vars on the relay
+	// command lets `ahjo repo add`'s in-container `git config user.*`
+	// seed succeed without nagging the user to dual-maintain identity in
+	// the VM. ResolveHost errors are non-fatal at this stage: the
+	// in-VM path still falls back to its own resolution and surfaces
+	// the same friendly error message if it also comes up empty.
+	relayPrefix := []string{"shell", vmName}
+	if id, err := git.ResolveHost(); err == nil {
+		nameKey, emailKey, sourceKey := git.EnvKeys()
+		relayPrefix = append(relayPrefix,
+			"env",
+			nameKey+"="+id.Name,
+			emailKey+"="+id.Email,
+			sourceKey+"="+id.Source,
+		)
+	}
+	relayArgs := append(relayPrefix, append([]string{"ahjo"}, args...)...)
 	if err := lima.Exec(relayArgs...); err != nil {
 		fmt.Fprintln(os.Stderr, "ahjo: exec limactl:", err)
 		os.Exit(1)

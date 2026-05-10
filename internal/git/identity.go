@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 )
@@ -17,14 +18,39 @@ type Identity struct {
 	Source string
 }
 
+// Env-var bridge from the Mac shim to the in-VM relay. The Mac side
+// resolves identity before relay (where `git config --global` and `gh`
+// actually live) and prepends these vars to the relay command; this
+// side reads them. Linux-native callers (no shim, no relay) won't see
+// the vars and fall through to the host-resolution path, which Just
+// Works because `git` and `gh` are on the same machine.
+const (
+	envHostName   = "AHJO_HOST_GIT_NAME"
+	envHostEmail  = "AHJO_HOST_GIT_EMAIL"
+	envHostSource = "AHJO_HOST_GIT_SOURCE"
+)
+
+// EnvKeys returns the env-var names the Mac shim sets when bridging
+// identity into the VM. Exported so the shim can stay in sync with the
+// reader here without re-declaring the constants.
+func EnvKeys() (name, email, source string) {
+	return envHostName, envHostEmail, envHostSource
+}
+
 // ResolveHost picks an identity for `/home/ubuntu/.gitconfig` from, in order:
-//  1. the host's `git config --global user.name` + `user.email`,
-//  2. `gh api user` (when the GitHub CLI is installed and authenticated).
+//  1. the AHJO_HOST_GIT_* env-var bridge (set by the Mac shim before
+//     relaying into the VM — that's the only place `git config` and
+//     `gh` are actually available on a Mac-driven invocation),
+//  2. the host's `git config --global user.name` + `user.email`,
+//  3. `gh api user` (when the GitHub CLI is installed and authenticated).
 //
-// Returns an error when neither source yields both a name and an email — the
+// Returns an error when no source yields both a name and an email — the
 // caller is expected to surface the message verbatim so users know which
 // fix command applies.
 func ResolveHost() (Identity, error) {
+	if id, ok := fromBridgeEnv(); ok {
+		return id, nil
+	}
 	if id, ok := fromHostGitconfig(); ok {
 		return id, nil
 	}
@@ -40,6 +66,23 @@ func ResolveHost() (Identity, error) {
 			"    git config --global user.email \"you@example.com\"\n" +
 			"  or authenticate the GitHub CLI:\n" +
 			"    gh auth login")
+}
+
+// fromBridgeEnv reads the AHJO_HOST_GIT_* envelope the Mac shim sets
+// before relaying. Both name and email must be present; source falls
+// back to a "Mac host" label so log lines stay informative when the
+// shim didn't pass one.
+func fromBridgeEnv() (Identity, bool) {
+	name := strings.TrimSpace(os.Getenv(envHostName))
+	email := strings.TrimSpace(os.Getenv(envHostEmail))
+	if name == "" || email == "" {
+		return Identity{}, false
+	}
+	source := strings.TrimSpace(os.Getenv(envHostSource))
+	if source == "" {
+		source = "Mac host"
+	}
+	return Identity{Name: name, Email: email, Source: source}, true
 }
 
 func fromHostGitconfig() (Identity, bool) {

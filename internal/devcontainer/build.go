@@ -150,7 +150,7 @@ func applyUpstreamBaseFeatures(container string, env map[string]string, out io.W
 
 	fetcher := &Fetcher{}
 	fetch := func(ctx context.Context, ref FeatureRef, opts map[string]any) (FetchedFeature, error) {
-		dir := filepath.Join(tmpRoot, safeRefDir(ref.String()))
+		dir := filepath.Join(tmpRoot, SafeRefDir(ref.String()))
 		if err := fetcher.Fetch(ctx, ref, dir); err != nil {
 			return FetchedFeature{}, err
 		}
@@ -158,14 +158,20 @@ func applyUpstreamBaseFeatures(container string, env map[string]string, out io.W
 		if err != nil {
 			return FetchedFeature{}, err
 		}
-		stringOpts, err := NormalizeOptions(opts)
+		// Same default-materialization step as the user-Feature path
+		// (cli/features.go). Required for the curated base set —
+		// `git:1`'s `version` default is `os-provided`; passing nothing
+		// leaves install.sh's `GIT_VERSION=${VERSION}` empty and the
+		// script aborts with "Invalid git version:".
+		mergedOpts := ApplyOptionDefaults(opts, meta)
+		stringOpts, err := NormalizeOptions(mergedOpts)
 		if err != nil {
 			return FetchedFeature{}, fmt.Errorf("feature %s: %w", ref, err)
 		}
 		return FetchedFeature{
 			Ref: ref,
 			Feature: Feature{
-				ID:      safeRefDir(ref.String()),
+				ID:      ref.String(),
 				Dir:     dir,
 				Options: stringOpts,
 			},
@@ -207,28 +213,6 @@ func applyEmbedded(container string, ef embeddedFeature, env map[string]string, 
 	}
 	fmt.Fprintf(out, "  → applying embedded feature %s\n", ef.id)
 	return Apply(container, Feature{ID: ef.id, Dir: tmpDir}, env, out)
-}
-
-// safeRefDir maps an OCI ref to a filesystem-safe basename for the
-// per-Feature extraction tmp dir. Mirrors the helper in cli/features.go;
-// kept private here rather than shared because the two callers compose
-// different surrounding workflows (base-bake vs. repo-add) and the
-// helper is too small to justify a third package.
-func safeRefDir(s string) string {
-	out := make([]byte, 0, len(s))
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		switch {
-		case c >= 'a' && c <= 'z',
-			c >= 'A' && c <= 'Z',
-			c >= '0' && c <= '9',
-			c == '.', c == '_', c == '-':
-			out = append(out, c)
-		default:
-			out = append(out, '-')
-		}
-	}
-	return string(out)
 }
 
 // RuntimeEnv is the user-identity envelope every Feature gets. Kept in

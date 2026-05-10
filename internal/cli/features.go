@@ -92,7 +92,7 @@ func applyRepoFeatures(
 	fetcher := &devcontainer.Fetcher{}
 
 	fetch := func(ctx context.Context, ref devcontainer.FeatureRef, opts map[string]any) (devcontainer.FetchedFeature, error) {
-		dir := filepath.Join(tmpRoot, safeRefDir(ref.String()))
+		dir := filepath.Join(tmpRoot, devcontainer.SafeRefDir(ref.String()))
 		if err := fetcher.Fetch(ctx, ref, dir); err != nil {
 			return devcontainer.FetchedFeature{}, err
 		}
@@ -100,17 +100,24 @@ func applyRepoFeatures(
 		if err != nil {
 			return devcontainer.FetchedFeature{}, err
 		}
-		stringOpts, err := devcontainer.NormalizeOptions(opts)
+		// Merge Feature-declared defaults before normalization so that
+		// options the user omitted still arrive in the env envelope with
+		// the spec's documented value. Without this, Features like
+		// `git:1` that branch on a fixed default keyword (`version:
+		// os-provided`) crash because they see VERSION="" instead.
+		mergedOpts := devcontainer.ApplyOptionDefaults(opts, meta)
+		stringOpts, err := devcontainer.NormalizeOptions(mergedOpts)
 		if err != nil {
 			return devcontainer.FetchedFeature{}, fmt.Errorf("feature %s: %w", ref, err)
 		}
 		return devcontainer.FetchedFeature{
 			Ref: ref,
 			Feature: devcontainer.Feature{
-				// Use the safe-ref form for the in-container tmp dir
-				// name so two Features with the same metadata.id
-				// (e.g., legacy aliases) don't collide.
-				ID:      safeRefDir(ref.String()),
+				// ID is the human-readable form (the OCI ref) so log
+				// lines and warn: messages reference what the user
+				// wrote in devcontainer.json. Apply transforms it via
+				// SafeRefDir for the in-container tmp-dir path.
+				ID:      ref.String(),
 				Dir:     dir,
 				Options: stringOpts,
 			},
@@ -152,23 +159,3 @@ func applyRepoFeatures(
 	return newConsent, nil
 }
 
-// safeRefDir maps an OCI ref to a filesystem-safe basename. The result
-// is ephemeral (under a per-repo-add tempdir) and only needs to be
-// stable + unique per ref string. Any byte outside [a-zA-Z0-9._-]
-// becomes `-`.
-func safeRefDir(s string) string {
-	out := make([]byte, 0, len(s))
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		switch {
-		case c >= 'a' && c <= 'z',
-			c >= 'A' && c <= 'Z',
-			c >= '0' && c <= '9',
-			c == '.', c == '_', c == '-':
-			out = append(out, c)
-		default:
-			out = append(out, '-')
-		}
-	}
-	return string(out)
-}

@@ -586,13 +586,22 @@ func pushClaudeConfig(containerName string) error {
 //
 // Signing settings (commit.gpgsign, user.signingkey) are intentionally not
 // copied — the container has no access to the host keychain or GPG agent.
+//
+// HOME is set explicitly because `incus exec` doesn't read /etc/passwd
+// the way sshd+PAM does — without it `git config --global` errors with
+// "$HOME not set" (the global config target is $HOME/.gitconfig, and
+// git refuses to guess when HOME is empty). The interactive attach path
+// (incus.ExecAttach) already seeds this for uid 1000; ExecAs is the
+// one-shot equivalent and intentionally minimal, so callers like this
+// one specify what they need.
 func seedGitIdentity(containerName string, id git.Identity) error {
 	fmt.Printf("→ seeding git identity (%s): %s <%s>\n", id.Source, id.Name, id.Email)
-	if err := incus.ExecAs(containerName, 1000, nil, "/home/ubuntu",
+	env := map[string]string{"HOME": "/home/ubuntu"}
+	if err := incus.ExecAs(containerName, 1000, env, "/home/ubuntu",
 		"git", "config", "--global", "user.name", id.Name); err != nil {
 		return err
 	}
-	if err := incus.ExecAs(containerName, 1000, nil, "/home/ubuntu",
+	if err := incus.ExecAs(containerName, 1000, env, "/home/ubuntu",
 		"git", "config", "--global", "user.email", id.Email); err != nil {
 		return err
 	}

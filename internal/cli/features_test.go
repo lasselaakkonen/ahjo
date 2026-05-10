@@ -100,10 +100,3 @@ func TestApplyRepoFeatures_PriorConsentSkipsPrompt(t *testing.T) {
 	}
 }
 
-func TestSafeRefDir(t *testing.T) {
-	got := safeRefDir("ghcr.io/devcontainers/features/node:1")
-	want := "ghcr.io-devcontainers-features-node-1"
-	if got != want {
-		t.Fatalf("safeRefDir = %q; want %q", got, want)
-	}
-}
