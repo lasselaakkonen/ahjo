@@ -1,0 +1,37 @@
+{
+  "name": "ahjo",
+  "image": "mcr.microsoft.com/devcontainers/base:ubuntu-24.04",
+  "features": {
+    "ghcr.io/devcontainers/features/go:1": {
+      "version": "1.26"
+    },
+    "ghcr.io/devcontainers/features/common-utils:2": {
+      "installZsh": true,
+      "upgradePackages": true
+    },
+    "ghcr.io/devcontainers/features/git:1": {
+      "version": "latest",
+      "ppa": true
+    },
+    "ghcr.io/devcontainers/features/github-cli:1": {
+      "version": "latest"
+    }
+  },
+  "onCreateCommand": "sudo apt-get install -y --no-install-recommends make jq",
+  "postCreateCommand": "go mod download",
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "golang.go"
+      ],
+      "settings": {
+        "go.useLanguageServer": true,
+        "go.toolsManagement.checkForUpdates": "off",
+        "[go]": {
+          "editor.formatOnSave": true,
+          "editor.defaultFormatter": "golang.go"
+        }
+      }
+    }
+  }
+}
