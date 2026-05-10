@@ -4,6 +4,7 @@
 // ListWorktrees) — every git operation now runs inside the branch
 // container via `incus exec` from cli/repo.go and cli/new.go.
 //
-// The package is kept as a placeholder for any future host-side git work
-// (e.g. validating a URL before container launch).
+// The package now hosts host-side identity resolution (see identity.go)
+// used by `ahjo repo add` to seed `/home/ubuntu/.gitconfig` inside the
+// repo's default-branch container.
 package git

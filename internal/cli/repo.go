@@ -14,6 +14,7 @@ import (
 
 	"github.com/lasselaakkonen/ahjo/internal/config"
 	"github.com/lasselaakkonen/ahjo/internal/devcontainer"
+	"github.com/lasselaakkonen/ahjo/internal/git"
 	"github.com/lasselaakkonen/ahjo/internal/incus"
 	"github.com/lasselaakkonen/ahjo/internal/lima"
 	"github.com/lasselaakkonen/ahjo/internal/lockfile"
@@ -134,6 +135,13 @@ func repoAddSetup(slug, primary string, aliases []string, url, defaultBase strin
 	if err != nil {
 		return err
 	}
+	// Resolve a git identity for the in-container ubuntu user before any
+	// container work — failing here is cheaper than discovering it after
+	// `git clone` + warm-install.
+	identity, err := git.ResolveHost()
+	if err != nil {
+		return err
+	}
 	fmt.Printf("Adding repo %s (aliases: %s)\n", slug, strings.Join(aliases, ", "))
 
 	pp, err := ports.Load()
@@ -188,6 +196,9 @@ func repoAddSetup(slug, primary string, aliases []string, url, defaultBase strin
 	}
 	if err := incus.ExecAs(containerName, 1000, nil, "/", "/usr/local/bin/ahjo-claude-prepare"); err != nil {
 		return fmt.Errorf("ahjo-claude-prepare: %w", err)
+	}
+	if err := seedGitIdentity(containerName, identity); err != nil {
+		return fmt.Errorf("seed git identity: %w", err)
 	}
 
 	// /repo is at the container root, where uid 1000 can't `mkdir`. Create
@@ -564,6 +575,26 @@ func pushClaudeConfig(containerName string) error {
 		if err := incus.ExecAs(containerName, 0, nil, "/", args...); err != nil {
 			fmt.Fprintf(cobraOutErr(), "warn: chown claude config: %v\n", err)
 		}
+	}
+	return nil
+}
+
+// seedGitIdentity writes user.name + user.email into ubuntu's
+// /home/ubuntu/.gitconfig so commits inside the container have an author.
+// `incus copy` carries the file into every COW branch container, so this
+// runs once on the repo's default-branch container.
+//
+// Signing settings (commit.gpgsign, user.signingkey) are intentionally not
+// copied — the container has no access to the host keychain or GPG agent.
+func seedGitIdentity(containerName string, id git.Identity) error {
+	fmt.Printf("→ seeding git identity (%s): %s <%s>\n", id.Source, id.Name, id.Email)
+	if err := incus.ExecAs(containerName, 1000, nil, "/home/ubuntu",
+		"git", "config", "--global", "user.name", id.Name); err != nil {
+		return err
+	}
+	if err := incus.ExecAs(containerName, 1000, nil, "/home/ubuntu",
+		"git", "config", "--global", "user.email", id.Email); err != nil {
+		return err
 	}
 	return nil
 }

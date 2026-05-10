@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 
+	"github.com/lasselaakkonen/ahjo/internal/git"
 	"github.com/lasselaakkonen/ahjo/internal/incus"
 	"github.com/lasselaakkonen/ahjo/internal/paths"
 )
@@ -35,6 +36,7 @@ func Run() []Problem {
 	ps = append(ps, checkBinary("ssh-keygen", "sudo apt install openssh-client"))
 	ps = append(ps, checkAhjoDir())
 	ps = append(ps, checkOAuthToken())
+	ps = append(ps, checkGitIdentity())
 	ps = append(ps, checkStoragePool())
 	ps = append(ps, checkAhjoBase())
 	return ps
@@ -82,6 +84,22 @@ func checkOAuthToken() Problem {
 		}
 	}
 	return Problem{Severity: OK, Title: "CLAUDE_CODE_OAUTH_TOKEN set"}
+}
+
+// checkGitIdentity reports whether ahjo can resolve a host git identity to
+// seed inside containers (`/home/ubuntu/.gitconfig`). Identical resolution
+// path as repoAddSetup, so a green here means `ahjo repo add` won't trip on
+// the same lookup later.
+func checkGitIdentity() Problem {
+	id, err := git.ResolveHost()
+	if err != nil {
+		return Problem{
+			Severity: Fail,
+			Title:    "no host git identity for in-container commits",
+			Fix:      `git config --global user.name "Your Name" && git config --global user.email "you@example.com"  # or: gh auth login`,
+		}
+	}
+	return Problem{Severity: OK, Title: fmt.Sprintf("git identity (%s): %s <%s>", id.Source, id.Name, id.Email)}
 }
 
 func checkStoragePool() Problem {
