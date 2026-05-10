@@ -21,6 +21,10 @@ import (
 // re-add repos. See designdocs/no-more-worktrees.md.
 const Version = 2
 
+// maxSlugLen caps slug length so "ahjo-" + slug stays within Incus's 63-char
+// RFC 1123 hostname limit, with headroom for a `-N` collision suffix.
+const maxSlugLen = 55
+
 type Registry struct {
 	Version  int      `toml:"version"`
 	Repos    []Repo   `toml:"repos"`
@@ -203,14 +207,25 @@ func ValidateAlias(alias string) error {
 }
 
 // AliasToSlug sanitizes any alias into a slug suitable for Incus container
-// names and on-disk dirs: lowercase, [a-z0-9-] only, trimmed, capped at 50.
+// names and on-disk dirs: lowercase, [a-z0-9-] only, trimmed, capped at maxSlugLen.
 func AliasToSlug(alias string) string {
 	s := slugSafeRE.ReplaceAllString(strings.ToLower(alias), "-")
 	s = strings.Trim(s, "-")
-	if len(s) > 50 {
-		s = s[:50]
+	if len(s) > maxSlugLen {
+		s = s[:maxSlugLen]
 	}
 	return s
+}
+
+// withSlugSuffix returns "<base>-<n>" capped at maxSlugLen. The suffix is
+// preserved verbatim; if base + suffix would overflow, base is trimmed to
+// make room (and any trailing `-` is stripped to keep the slug well-formed).
+func withSlugSuffix(base string, n int) string {
+	suffix := fmt.Sprintf("-%d", n)
+	if room := maxSlugLen - len(suffix); len(base) > room {
+		base = strings.TrimRight(base[:room], "-")
+	}
+	return base + suffix
 }
 
 // DeriveRepoAlias parses a git URL (https://, ssh://, scp-like, or path) and
@@ -295,10 +310,7 @@ func (r *Registry) AllocateRepoSlug(primaryAlias string) string {
 		return base
 	}
 	for i := 2; i < 1000; i++ {
-		cand := fmt.Sprintf("%s-%d", base, i)
-		if len(cand) > 50 {
-			cand = cand[:50]
-		}
+		cand := withSlugSuffix(base, i)
 		if !r.repoSlugTaken(cand) {
 			return cand
 		}
@@ -324,17 +336,14 @@ func MakeBranchAlias(repoAlias, branch string) string {
 func (r *Registry) MakeSlug(repoSlug, branch string) string {
 	base := repoSlug + "-" + slugSafeRE.ReplaceAllString(strings.ToLower(branch), "-")
 	base = strings.Trim(base, "-")
-	if len(base) > 50 {
-		base = base[:50]
+	if len(base) > maxSlugLen {
+		base = base[:maxSlugLen]
 	}
 	if !r.slugTaken(base) {
 		return base
 	}
 	for i := 2; i < 1000; i++ {
-		cand := fmt.Sprintf("%s-%d", base, i)
-		if len(cand) > 50 {
-			cand = cand[:50]
-		}
+		cand := withSlugSuffix(base, i)
 		if !r.slugTaken(cand) {
 			return cand
 		}
