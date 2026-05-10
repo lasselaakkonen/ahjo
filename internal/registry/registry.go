@@ -294,11 +294,13 @@ func (r *Registry) AllocateRepoSlug(primaryAlias string) string {
 	if !r.repoSlugTaken(base) {
 		return base
 	}
+	// Truncate base to 46 so "-999" suffix always fits within 50 chars.
+	collBase := base
+	if len(collBase) > 46 {
+		collBase = strings.TrimRight(collBase[:46], "-")
+	}
 	for i := 2; i < 1000; i++ {
-		cand := fmt.Sprintf("%s-%d", base, i)
-		if len(cand) > 50 {
-			cand = cand[:50]
-		}
+		cand := fmt.Sprintf("%s-%d", collBase, i)
 		if !r.repoSlugTaken(cand) {
 			return cand
 		}
@@ -330,11 +332,13 @@ func (r *Registry) MakeSlug(repoSlug, branch string) string {
 	if !r.slugTaken(base) {
 		return base
 	}
+	// Truncate to 46 so "-999" suffix always fits within 50 chars.
+	collBase := base
+	if len(collBase) > 46 {
+		collBase = strings.TrimRight(collBase[:46], "-")
+	}
 	for i := 2; i < 1000; i++ {
-		cand := fmt.Sprintf("%s-%d", base, i)
-		if len(cand) > 50 {
-			cand = cand[:50]
-		}
+		cand := fmt.Sprintf("%s-%d", collBase, i)
 		if !r.slugTaken(cand) {
 			return cand
 		}
