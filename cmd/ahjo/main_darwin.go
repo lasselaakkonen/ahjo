@@ -125,14 +125,28 @@ func main() {
 	// in-VM path still falls back to its own resolution and surfaces
 	// the same friendly error message if it also comes up empty.
 	relayPrefix := []string{"shell", vmName}
+	envPairs := []string{}
 	if id, err := git.ResolveHost(); err == nil {
 		nameKey, emailKey, sourceKey := git.EnvKeys()
-		relayPrefix = append(relayPrefix,
-			"env",
+		envPairs = append(envPairs,
 			nameKey+"="+id.Name,
 			emailKey+"="+id.Email,
 			sourceKey+"="+id.Source,
 		)
+	}
+	// Bridge the Mac home so in-VM code paths that copy host-side dotfiles
+	// (e.g. pushClaudeConfig sourcing ~/.claude/CLAUDE.md, skills/, agents/)
+	// read from the user's actual Mac config rather than the sparse VM
+	// home. /Users is reverse-mounted into the VM by Lima's default
+	// template, so the same path resolves on both sides without
+	// translation. Unset on Linux bare-metal, where os.UserHomeDir() is
+	// already the right answer.
+	if home, err := os.UserHomeDir(); err == nil {
+		envPairs = append(envPairs, "AHJO_HOST_HOME="+home)
+	}
+	if len(envPairs) > 0 {
+		relayPrefix = append(relayPrefix, "env")
+		relayPrefix = append(relayPrefix, envPairs...)
 	}
 	relayArgs := append(relayPrefix, append([]string{"ahjo"}, args...)...)
 	if err := lima.Exec(relayArgs...); err != nil {

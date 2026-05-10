@@ -543,22 +543,45 @@ func resolveHostEnv(keys []string) map[string]string {
 
 // pushClaudeConfig copies the host's ~/.claude/* and ~/.claude.json into
 // containerName at the corresponding paths under /home/ubuntu, then chowns
-// the files that actually pushed to uid 1000. Files missing on the host
-// silently no-op (the chown step skips them so it doesn't error on partial
-// coverage).
+// the pushed paths to uid 1000.
+//
+// Source home resolution: $AHJO_HOST_HOME wins when set. The Mac shim
+// (cmd/ahjo/main_darwin.go) forwards the user's Mac home through
+// `limactl shell ... env AHJO_HOST_HOME=$HOME` so the in-VM ahjo reads
+// from /Users/<user>/.claude/* (reverse-mounted by Lima) instead of the
+// sparse VM home where claude was set up but no CLAUDE.md / skills /
+// agents live. On Linux bare-metal AHJO_HOST_HOME is unset and
+// os.UserHomeDir() is the right answer.
+//
+// Optional file pushes (.credentials.json, ~/.claude.json) silently
+// no-op when missing — that's a normal state for some auth modes.
+// CLAUDE.md and settings.json *also* no-op silently but emit a warn,
+// since their absence is almost always a misconfigured source rather
+// than a deliberate choice.
 func pushClaudeConfig(containerName string) error {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return err
+	home := os.Getenv("AHJO_HOST_HOME")
+	if home == "" {
+		h, err := os.UserHomeDir()
+		if err != nil {
+			return err
+		}
+		home = h
 	}
 	if err := incus.ExecAs(containerName, 0, nil, "/", "install", "-d", "-m", "0755", "-o", "ubuntu", "-g", "ubuntu", "/home/ubuntu/.claude"); err != nil {
 		return fmt.Errorf("mkdir /home/ubuntu/.claude: %w", err)
 	}
-	files := []struct{ src, dst string }{
-		{home + "/.claude/settings.json", "/home/ubuntu/.claude/settings.json"},
-		{home + "/.claude/.credentials.json", "/home/ubuntu/.claude/.credentials.json"},
-		{home + "/.claude/CLAUDE.md", "/home/ubuntu/.claude/CLAUDE.md"},
-		{home + "/.claude.json", "/home/ubuntu/.claude.json"},
+	// .credentials.json is intentionally NOT copied. ahjo authenticates via
+	// the env-var OAuth token (rank 5, see CLAUDE-SETTING.md), and the
+	// only thing that file ever carries is subscription OAuth state with a
+	// single-use refresh token — propagating it to N containers would
+	// reintroduce the cross-container refresh race the design avoids.
+	files := []struct {
+		src, dst     string
+		warnMissing  bool
+	}{
+		{home + "/.claude/settings.json", "/home/ubuntu/.claude/settings.json", true},
+		{home + "/.claude/CLAUDE.md", "/home/ubuntu/.claude/CLAUDE.md", true},
+		{home + "/.claude.json", "/home/ubuntu/.claude.json", false},
 	}
 	var pushed []string
 	for _, f := range files {
@@ -568,10 +591,41 @@ func pushClaudeConfig(containerName string) error {
 		}
 		if ok {
 			pushed = append(pushed, f.dst)
+			continue
+		}
+		if f.warnMissing {
+			fmt.Fprintf(cobraOutErr(), "warn: %s not found, skipping\n", f.src)
 		}
 	}
+	// Recursive trees of user-authored config that's safe to clone:
+	// markdown definitions and reference docs. hooks/ and plugins/ are
+	// intentionally excluded — hooks shell out to host binaries that may
+	// not exist in the container, and plugins/ is runtime install state
+	// (caches, marketplace clones, blocklists) that's per-machine.
+	dirs := []struct{ src, dst string }{
+		{home + "/.claude/agents", "/home/ubuntu/.claude/agents"},
+		{home + "/.claude/commands", "/home/ubuntu/.claude/commands"},
+		{home + "/.claude/skills", "/home/ubuntu/.claude/skills"},
+		{home + "/.claude/rules", "/home/ubuntu/.claude/rules"},
+	}
+	for _, d := range dirs {
+		info, err := os.Stat(d.src)
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return fmt.Errorf("stat %s: %w", d.src, err)
+		}
+		if !info.IsDir() {
+			continue
+		}
+		if err := incus.FilePushRecursive(containerName, d.src, d.dst); err != nil {
+			return fmt.Errorf("push %s: %w", d.src, err)
+		}
+		pushed = append(pushed, d.dst)
+	}
 	if len(pushed) > 0 {
-		args := append([]string{"chown", "1000:1000"}, pushed...)
+		args := append([]string{"chown", "-R", "1000:1000"}, pushed...)
 		if err := incus.ExecAs(containerName, 0, nil, "/", args...); err != nil {
 			fmt.Fprintf(cobraOutErr(), "warn: chown claude config: %v\n", err)
 		}
