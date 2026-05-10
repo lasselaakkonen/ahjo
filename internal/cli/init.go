@@ -131,6 +131,7 @@ Signed-By: /etc/apt/keyrings/zabbly.asc
 			},
 		},
 		subuidGrantStep(),
+		inotifySysctlStep(),
 		{
 			Title: "Initialize Incus with explicit subnet (preseed)",
 			Skip: func() (bool, string, error) {
@@ -349,6 +350,52 @@ func subuidGrantStep() initflow.Step {
 			}
 			fmt.Fprintln(out, "  → restarting incus to pick up new subuid/subgid grants")
 			return initflow.RunShell(out, "", "sudo", "systemctl", "restart", "incus")
+		},
+	}
+}
+
+// inotifySysctlStep writes /etc/sysctl.d/99-ahjo.conf with two values
+// sized for the v3 ahjo-mirror daemon's worst case (full-tree bootstrap of
+// a 30k-file monorepo, with an agent burst running concurrently). Same
+// code path on Mac (writes inside the Lima VM, where `ahjo init` runs after
+// the macOS-side bringup) and bare-metal Linux (writes on the host).
+//
+// `linux.sysctl.fs.inotify.*` is NOT among the namespace-scoped sysctls
+// Incus exposes via per-container `linux.sysctl.*` (only `net.*` is), so
+// the bump must land on the kernel hosting the containers — i.e. the
+// VM/host, not the container.
+//
+// See designdocs/in-container-mirror.md "Lifecycle hazards #3" + Open
+// question 4.
+func inotifySysctlStep() initflow.Step {
+	const (
+		sysctlPath  = "/etc/sysctl.d/99-ahjo.conf"
+		sysctlBody  = "# managed by `ahjo init` — see designdocs/in-container-mirror.md\n" +
+			"fs.inotify.max_user_watches=1048576\n" +
+			"fs.inotify.max_queued_events=65536\n"
+	)
+	return initflow.Step{
+		Title: "Bump fs.inotify.{max_user_watches,max_queued_events} for ahjo-mirror",
+		Skip: func() (bool, string, error) {
+			b, err := os.ReadFile(sysctlPath)
+			if err != nil {
+				if os.IsNotExist(err) {
+					return false, "", nil
+				}
+				return false, "", err
+			}
+			if string(b) == sysctlBody {
+				return true, sysctlPath + " already has the expected values", nil
+			}
+			return false, "", nil
+		},
+		Note: "Required so the ahjo-mirror daemon can install one watch per source-tree directory on big monorepos. fs.inotify is not namespace-scoped, so the bump goes on the kernel hosting the containers (Lima VM under macOS, host kernel under bare-metal Linux).",
+		Show: fmt.Sprintf("write %s with:\n  fs.inotify.max_user_watches=1048576\n  fs.inotify.max_queued_events=65536\nsudo sysctl --system", sysctlPath),
+		Action: func(out io.Writer) error {
+			if err := initflow.RunBash(out, sysctlBody, "sudo tee "+sysctlPath+" >/dev/null"); err != nil {
+				return fmt.Errorf("write %s: %w", sysctlPath, err)
+			}
+			return initflow.RunShell(out, "", "sudo", "sysctl", "--system")
 		},
 	}
 }

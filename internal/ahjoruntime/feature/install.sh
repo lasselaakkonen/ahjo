@@ -94,6 +94,22 @@ chmod 644 /etc/profile.d/corepack.sh
 runuser -u "$_REMOTE_USER" -- bash -lc 'curl -fsSL https://claude.ai/install.sh | bash'
 ln -sf "$_REMOTE_USER_HOME/.local/bin/claude" /usr/local/bin/claude
 
+# ahjo-mirror: in-container daemon that watches /repo and pushes per-event
+# copies into /mirror (a writable virtiofs-backed bind-mount of a Mac path).
+# See designdocs/in-container-mirror.md for the design. Both arches ship in
+# the Feature dir; we install the one matching the build container's arch.
+arch="$(dpkg --print-architecture)"
+case "$arch" in
+    arm64|amd64) ;;
+    *) echo "ahjo-runtime: unsupported arch $arch for ahjo-mirror" >&2; exit 1 ;;
+esac
+install -m 0755 "$(dirname "$0")/ahjo-mirror.linux-$arch" /usr/local/bin/ahjo-mirror
+install -m 0644 "$(dirname "$0")/ahjo-mirror.service" /etc/systemd/system/ahjo-mirror.service
+systemctl daemon-reload
+# We do NOT enable the unit here. `ahjo mirror <alias>` enables it on first
+# activation (after attaching the /mirror disk device). The unit's
+# ConditionPathIsMountPoint=/mirror would just refuse to start anyway.
+
 # ahjo-claude-prepare: prepares a freshly-created container's claude config
 # so the user's first `claude` invocation is friction-free. Plants ahjo's
 # defaults the user can change later — model "opusplan" (opus in plan mode,

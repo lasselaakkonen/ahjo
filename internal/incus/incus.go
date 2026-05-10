@@ -618,6 +618,131 @@ func FilePush(name, hostPath, containerPath string) (pushed bool, err error) {
 	return false, fmt.Errorf("incus file push %s %s%s: %w", hostPath, name, containerPath, err)
 }
 
+// HasDevice reports whether `device` is configured on `container`. Used by
+// `ahjo mirror` to detect single-active-mirror state across the registry, by
+// the TUI to show which branch is currently mirroring, and by destroy paths
+// to detect a mirror that needs `mirror off` first.
+func HasDevice(container, device string) (bool, error) {
+	cmd := exec.Command("incus", "config", "device", "list", container)
+	out, err := cmd.Output()
+	if err != nil {
+		var ee *exec.ExitError
+		if errors.As(err, &ee) {
+			low := strings.ToLower(string(ee.Stderr))
+			if strings.Contains(low, "not found") {
+				return false, nil
+			}
+			return false, fmt.Errorf("incus config device list %s: exit %d", container, ee.ExitCode())
+		}
+		return false, fmt.Errorf("incus config device list %s: %w", container, err)
+	}
+	for _, line := range strings.Split(string(out), "\n") {
+		if strings.TrimSpace(line) == device {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// ContainerStatus returns the lifecycle status string from `incus list`
+// (e.g. "Running", "Stopped"). Returns ("", nil) for unknown / not-listed.
+func ContainerStatus(name string) (string, error) {
+	cmd := exec.Command("incus", "list", "--format=json", name)
+	out, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("incus list %s: %w", name, err)
+	}
+	var rows []struct {
+		Name   string `json:"name"`
+		Status string `json:"status"`
+	}
+	if err := json.Unmarshal(out, &rows); err != nil {
+		return "", fmt.Errorf("parse incus list: %w", err)
+	}
+	for _, r := range rows {
+		if r.Name == name {
+			return r.Status, nil
+		}
+	}
+	return "", nil
+}
+
+// SystemctlDaemonReload runs `systemctl daemon-reload` inside container.
+// Idempotent and cheap.
+func SystemctlDaemonReload(container string) error {
+	cmd := exec.Command("incus", "exec", container, "--", "systemctl", "daemon-reload")
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		return nil
+	}
+	os.Stderr.Write(out)
+	return fmt.Errorf("incus exec %s -- systemctl daemon-reload: %w", container, err)
+}
+
+// SystemctlEnableNow runs `systemctl enable --now <unit>` inside container.
+func SystemctlEnableNow(container, unit string) error {
+	cmd := exec.Command("incus", "exec", container, "--", "systemctl", "enable", "--now", unit)
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		os.Stdout.Write(out)
+		return nil
+	}
+	os.Stderr.Write(out)
+	return fmt.Errorf("incus exec %s -- systemctl enable --now %s: %w", container, unit, err)
+}
+
+// SystemctlDisableNow runs `systemctl disable --now <unit>` inside container.
+// Tolerates "not loaded" (unit was never installed in this container).
+func SystemctlDisableNow(container, unit string) error {
+	cmd := exec.Command("incus", "exec", container, "--", "systemctl", "disable", "--now", unit)
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		return nil
+	}
+	low := strings.ToLower(string(out))
+	if strings.Contains(low, "not loaded") || strings.Contains(low, "no such file") || strings.Contains(low, "does not exist") {
+		return nil
+	}
+	os.Stderr.Write(out)
+	return fmt.Errorf("incus exec %s -- systemctl disable --now %s: %w", container, unit, err)
+}
+
+// SystemctlStop runs `systemctl stop <unit>` inside container. Tolerates
+// "not loaded" (idempotent stop).
+func SystemctlStop(container, unit string) error {
+	cmd := exec.Command("incus", "exec", container, "--", "systemctl", "stop", unit)
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		return nil
+	}
+	low := strings.ToLower(string(out))
+	if strings.Contains(low, "not loaded") || strings.Contains(low, "no such file") || strings.Contains(low, "does not exist") {
+		return nil
+	}
+	os.Stderr.Write(out)
+	return fmt.Errorf("incus exec %s -- systemctl stop %s: %w", container, unit, err)
+}
+
+// SystemctlIsActive returns whether `unit` is currently active inside
+// container. systemctl's documented exits: 0 = active, 3 = inactive, 4 =
+// no-such-unit, others = error. We treat 3 and 4 as benign "not active."
+func SystemctlIsActive(container, unit string) (bool, error) {
+	cmd := exec.Command("incus", "exec", container, "--", "systemctl", "is-active", "--quiet", unit)
+	if err := cmd.Run(); err == nil {
+		return true, nil
+	} else {
+		var ee *exec.ExitError
+		if errors.As(err, &ee) {
+			code := ee.ExitCode()
+			if code == 3 || code == 4 {
+				return false, nil
+			}
+			return false, fmt.Errorf("systemctl is-active %s in %s: exit %d", unit, container, code)
+		}
+		return false, fmt.Errorf("systemctl is-active %s in %s: %w", unit, container, err)
+	}
+}
+
 // StoragePoolDriver returns the driver of the default storage pool, e.g. "btrfs".
 func StoragePoolDriver() (string, error) {
 	cmd := exec.Command("incus", "storage", "list", "--format=json")

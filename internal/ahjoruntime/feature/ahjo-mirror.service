@@ -1,0 +1,19 @@
+[Unit]
+Description=ahjo: mirror /repo to host-side /mirror
+ConditionPathIsMountPoint=/mirror
+# Disable systemd's start-rate limit. The daemon exits intentionally on
+# .gitignore change; default StartLimitBurst=5 would put the unit in
+# `failed` state after a handful of legitimate restarts.
+StartLimitBurst=0
+
+[Service]
+Type=simple
+User=ubuntu
+ExecStart=/usr/local/bin/ahjo-mirror /repo /mirror
+Restart=always
+RestartSec=2
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

@@ -52,6 +52,7 @@ on the Mac drives the whole chain.`,
 func vmUpdateSteps() []initflow.Step {
 	return []initflow.Step{
 		subuidGrantStep(),
+		inotifySysctlStep(),
 		{
 			Title: "Refresh Claude Code on the VM (idempotent)",
 			Note:  "re-runs Anthropic's installer; it's a no-op if already current. Note: Anthropic's installer also auto-updates in the background, so this is mainly belt-and-suspenders.",

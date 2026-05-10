@@ -1,171 +1,234 @@
+// Package mirror provides shared helpers for the in-container `ahjo-mirror`
+// daemon (cmd/ahjo-mirror) and for unit tests that pin git-faithful gitignore
+// parity. The daemon itself is Linux-only; this package compiles everywhere
+// because the helpers are pure Go (filesystem walking + go-git gitignore).
 package mirror
 
 import (
+	"bufio"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"strings"
 	"syscall"
-	"time"
 
-	"github.com/fsnotify/fsnotify"
+	"github.com/go-git/go-git/v5/plumbing/format/gitignore"
 )
 
 // SkipDirNames is the bounded skiplist used to keep inotify watch counts
-// reasonable on real-world repos. The names match anywhere in the tree.
-// rsync's `:- .gitignore` filter is the source of truth for what gets copied;
-// this list only constrains what we WATCH so a `node_modules/` of 80k dirs
-// doesn't exhaust fs.inotify.max_user_watches before the first sync runs.
+// reasonable on real-world repos. Per the v3 design (designdocs/in-container-mirror.md):
+// only directories that are categorically never source code AND reliably blow
+// past inotify watch limits when populated. Things like dist/build/target/vendor
+// were dropped — gitignore handles them in the typical case, and they collide
+// too often with real source dirs.
 var SkipDirNames = map[string]bool{
 	".git":          true,
 	"node_modules":  true,
 	".next":         true,
 	".nuxt":         true,
 	".svelte-kit":   true,
-	"dist":          true,
-	"build":         true,
-	"target":        true,
-	"vendor":        true,
+	".turbo":        true,
 	"__pycache__":   true,
 	".venv":         true,
 	"venv":          true,
 	".pytest_cache": true,
 	".ruff_cache":   true,
 	".mypy_cache":   true,
-	".turbo":        true,
 }
 
-// debounce is the quiet window after the last fsnotify event before we run
-// rsync. 200ms is short enough to feel live in an editor, long enough to
-// coalesce save-on-blur bursts and tool-driven multi-file rewrites.
-const debounce = 200 * time.Millisecond
+// ErrUnsupportedFileType is returned by CopyFile for sockets, devices, fifos.
+var ErrUnsupportedFileType = errors.New("unsupported file type")
 
-// Bootstrap runs a single rsync from src to dst. Used at activation time to
-// bring the target into sync before starting the live watcher.
-func Bootstrap(src, dst string, out io.Writer) error {
-	return rsync(src, dst, out)
-}
+// LoadIgnoreMatcher walks `root`, reads `.gitignore` from each kept directory
+// and `.git/info/exclude` once, and builds a single git-faithful matcher. The
+// walk honors SkipDirNames so we never parse a `.gitignore` deep inside
+// `node_modules/`.
+//
+// Library: github.com/go-git/go-git/v5/plumbing/format/gitignore — validated
+// against `git check-ignore` on six fixtures + the live ahjo repo (0%
+// disagreement, see designdocs/in-container-mirror.md "Spike: gitignore parity").
+func LoadIgnoreMatcher(root string, skipNoSkiplist bool) (gitignore.Matcher, error) {
+	var patterns []gitignore.Pattern
+	patterns = append(patterns, parseIgnoreFile(filepath.Join(root, ".git", "info", "exclude"), nil)...)
 
-// RunDaemon is the long-lived watcher loop. Returns when ctx is cancelled or
-// the watcher fails fatally. Diagnostic output goes to out (typically the
-// mirror log file).
-func RunDaemon(ctx context.Context, src, dst string, out io.Writer) error {
-	w, err := fsnotify.NewWatcher()
-	if err != nil {
-		return fmt.Errorf("fsnotify new: %w", err)
-	}
-	defer w.Close()
-
-	if err := addRecursive(w, src); err != nil {
-		return fmt.Errorf("watch %s: %w", src, err)
-	}
-
-	timer := time.NewTimer(time.Hour)
-	if !timer.Stop() {
-		<-timer.C
-	}
-	pending := false
-
-	fmt.Fprintf(out, "[%s] watching %s -> %s\n", time.Now().Format(time.RFC3339), src, dst)
-	for {
-		select {
-		case <-ctx.Done():
-			fmt.Fprintf(out, "[%s] shutdown\n", time.Now().Format(time.RFC3339))
-			return nil
-
-		case ev, ok := <-w.Events:
-			if !ok {
-				return fmt.Errorf("watcher events channel closed")
-			}
-			// Newly-created directories need to be added to the watch so events
-			// inside them aren't missed. fsnotify auto-removes watches for
-			// deleted dirs.
-			if ev.Has(fsnotify.Create) {
-				if info, err := os.Stat(ev.Name); err == nil && info.IsDir() && !SkipDirNames[filepath.Base(ev.Name)] {
-					_ = addRecursive(w, ev.Name)
-				}
-			}
-			if !pending {
-				timer.Reset(debounce)
-				pending = true
-			} else {
-				if !timer.Stop() {
-					select {
-					case <-timer.C:
-					default:
-					}
-				}
-				timer.Reset(debounce)
-			}
-
-		case err, ok := <-w.Errors:
-			if !ok {
-				return fmt.Errorf("watcher errors channel closed")
-			}
-			fmt.Fprintf(out, "[%s] watch error: %v\n", time.Now().Format(time.RFC3339), err)
-
-		case <-timer.C:
-			pending = false
-			if err := rsync(src, dst, out); err != nil {
-				fmt.Fprintf(out, "[%s] rsync: %v\n", time.Now().Format(time.RFC3339), err)
-			}
-		}
-	}
-}
-
-// addRecursive walks root and registers every non-skipped directory with w.
-// Errors during walk are swallowed: missing dirs (raced with deletion) and
-// per-dir Add failures (e.g., ENOSPC) shouldn't abort the whole walk.
-func addRecursive(w *fsnotify.Watcher, root string) error {
-	return filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+	err := filepath.WalkDir(root, func(p string, d os.DirEntry, err error) error {
 		if err != nil {
 			return nil
 		}
 		if !d.IsDir() {
 			return nil
 		}
-		if path != root && SkipDirNames[d.Name()] {
+		if !skipNoSkiplist && p != root && SkipDirNames[d.Name()] {
 			return filepath.SkipDir
 		}
-		_ = w.Add(path)
+		rel, err := filepath.Rel(root, p)
+		if err != nil {
+			return nil
+		}
+		var domain []string
+		if rel != "." {
+			domain = strings.Split(filepath.ToSlash(rel), "/")
+		}
+		patterns = append(patterns, parseIgnoreFile(filepath.Join(p, ".gitignore"), domain)...)
 		return nil
 	})
+	if err != nil {
+		return nil, err
+	}
+	return gitignore.NewMatcher(patterns), nil
 }
 
-// rsync invokes the system rsync with the standard ahjo-mirror flags:
-//   - -a: archive mode (recursive, perms, times, symlinks-as-symlinks)
-//   - --delete-during: prune target files that disappeared from source, but
-//     only those NOT excluded by the filter (so Mac-side build artifacts in
-//     gitignored paths survive)
-//   - --filter=':- .gitignore': per-dir merge of .gitignore as exclude rules,
-//     respected at every level of the tree
-//   - hard-coded `.git` exclude regardless of gitignore
-func rsync(src, dst string, out io.Writer) error {
-	if !strings.HasSuffix(src, "/") {
-		src += "/"
+func parseIgnoreFile(path string, domain []string) []gitignore.Pattern {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil
 	}
-	if !strings.HasSuffix(dst, "/") {
-		dst += "/"
+	defer f.Close()
+	var ps []gitignore.Pattern
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		line := scanner.Text()
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		ps = append(ps, gitignore.ParsePattern(line, domain))
 	}
-	cmd := exec.Command("rsync",
-		"-a",
-		"--delete-during",
-		"--filter=:- .gitignore",
-		"--exclude=.git",
-		src, dst,
-	)
-	cmd.Stdout = out
-	cmd.Stderr = out
-	return cmd.Run()
+	return ps
+}
+
+// SplitRel turns a relative path into the []string components the matcher
+// expects. Empty / "." returns nil (= the repo root, which never matches a
+// file pattern).
+func SplitRel(rel string) []string {
+	if rel == "" || rel == "." {
+		return nil
+	}
+	return strings.Split(filepath.ToSlash(rel), "/")
+}
+
+// IsIgnored is a convenience wrapper that splits and asks the matcher.
+// A nil matcher (e.g. before patterns have been loaded) returns false.
+func IsIgnored(m gitignore.Matcher, rel string, isDir bool) bool {
+	if m == nil {
+		return false
+	}
+	parts := SplitRel(rel)
+	if len(parts) == 0 {
+		return false
+	}
+	return m.Match(parts, isDir)
+}
+
+// CopyFile copies srcPath to dstPath using lstat-first dispatch.
+//   - Regular file → tempfile in dstPath's dir, io.Copy, fchmod, atomic rename.
+//   - Symlink     → readlink, remove existing dst (if any), os.Symlink.
+//   - Anything else → ErrUnsupportedFileType (caller logs and skips).
+//
+// When fastSkip is true AND the destination already exists with matching
+// size+mtime (regular file) or matching link target (symlink), the copy is
+// skipped. The bootstrap walk passes fastSkip=true so repeated bootstraps are
+// cheap; live event handling passes fastSkip=false because the event itself
+// is the "something changed" signal.
+//
+// Caller is responsible for ensuring dstPath's parent dir exists.
+func CopyFile(srcPath, dstPath string, fastSkip bool) error {
+	srcInfo, err := os.Lstat(srcPath)
+	if err != nil {
+		return err
+	}
+	mode := srcInfo.Mode()
+	switch {
+	case mode.IsRegular():
+		return copyRegular(srcPath, dstPath, srcInfo, fastSkip)
+	case mode&os.ModeSymlink != 0:
+		return copySymlink(srcPath, dstPath, fastSkip)
+	default:
+		return ErrUnsupportedFileType
+	}
+}
+
+func copyRegular(srcPath, dstPath string, srcInfo os.FileInfo, fastSkip bool) error {
+	if fastSkip {
+		if dstInfo, err := os.Lstat(dstPath); err == nil && dstInfo.Mode().IsRegular() &&
+			dstInfo.Size() == srcInfo.Size() && dstInfo.ModTime().Equal(srcInfo.ModTime()) {
+			return nil
+		}
+	}
+	src, err := os.OpenFile(srcPath, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	if err != nil {
+		return fmt.Errorf("open src %s: %w", srcPath, err)
+	}
+	defer src.Close()
+
+	dstDir := filepath.Dir(dstPath)
+	tmp, err := tempName(dstDir, filepath.Base(dstPath))
+	if err != nil {
+		return err
+	}
+	out, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_EXCL, srcInfo.Mode().Perm())
+	if err != nil {
+		return fmt.Errorf("create tmp %s: %w", tmp, err)
+	}
+	if _, err := io.Copy(out, src); err != nil {
+		out.Close()
+		_ = os.Remove(tmp)
+		return fmt.Errorf("copy %s -> %s: %w", srcPath, tmp, err)
+	}
+	if err := out.Chmod(srcInfo.Mode().Perm()); err != nil {
+		out.Close()
+		_ = os.Remove(tmp)
+		return fmt.Errorf("fchmod %s: %w", tmp, err)
+	}
+	if err := out.Close(); err != nil {
+		_ = os.Remove(tmp)
+		return fmt.Errorf("close %s: %w", tmp, err)
+	}
+	// Preserve mtime so fastSkip works on the next bootstrap.
+	_ = os.Chtimes(tmp, srcInfo.ModTime(), srcInfo.ModTime())
+	if err := os.Rename(tmp, dstPath); err != nil {
+		_ = os.Remove(tmp)
+		return fmt.Errorf("rename %s -> %s: %w", tmp, dstPath, err)
+	}
+	return nil
+}
+
+func copySymlink(srcPath, dstPath string, fastSkip bool) error {
+	target, err := os.Readlink(srcPath)
+	if err != nil {
+		return fmt.Errorf("readlink %s: %w", srcPath, err)
+	}
+	if fastSkip {
+		if cur, err := os.Readlink(dstPath); err == nil && cur == target {
+			return nil
+		}
+	}
+	// os.Symlink fails if dstPath exists; remove it first. Tolerate ENOENT.
+	if err := os.Remove(dstPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("remove existing %s: %w", dstPath, err)
+	}
+	if err := os.Symlink(target, dstPath); err != nil {
+		return fmt.Errorf("symlink %s -> %s: %w", dstPath, target, err)
+	}
+	return nil
+}
+
+func tempName(dir, base string) (string, error) {
+	var b [8]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, "."+base+".ahjo-mirror.tmp."+hex.EncodeToString(b[:])), nil
 }
 
 // InstallSignalHandler returns a context that cancels on SIGTERM/SIGINT so
-// the daemon shuts down cleanly when the user runs `ahjo mirror off` (which
-// SIGTERMs the recorded PID).
+// the daemon shuts down cleanly when systemd stops the unit.
 func InstallSignalHandler() (context.Context, context.CancelFunc) {
 	ctx, cancel := context.WithCancel(context.Background())
 	ch := make(chan os.Signal, 1)

@@ -86,6 +86,9 @@ func prepareBranchContainer(alias string, update bool) (*registry.Branch, string
 	}
 	if update {
 		if exists {
+			if err := stopAndRemoveMirror(containerName); err != nil {
+				fmt.Fprintf(cobraOutErr(), "warn: stop mirror on %s: %v\n", containerName, err)
+			}
 			fmt.Printf("→ incus stop %s\n", containerName)
 			_ = incus.Stop(containerName)
 			fmt.Printf("→ incus delete --force %s\n", containerName)

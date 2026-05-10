@@ -52,6 +52,9 @@ func runRm(alias string, forceDefault bool) error {
 	}
 
 	if name := br.IncusName; name != "" {
+		if err := stopAndRemoveMirror(name); err != nil {
+			fmt.Fprintf(cobraOutErr(), "warn: stop mirror on %s: %v\n", name, err)
+		}
 		fmt.Printf("→ incus stop %s\n", name)
 		if err := incus.Stop(name); err != nil {
 			fmt.Fprintf(cobraOutErr(), "warn: incus stop: %v\n", err)

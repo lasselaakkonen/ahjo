@@ -6,7 +6,6 @@ import (
 	tea "charm.land/bubbletea/v2"
 
 	"github.com/lasselaakkonen/ahjo/internal/incus"
-	"github.com/lasselaakkonen/ahjo/internal/mirror"
 	"github.com/lasselaakkonen/ahjo/internal/ports"
 	"github.com/lasselaakkonen/ahjo/internal/registry"
 )
@@ -73,9 +72,20 @@ func loadSnapshot(deps Deps) (snapshot, error) {
 	if deps.HostStatus != nil {
 		snap.host = deps.HostStatus()
 	}
-	if mst, _ := mirror.Load(); mst != nil {
-		snap.mirrorSlug = mst.Slug
-		snap.mirrorAlive = mirror.PIDAlive(mst.PID)
+	for i := range reg.Branches {
+		br := &reg.Branches[i]
+		name, err := deps.ResolveContainerName(br)
+		if err != nil {
+			continue
+		}
+		has, err := incus.HasDevice(name, "mirror")
+		if err != nil || !has {
+			continue
+		}
+		snap.mirrorSlug = br.Slug
+		alive, err := incus.SystemctlIsActive(name, "ahjo-mirror.service")
+		snap.mirrorAlive = err == nil && alive
+		break
 	}
 	return snap, nil
 }
