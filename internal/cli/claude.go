@@ -47,5 +47,5 @@ func runClaude(alias string, update bool) error {
 		return err
 	}
 	_ = br
-	return incus.ExecAttach(containerName, 1000, env, paths.RepoMountPath, "claude")
+	return incus.ExecAttach(containerName, 1000, env, paths.RepoMountPath, "claude", "--dangerously-skip-permissions")
 }
