@@ -52,8 +52,15 @@ curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/HEAD/install
 Then, from the repo root:
 
 ```sh
+make generate-mirror                    # build the embedded linux daemon binaries (gitignored)
 make hooks                              # activate pre-commit + pre-push
 ```
+
+`generate-mirror` cross-compiles the two `ahjo-mirror` daemons into
+`internal/ahjoruntime/feature/`, where the host CLI's `//go:embed` picks
+them up. The bytes change on every build (Go embeds a fresh BuildID per
+compile), so they're kept out of git — every `make build`, hook run, and
+CI job regenerates them on demand.
 
 ## What the hooks check
 
@@ -62,16 +69,21 @@ on first failure.
 
 | Hook         | Runs                                                                  | Cold time |
 | ------------ | --------------------------------------------------------------------- | --------- |
-| `pre-commit` | `gofmt -l`, `go vet`, `golangci-lint run`, `go test ./...`            | ~5s       |
-| `pre-push`   | `go generate ./...` freshness, `go test -race ./...`                  | ~15s      |
+| `pre-commit` | `make generate-mirror`, `gofmt -l`, `go vet`, `golangci-lint run`, `go test ./...` | ~5s |
+| `pre-push`   | `make generate-mirror`, `go test -race ./...`                         | ~15s      |
+
+Both hooks call `make generate-mirror` first so the gitignored
+`ahjo-mirror.linux-{amd64,arm64}` daemons (embedded into the host CLI
+via `//go:embed`) are present before vet/test compile. The make rule is
+incremental — no-op when binaries are already newer than their Go sources.
 
 Bypass:
 
 - `SKIP_HOOKS=1 git commit ...` / `SKIP_HOOKS=1 git push ...` — graceful skip, prints a notice
 - `git commit --no-verify` / `git push --no-verify` — hard skip
 
-CI (`.github/workflows/ci.yml`) gates merges on `go vet`, `go test`, and
-`go generate` freshness. The pre-push hook catches everything CI would,
+CI (`.github/workflows/ci.yml`) gates merges on `make generate-mirror`,
+`go vet`, and `go test`. The pre-push hook catches everything CI would,
 locally.
 
 ## Day-to-day commands
