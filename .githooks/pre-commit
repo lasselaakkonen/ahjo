@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+# Fast local gate before commit. Mirrors what CI checks plus formatting and
+# lint, so most CI failures surface here first. Activate with `make hooks`.
+#
+# Bypass: SKIP_HOOKS=1 git commit ...     (graceful — prints a notice)
+#         git commit --no-verify ...      (hard — skips git hooks entirely)
+set -euo pipefail
+
+if [ "${SKIP_HOOKS:-}" = "1" ]; then
+    echo "pre-commit: SKIP_HOOKS=1 — skipping checks"
+    exit 0
+fi
+
+cd "$(git rev-parse --show-toplevel)"
+
+step_fail() {
+    echo "" >&2
+    echo "pre-commit: $1 failed — fix and re-commit" >&2
+    echo "            (bypass: SKIP_HOOKS=1 or --no-verify)" >&2
+    exit 1
+}
+
+# 1. gofmt — flag any file gofmt would rewrite. Cheaper than `go fmt ./...`
+#    because we don't want the hook to silently rewrite the user's tree.
+unformatted="$(gofmt -l .)"
+if [ -n "$unformatted" ]; then
+    echo "pre-commit: gofmt found unformatted files:" >&2
+    printf '  %s\n' $unformatted >&2
+    echo "  → run: gofmt -w ." >&2
+    exit 1
+fi
+
+# 2. go vet
+go vet ./... || step_fail "go vet"
+
+# 3. golangci-lint — soft-skip if missing on the host so a fresh clone can
+#    still commit. The host-install hint is in README's Setup section.
+if command -v golangci-lint >/dev/null 2>&1; then
+    golangci-lint run ./... || step_fail "golangci-lint"
+else
+    echo "pre-commit: golangci-lint not installed — skipping" >&2
+    echo "            install on macOS: brew install golangci-lint" >&2
+fi
+
+# 4. unit tests. Warm cache makes this ~270ms; cold ~4.5s.
+go test ./... || step_fail "go test"

@@ -235,3 +235,29 @@ ahjo has three state layers: the host binary, the `ahjo-base` Incus image, and t
 `ahjo shell --update` is granular by design — `ahjo update` rebuilds the image but leaves running containers alone, so you can decide per-worktree whether to recreate. The worktree, host keys, registry entry, and ssh port are preserved. Worktrees you don't recreate keep running on the old image until you do.
 
 `ahjo nuke` is for the rare case when state itself is wrong (mismatched aliases, corrupt registry, etc.). For ordinary "I changed the code" iteration, `ahjo update` is what you want.
+
+## Development
+
+Working on ahjo itself. Skip if you just use it.
+
+### Git hooks
+
+Repo-tracked hooks under `.githooks/` gate commits and pushes against the same checks CI runs, so most failures surface locally. Activate once per clone:
+
+```bash
+make hooks
+```
+
+That points `core.hooksPath` at `.githooks/`. Idempotent; safe to re-run.
+
+| Hook | Runs | Cold time |
+| --- | --- | --- |
+| `pre-commit` | `gofmt -l`, `go vet`, `golangci-lint`, `go test ./...` | ~5s |
+| `pre-push`   | `go generate ./...` freshness check, `go test -race ./...` | ~15s |
+
+`golangci-lint` is soft-skipped if it isn't on PATH so a fresh clone can still commit; install it for the full pre-commit pass:
+
+- **Host (macOS)**: `brew install golangci-lint`
+- **Inside an ahjo container**: nothing to do — `.devcontainer/devcontainer.json` installs Go and golangci-lint on container create via the upstream Feature and `postCreateCommand`.
+
+Bypass when you need to: `SKIP_HOOKS=1 git commit ...` (graceful, prints a notice) or `git commit --no-verify` (hard skip).

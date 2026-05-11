@@ -23,7 +23,7 @@ endif
 VM_NAME ?= ahjo
 VM_AHJO := /usr/local/bin/ahjo
 
-.PHONY: build dist clean print-version install-vm generate-mirror
+.PHONY: build dist clean print-version install-vm generate-mirror hooks
 
 # Build embedded ahjo-mirror daemon binaries via the same `go generate`
 # directives CI gates on. Order: generate first (produces the linux daemon
@@ -70,6 +70,13 @@ dist/SHA256SUMS: $(DIST_BINS)
 
 clean:
 	rm -rf dist ahjo
+
+# Activate the repo-tracked git hooks under .githooks/. Idempotent — git
+# rewrites core.hooksPath each call. Bypass any hook with SKIP_HOOKS=1 or
+# --no-verify; see .githooks/pre-commit and .githooks/pre-push for what runs.
+hooks:
+	@git config core.hooksPath .githooks
+	@echo "  hooks  .githooks/ active (pre-commit + pre-push)"
 
 print-version:
 	@echo $(VERSION)

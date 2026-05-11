@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+# Slower gate before pushing. Catches what CI also catches but locally, so
+# CI is just confirmation, not the first failure signal. Activate with
+# `make hooks`.
+#
+# Bypass: SKIP_HOOKS=1 git push ...        (graceful)
+#         git push --no-verify ...         (hard)
+set -euo pipefail
+
+if [ "${SKIP_HOOKS:-}" = "1" ]; then
+    echo "pre-push: SKIP_HOOKS=1 — skipping checks"
+    exit 0
+fi
+
+cd "$(git rev-parse --show-toplevel)"
+
+step_fail() {
+    echo "" >&2
+    echo "pre-push: $1 failed — fix before pushing" >&2
+    echo "          (bypass: SKIP_HOOKS=1 or --no-verify)" >&2
+    exit 1
+}
+
+# 1. go generate freshness. CI fails on this exact check at
+#    .github/workflows/ci.yml; running it here catches a stale embedded
+#    ahjo-mirror binary before push instead of after.
+if ! git diff --quiet || ! git diff --cached --quiet; then
+    echo "pre-push: working tree has uncommitted changes — generate-freshness check skipped" >&2
+    echo "          (a dirty tree would make 'git diff --exit-code' below ambiguous)" >&2
+else
+    go generate ./... || step_fail "go generate"
+    if ! git diff --exit-code >/dev/null; then
+        echo "pre-push: go generate produced changes — embedded binaries are stale" >&2
+        echo "  → run: go generate ./... && commit the result" >&2
+        git diff --stat >&2
+        exit 1
+    fi
+fi
+
+# 2. race-enabled tests. ~14s cold; catches concurrency bugs unit tests miss.
+go test -race ./... || step_fail "go test -race"
