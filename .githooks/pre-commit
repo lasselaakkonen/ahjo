@@ -20,6 +20,12 @@ step_fail() {
     exit 1
 }
 
+# 0. Materialize the gitignored ahjo-mirror daemon binaries that the host
+#    CLI embeds via FeatureFS. Incremental — the make rule no-ops when the
+#    binaries are newer than their Go sources. Required so the subsequent
+#    `go vet`/`go test` steps see a complete embed.FS.
+make -s generate-mirror || step_fail "make generate-mirror"
+
 # 1. gofmt — flag any file gofmt would rewrite. Cheaper than `go fmt ./...`
 #    because we don't want the hook to silently rewrite the user's tree.
 unformatted="$(gofmt -l .)"

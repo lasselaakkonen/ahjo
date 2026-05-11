@@ -16,20 +16,15 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      # Materialize the embedded ahjo-mirror daemon binaries before vet/test.
+      # They're gitignored (Go's per-build BuildID churns the bytes), so the
+      # tree starts without them; `make generate-mirror` runs the same
+      # `go generate` directives the host build does.
+      - name: generate-mirror
+        run: make generate-mirror
+
       - name: go vet
         run: go vet ./...
 
       - name: go test
         run: go test ./...
-
-      # Catch a stale embedded ahjo-mirror daemon binary before merge.
-      # `go generate` rebuilds the linux-arm64 + linux-amd64 daemon binaries
-      # under internal/ahjoruntime/feature/; if either differs from the
-      # tree's checked-in copy, this fails with a clear non-empty diff.
-      - name: go generate freshness
-        run: |
-          go generate ./...
-          if ! git diff --exit-code; then
-            echo "::error::embedded ahjo-mirror binaries are stale — run 'go generate ./...' locally and commit"
-            exit 1
-          fi

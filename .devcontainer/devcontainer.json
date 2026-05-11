@@ -3,5 +3,5 @@
   "features": {
     "ghcr.io/devcontainers/features/go:1": {}
   },
-  "postCreateCommand": "curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/HEAD/install.sh | sh -s -- -b $(go env GOPATH)/bin && make hooks"
+  "postCreateCommand": "curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/HEAD/install.sh | sh -s -- -b $(go env GOPATH)/bin && make generate-mirror && make hooks"
 }

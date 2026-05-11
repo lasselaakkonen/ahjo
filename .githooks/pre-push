@@ -21,21 +21,11 @@ step_fail() {
     exit 1
 }
 
-# 1. go generate freshness. CI fails on this exact check at
-#    .github/workflows/ci.yml; running it here catches a stale embedded
-#    ahjo-mirror binary before push instead of after.
-if ! git diff --quiet || ! git diff --cached --quiet; then
-    echo "pre-push: working tree has uncommitted changes — generate-freshness check skipped" >&2
-    echo "          (a dirty tree would make 'git diff --exit-code' below ambiguous)" >&2
-else
-    go generate ./... || step_fail "go generate"
-    if ! git diff --exit-code >/dev/null; then
-        echo "pre-push: go generate produced changes — embedded binaries are stale" >&2
-        echo "  → run: go generate ./... && commit the result" >&2
-        git diff --stat >&2
-        exit 1
-    fi
-fi
+# 1. Materialize the gitignored ahjo-mirror daemon binaries that the host
+#    CLI embeds via FeatureFS. Incremental — re-runs `go generate` only
+#    when the binaries are older than their Go sources. Required so the
+#    race tests below compile against a complete embed.FS.
+make -s generate-mirror || step_fail "make generate-mirror"
 
 # 2. race-enabled tests. ~14s cold; catches concurrency bugs unit tests miss.
 go test -race ./... || step_fail "go test -race"
