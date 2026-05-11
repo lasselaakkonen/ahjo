@@ -14,7 +14,7 @@ is on your PATH, then:
 
 ```sh
 ahjo repo add git@github.com:lasselaakkonen/ahjo --as ahjo
-ahjo new ahjo master                    # creates worktree alias ahjo@master
+ahjo create ahjo master                 # creates worktree alias ahjo@master
 ahjo shell ahjo@master                  # drops you into the container at /repo
 ```
 

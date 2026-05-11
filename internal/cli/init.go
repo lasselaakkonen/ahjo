@@ -298,7 +298,7 @@ Signed-By: /etc/apt/keyrings/zabbly.asc
 				fmt.Fprintln(out, "  → merged hasCompletedOnboarding=true into "+p)
 				return nil
 			},
-			Post: "\nDone. Try:\n  ahjo doctor                              # green check\n  ahjo repo add <git-url>                  # clone into a default container\n  ahjo new <repo-alias> <branch>           # create a COW branch container",
+			Post: "\nDone. Try:\n  ahjo doctor                              # green check\n  ahjo repo add <git-url>                  # clone into a default container\n  ahjo create <repo-alias> <branch>        # create a COW branch container",
 		},
 	}...)
 	return steps

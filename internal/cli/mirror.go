@@ -107,11 +107,11 @@ func runMirrorOn(alias, targetFlag string, noSkiplist bool, version string) erro
 	}
 	br := reg.FindBranchByAlias(alias)
 	if br == nil {
-		return fmt.Errorf("no branch registered for %q (run `ahjo new %s` first)", alias, alias)
+		return fmt.Errorf("no branch registered for %q (run `ahjo create %s` first)", alias, alias)
 	}
 	containerName := br.IncusName
 	if containerName == "" {
-		return fmt.Errorf("registry row for %q has no incus_name; recreate with `ahjo rm %s && ahjo new`", alias, alias)
+		return fmt.Errorf("registry row for %q has no incus_name; recreate with `ahjo rm %s && ahjo create`", alias, alias)
 	}
 
 	repo := reg.FindRepo(br.Repo)

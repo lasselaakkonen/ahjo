@@ -77,7 +77,7 @@ func prepareBranchContainer(alias string, update bool) (*registry.Branch, string
 
 	containerName := br.IncusName
 	if containerName == "" {
-		return nil, "", fmt.Errorf("registry row for %q has no incus_name; recreate with `ahjo rm %s && ahjo new`", alias, alias)
+		return nil, "", fmt.Errorf("registry row for %q has no incus_name; recreate with `ahjo rm %s && ahjo create`", alias, alias)
 	}
 
 	exists, err := incus.ContainerExists(containerName)
