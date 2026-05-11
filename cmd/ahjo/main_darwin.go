@@ -591,7 +591,7 @@ func macInitSteps(yes bool) []initflow.Step {
 				}
 				return nil
 			},
-			Post: "\nDone. Try:\n  ahjo doctor\n  ahjo repo add <git-url>           # alias derived from URL, or pass --as <alias>\n  ahjo new <repo-alias> <branch>    # auto-aliased <repo-alias>@<branch>, or pass --as <alias>",
+			Post: "\nDone. Try:\n  ahjo doctor\n  ahjo repo add <git-url>           # alias derived from URL, or pass --as <alias>\n  ahjo create <repo-alias> <branch> # auto-aliased <repo-alias>@<branch>, or pass --as <alias>",
 		},
 	}
 }

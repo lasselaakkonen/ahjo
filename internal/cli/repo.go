@@ -50,7 +50,7 @@ On auto-alias collision (e.g. github.com/acme/api vs gitlab.com/acme/api),
 ahjo appends -2/-3/... to keep aliases unique.
 
 The repo's default-branch container becomes the COW source from which every
-subsequent ` + "`ahjo new`" + ` clones — its node_modules and pnpm store survive
+subsequent ` + "`ahjo create`" + ` clones — its node_modules and pnpm store survive
 into branch containers via btrfs reflinks, eliminating the cold-install tax.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(_ *cobra.Command, args []string) error {
@@ -74,7 +74,7 @@ func runRepoAdd(input, asAlias, defaultBase string) error {
 // resolveRepoURL accepts either a git URL or a bare "<owner>/<repo>" alias
 // and returns a usable URL. Aliases get the same SSH-then-HTTPS GitHub
 // inference EnsureRepo uses, so `ahjo repo add lasselaakkonen/foo` works
-// the same way `ahjo new lasselaakkonen/foo bar` does.
+// the same way `ahjo create lasselaakkonen/foo bar` does.
 func resolveRepoURL(input string) string {
 	if strings.Contains(input, "://") || strings.Contains(input, "@") {
 		return input

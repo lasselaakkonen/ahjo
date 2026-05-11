@@ -20,5 +20,5 @@ func resolveContainerName(br *registry.Branch) (string, error) {
 	if len(br.Aliases) > 0 {
 		alias = br.Aliases[0]
 	}
-	return "", fmt.Errorf("registry row for %q (slug %q) has no incus_name; recreate with `ahjo rm %s && ahjo new`", alias, br.Slug, alias)
+	return "", fmt.Errorf("registry row for %q (slug %q) has no incus_name; recreate with `ahjo rm %s && ahjo create`", alias, br.Slug, alias)
 }

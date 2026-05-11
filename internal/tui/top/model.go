@@ -480,7 +480,7 @@ func (m *model) execRepoRm() tea.Cmd {
 
 func (m *model) execNewContainer(repoAlias, branch string) tea.Cmd {
 	label := repoAlias + "@" + branch
-	return execAhjo("created", label, "new", repoAlias, branch)
+	return execAhjo("created", label, "create", repoAlias, branch)
 }
 
 func (m *model) execWorktreeRm() tea.Cmd {

@@ -71,9 +71,9 @@ ahjo repo add git@github.com:acme/web.git \
 # 2. Spin up a worktree per branch. Each one gets its own container,
 #    its own SSH port, its own host keys. Auto alias is <repo-alias>@<branch>;
 #    --as adds a second one.
-ahjo new acme/api pr-482-rate-limit                 # alias: acme/api@pr-482-rate-limit
-ahjo new acme/api pr-491-token-refresh              # alias: acme/api@pr-491-token-refresh
-ahjo new web feat/checkout-redesign --as checkout   # aliases: acme/web@feat/checkout-redesign, checkout
+ahjo create acme/api pr-482-rate-limit                 # alias: acme/api@pr-482-rate-limit
+ahjo create acme/api pr-491-token-refresh              # alias: acme/api@pr-491-token-refresh
+ahjo create web feat/checkout-redesign --as checkout   # aliases: acme/web@feat/checkout-redesign, checkout
 
 # 3. Drop into the first one. Container starts on demand.
 #    `ahjo shell` opens an interactive shell; use `ahjo claude` to launch claude.
@@ -122,7 +122,7 @@ State lives under `~/.ahjo/` (registry, ports, host keys, profiles). The Mac shi
 | `ahjo repo add <git-url> [--as <alias>] [--default-base <branch>]` | Register a repo and bare-clone it under `~/.ahjo/repos/`. Auto alias is `<owner>/<repo>` from the URL; `--as` adds a second alias. On collision (e.g. github vs gitlab `acme/api`), ahjo suffixes `-2`/`-3`/… |
 | `ahjo repo ls` | List registered repos with their aliases. |
 | `ahjo repo rm <alias> [--force]` | Drop a repo by any of its aliases. Refuses if worktrees still exist. |
-| `ahjo new <repo-alias> <branch> [--as <alias>] [--base <ref>] [--no-fetch]` | Create a COW branch container by copying the repo's default container (`incus copy`) and checking out `<branch>` inside it. Auto alias is `<repo-primary-alias>@<branch>`; `--as` adds a second alias. Idempotent. |
+| `ahjo create <repo-alias> <branch> [--as <alias>] [--base <ref>] [--no-fetch]` | Create a COW branch container by copying the repo's default container (`incus copy`) and checking out `<branch>` inside it. Auto alias is `<repo-primary-alias>@<branch>`; `--as` adds a second alias. Idempotent. |
 | `ahjo shell <alias> [--update]` | Start the container if needed, wire SSH proxy + sshd, attach an interactive bash via `incus exec --force-interactive` as the in-container `ubuntu` user. `--update` shuts down and deletes the existing container first so the next attach builds a fresh one from the current `ahjo-base` image; the host keys, registry entry, and ssh port are preserved. |
 | `ahjo claude <alias> [--update]` | Same prep as `ahjo shell`, but launches `claude` inside the container instead of dropping to a shell. |
 | `ahjo ssh <alias>` | `exec ssh` into the container using the generated ssh-config (Mac-side or in-VM). |

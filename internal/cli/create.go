@@ -17,12 +17,12 @@ import (
 	sshpkg "github.com/lasselaakkonen/ahjo/internal/ssh"
 )
 
-func newNewCmd() *cobra.Command {
+func newCreateCmd() *cobra.Command {
 	var base string
 	var noFetch bool
 	var asAlias string
 	cmd := &cobra.Command{
-		Use:   "new <repo-alias> <branch>",
+		Use:   "create <repo-alias> <branch>",
 		Short: "Create a branch container by COW-cloning the repo's default-branch container and `git checkout -b <branch>` inside it",
 		Long: `Create a new branch container. The auto alias is "<repo-primary-alias>@<branch>".
 Pass --as <alias> to register an additional alias for the branch.
@@ -33,7 +33,7 @@ the pnpm store, and any other warm dependencies. ` + "`git checkout -b <branch>`
 runs inside the clone after copy completes.`,
 		Args: cobra.ExactArgs(2),
 		RunE: func(_ *cobra.Command, args []string) error {
-			return runNew(args[0], args[1], base, asAlias, noFetch)
+			return runCreate(args[0], args[1], base, asAlias, noFetch)
 		},
 	}
 	cmd.Flags().StringVar(&base, "base", "", "branch/ref to create from (default: repo's default-base)")
@@ -42,11 +42,11 @@ runs inside the clone after copy completes.`,
 	return cmd
 }
 
-func runNew(repoAlias, branch, base, asAlias string, noFetch bool) error {
+func runCreate(repoAlias, branch, base, asAlias string, noFetch bool) error {
 	// EnsureRepo runs without holding the lockfile — runRepoAdd acquires
 	// the lock itself for the registration phase, then releases before
 	// recursing into the warm-install phase. Calling it here lets
-	// `ahjo new <new-repo> <branch>` auto-register from GitHub before we
+	// `ahjo create <new-repo> <branch>` auto-register from GitHub before we
 	// proceed.
 	if _, err := EnsureRepo(repoAlias); err != nil {
 		return err
@@ -59,7 +59,7 @@ func runNew(repoAlias, branch, base, asAlias string, noFetch bool) error {
 
 	// Phase 1: short-lived lock to allocate slug + port + reserve registry
 	// row, then drop it so the long `incus copy` + checkout can run unlocked.
-	br, repo, err := newReserveBranch(cfg, repoAlias, branch, asAlias)
+	br, repo, err := createReserveBranch(cfg, repoAlias, branch, asAlias)
 	if err != nil {
 		return err
 	}
@@ -117,11 +117,11 @@ func runNew(repoAlias, branch, base, asAlias string, noFetch bool) error {
 	return nil
 }
 
-// newReserveBranch holds the lockfile for just the allocation phase: it
+// createReserveBranch holds the lockfile for just the allocation phase: it
 // validates the alias, picks a slug + container name + ssh port, ensures
 // host keys, and inserts the registry row. Returns (nil, ...) when the
 // branch already exists (idempotent path; ssh-config is re-rendered).
-func newReserveBranch(cfg *config.Config, repoAlias, branch, asAlias string) (*registry.Branch, *registry.Repo, error) {
+func createReserveBranch(cfg *config.Config, repoAlias, branch, asAlias string) (*registry.Branch, *registry.Repo, error) {
 	release, err := lockfile.Acquire()
 	if err != nil {
 		return nil, nil, err
@@ -261,7 +261,7 @@ func cloneFromBase(repo *registry.Repo, br *registry.Branch) error {
 // EnsureBranch returns the branch registered under branchAlias.
 // If the branch isn't registered and the alias has the canonical
 // "<repo-alias>@<branch>" shape, it auto-adds the parent repo (via
-// EnsureRepo) and runs runNew to create the branch container. Idempotent
+// EnsureRepo) and runs runCreate to create the branch container. Idempotent
 // for already-registered branches.
 func EnsureBranch(branchAlias string) (*registry.Branch, error) {
 	reg, err := registry.Load()
@@ -274,16 +274,16 @@ func EnsureBranch(branchAlias string) (*registry.Branch, error) {
 
 	repoAlias, branch, ok := splitBranchAlias(branchAlias)
 	if !ok {
-		return nil, fmt.Errorf("no branch with alias %q; create with `ahjo new`", branchAlias)
+		return nil, fmt.Errorf("no branch with alias %q; create with `ahjo create`", branchAlias)
 	}
 
 	if _, err := EnsureRepo(repoAlias); err != nil {
 		return nil, err
 	}
 
-	// runNew is idempotent for an existing branch (re-renders config); for
+	// runCreate is idempotent for an existing branch (re-renders config); for
 	// a missing one it creates the COW container.
-	if err := runNew(repoAlias, branch, "", "", false); err != nil {
+	if err := runCreate(repoAlias, branch, "", "", false); err != nil {
 		return nil, err
 	}
 
