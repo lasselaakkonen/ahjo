@@ -35,6 +35,52 @@ func TestSafeRefDir(t *testing.T) {
 	}
 }
 
+// expandContainerEnv resolves the `${VAR}` interpolation that upstream
+// Features (Go, Node, Rust, …) rely on for PATH augmentation. The
+// motivating case is the Go Feature's
+// `PATH: /usr/local/go/bin:/go/bin:${PATH}` — without expansion, Apply
+// passes a literal `${PATH}` to install.sh, whose 00-restore-env.sh
+// delta-capture trick then yields a no-op and Go stays off PATH for
+// every subsequent login shell.
+func TestExpandContainerEnv(t *testing.T) {
+	current := map[string]string{
+		"PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin",
+		"HOME": "/home/ubuntu",
+	}
+	raw := map[string]string{
+		"PATH":   "/usr/local/go/bin:/go/bin:${PATH}",
+		"GOPATH": "/go",
+		"GOROOT": "/usr/local/go",
+		// $VAR (no braces) should also expand — os.Expand handles
+		// both forms, and a Feature could legally write either.
+		"USER_HOME": "$HOME",
+		// Unset name expands to "" (shell semantics) rather than
+		// staying as a literal `${MISSING}` — that's what would
+		// brick later execs.
+		"WITH_MISSING": "before:${MISSING}:after",
+	}
+	got := expandContainerEnv(raw, current)
+	want := map[string]string{
+		"PATH":         "/usr/local/go/bin:/go/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin",
+		"GOPATH":       "/go",
+		"GOROOT":       "/usr/local/go",
+		"USER_HOME":    "/home/ubuntu",
+		"WITH_MISSING": "before::after",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("expandContainerEnv mismatch\n got: %#v\nwant: %#v", got, want)
+	}
+}
+
+func TestExpandContainerEnv_EmptyInput(t *testing.T) {
+	if got := expandContainerEnv(nil, map[string]string{"PATH": "/x"}); got != nil {
+		t.Fatalf("nil raw → nil; got %#v", got)
+	}
+	if got := expandContainerEnv(map[string]string{}, nil); got != nil {
+		t.Fatalf("empty raw → nil; got %#v", got)
+	}
+}
+
 // ApplyOptionDefaults fills in option keys the user didn't declare,
 // using the Feature's metadata defaults. Required so curated Features
 // that branch on a default keyword (the motivating case: `git:1`'s

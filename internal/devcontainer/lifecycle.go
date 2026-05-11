@@ -29,7 +29,7 @@ const (
 // shell-prep flow.
 //
 // Forms:
-//   - string  : "echo hi"          → bash -c "echo hi"
+//   - string  : "echo hi"          → bash -lc "echo hi"
 //   - array   : ["echo", "hi"]     → echo hi (no shell)
 //   - object  : {"a": "...", ...}  → each entry sequentially in stable key
 //     order. The spec calls for parallel execution; ahjo runs sequentially
@@ -63,7 +63,7 @@ func (s step) display() string {
 	if len(s.argv) == 0 {
 		return ""
 	}
-	if len(s.argv) >= 3 && s.argv[0] == "bash" && s.argv[1] == "-c" {
+	if len(s.argv) >= 3 && s.argv[0] == "bash" && (s.argv[1] == "-c" || s.argv[1] == "-lc") {
 		return s.argv[2]
 	}
 	out := s.argv[0]
@@ -80,11 +80,14 @@ func decodeLifecycle(raw json.RawMessage) ([]step, error) {
 		return nil, nil
 	}
 
-	// String form: run via bash -c so users get shell features (pipes,
-	// env-var expansion, &&-chains) without quoting back through ahjo.
+	// String form: run via bash -lc so users get shell features (pipes,
+	// env-var expansion, &&-chains) without quoting back through ahjo, AND
+	// so /etc/profile.d/*.sh load — devcontainer Features (Go, Rust, nvm,
+	// …) drop PATH-extending scripts there, and a plain `bash -c` skips
+	// them. Matches devcontainers/cli behavior.
 	var s string
 	if err := json.Unmarshal(raw, &s); err == nil {
-		return []step{{argv: []string{"bash", "-c", s}}}, nil
+		return []step{{argv: []string{"bash", "-lc", s}}}, nil
 	}
 
 	// Array form: argv[0] is the program; ahjo runs it directly through

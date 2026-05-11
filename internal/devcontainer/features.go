@@ -15,6 +15,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/lasselaakkonen/ahjo/internal/incus"
@@ -335,6 +336,23 @@ func Apply(container string, f Feature, env map[string]string, out io.Writer) er
 		envv[k] = v
 	}
 
+	// Override HOME/USER/LOGNAME for install.sh so it sees a root-shaped
+	// home. The container has environment.HOME=/home/ubuntu (the ubuntu
+	// user's home, used by every other exec). install.sh runs as root and
+	// expects a root home: upstream Features write /etc/profile.d/
+	// 00-restore-env.sh via `${PATH//$(sh -lc 'echo $PATH')/\$PATH}`, a
+	// substitution that assumes install.sh's PATH equals sh -lc's PATH.
+	// With HOME=/home/ubuntu, sh -lc sources /home/ubuntu/.profile and
+	// picks up $HOME/.local/bin — making login-shell PATH ⊃ install.sh
+	// PATH, the substitution finds no match, and the file lands as a
+	// literal pre-Feature PATH that shadows environment.PATH on every
+	// later login. /root has no .profile by default, so sh -lc returns
+	// install.sh's PATH and the substitution yields `$PATH` (the no-op
+	// the Feature intended).
+	envv["HOME"] = "/root"
+	envv["USER"] = "root"
+	envv["LOGNAME"] = "root"
+
 	ctx, cancel := context.WithTimeout(context.Background(), applyTimeout)
 	defer cancel()
 
@@ -357,6 +375,32 @@ func Apply(container string, f Feature, env map[string]string, out io.Writer) er
 		}
 		return fmt.Errorf("Feature %s install.sh: %w", f.ID, err)
 	}
+
+	// Persist the Feature's containerEnv as Incus environment.* keys so
+	// every subsequent `incus exec` (lifecycle commands, warm-install,
+	// user shell, next Feature's install.sh) sees the new PATH/GOROOT/…
+	// `${VAR}` is expanded against the container's current login env so
+	// that values like `PATH: /usr/local/go/bin:/go/bin:${PATH}` resolve
+	// to a literal path string — Incus's `environment.PATH` accepts no
+	// interpolation and a literal `${PATH}` would brick every later exec.
+	// Reading via `bash -lc env` picks up additions from earlier Features
+	// (their own environment.* values are inherited by this exec), so a
+	// chain of Features each appending to `${PATH}` composes correctly.
+	current, err := readLoginEnv(container)
+	if err != nil {
+		// Soft-fail: a Feature without ${VAR} references in its
+		// containerEnv still applies correctly with current=nil
+		// (os.Expand returns "" for unknown names). Only the
+		// PATH-augmenting Features lose their additions on this path,
+		// and the user sees the warning.
+		fmt.Fprintf(out, "warn: read container env for %s containerEnv expansion: %v\n", f.ID, err)
+	}
+	expanded := expandContainerEnv(meta.ContainerEnv, current)
+	for _, k := range sortedKeys(expanded) {
+		if err := incus.ConfigSet(container, "environment."+k, expanded[k]); err != nil {
+			return fmt.Errorf("Feature %s: persist containerEnv %s: %w", f.ID, k, err)
+		}
+	}
 	return nil
 }
 
@@ -373,6 +417,49 @@ func validate(f Feature) (*Metadata, error) {
 // and move on rather than masking the original Apply error.
 func cleanupRemote(container, path string) {
 	_, _ = incus.Exec(container, "rm", "-rf", path)
+}
+
+// readLoginEnv runs `bash -lc env` in the container and parses the output
+// into a map. Login shell so that /etc/profile.d/*.sh is sourced — that's
+// where prior Features persist their PATH additions (via the
+// 00-restore-env.sh trick), and the next Feature's ${PATH} expansion must
+// see them. An error is returned untouched; the caller decides whether to
+// soft-fail.
+func readLoginEnv(container string) (map[string]string, error) {
+	out, err := incus.Exec(container, "bash", "-lc", "env")
+	if err != nil {
+		return nil, err
+	}
+	env := map[string]string{}
+	for _, line := range strings.Split(string(out), "\n") {
+		i := strings.IndexByte(line, '=')
+		if i <= 0 {
+			continue
+		}
+		env[line[:i]] = line[i+1:]
+	}
+	return env, nil
+}
+
+// expandContainerEnv substitutes ${VAR} (and $VAR) references in each
+// containerEnv value against current. Unset names expand to "" — matching
+// shell semantics and devcontainers/cli, where a Feature that writes
+// `PATH: ${PATH}:/extra` against an empty current ends up with
+// `PATH=:/extra` (harmless leading empty entry, vs. a literal `${PATH}`
+// which would brick every later exec).
+//
+// Nil or empty raw returns nil.
+func expandContainerEnv(raw, current map[string]string) map[string]string {
+	if len(raw) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(raw))
+	for k, v := range raw {
+		out[k] = os.Expand(v, func(name string) string {
+			return current[name]
+		})
+	}
+	return out
 }
 
 func sortedKeys(m map[string]string) []string {

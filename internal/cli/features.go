@@ -140,21 +140,13 @@ func applyRepoFeatures(
 		if err := devcontainer.Apply(containerName, ff.Feature, runtimeEnv, out); err != nil {
 			return nil, fmt.Errorf("feature %s: %w", ff.Ref, err)
 		}
-		// Feature.Metadata.ContainerEnv is intentionally NOT mirrored
-		// onto Incus environment.* keys. Upstream Features (e.g.
-		// ghcr.io/devcontainers/features/node) routinely write
-		// `PATH=/usr/local/share/nvm/current/bin:${PATH}` style
-		// values; ahjo's literal-pass-through policy (matching
-		// cfg.ApplyContainerEnv) would store the unexpanded
-		// `${PATH}` substring as the new PATH — every subsequent
-		// `incus exec` then fails with "command not found".
-		//
-		// Features in practice integrate via shell rc updates from
-		// install.sh (Node feature appends to /etc/bash.bashrc), and
-		// ahjo's exec paths (`ahjo shell`, `ahjo claude`, lifecycle
-		// hooks via `bash -c`/`bash -l`) source those rc files. So
-		// dropping the metadata.containerEnv mirror trades a hazard
-		// (PATH corruption) for a non-loss in the typical case.
+		// Apply persists the Feature's containerEnv onto the container
+		// as Incus environment.* keys (with ${VAR} expanded against
+		// the current login env), so every subsequent `incus exec` —
+		// the next Feature's install.sh, warm install, lifecycle
+		// commands, the user's shell — inherits the new PATH/GOROOT/…
+		// Features compose: Feature N's expanded values are visible
+		// when Feature N+1's containerEnv is expanded.
 	}
 	return newConsent, nil
 }

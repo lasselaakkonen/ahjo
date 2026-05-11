@@ -399,6 +399,26 @@ func wireBranchContainer(containerName, hostKeysDir string) error {
 			return fmt.Errorf("set %s: %w", kv[0], err)
 		}
 	}
+	// Pre-seed the user-session env on the container so every `incus exec`
+	// inherits HOME/USER/LOGNAME/SHELL the way a Docker exec inherits them
+	// from the image's ENV layer. Without these, `incus exec --user 1000`
+	// hands the child an empty HOME — bash -l skips ~/.profile, and tools
+	// that key off HOME (go's GOCACHE, gh's token store, claude's config)
+	// either refuse to start or write to the wrong place. Docker dev
+	// containers get these from the image; Incus system containers don't,
+	// so ahjo sets them at the container level once. `incus copy` carries
+	// environment.* keys to branch containers, so branches inherit
+	// automatically.
+	for k, v := range map[string]string{
+		"HOME":    "/home/ubuntu",
+		"USER":    "ubuntu",
+		"LOGNAME": "ubuntu",
+		"SHELL":   "/bin/bash",
+	} {
+		if err := incus.ConfigSet(containerName, "environment."+k, v); err != nil {
+			return fmt.Errorf("set environment.%s: %w", k, err)
+		}
+	}
 	if err := incus.AddDiskDevice(
 		containerName, "ahjo-host-keys",
 		hostKeysDir, "/etc/ssh/ahjo-host-keys",

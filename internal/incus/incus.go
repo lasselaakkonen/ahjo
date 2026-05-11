@@ -536,6 +536,11 @@ func envArgs(env map[string]string) []string {
 // inheriting the caller's stdio. Non-interactive: stdin is the parent's,
 // no force-interactive flag. Use this for one-shot setup commands where
 // the child is expected to exit on its own.
+//
+// HOME/USER/LOGNAME/SHELL come from the container's environment.* config
+// keys (set on container creation by wireBranchContainer), the same way
+// Docker dev containers get them from the image's ENV layer. No per-call
+// env seeding here.
 func ExecAs(name string, uid int, env map[string]string, cwd string, argv ...string) error {
 	args := []string{"exec", name, "--user", strconv.Itoa(uid)}
 	if cwd != "" {
@@ -563,26 +568,12 @@ func ExecAs(name string, uid int, env map[string]string, cwd string, argv ...str
 // for `ahjo shell` / `ahjo claude` so signals + exit code passthrough are
 // automatic via execve.
 //
-// For uid 1000 (the canonical `ubuntu` user) we seed HOME/USER/LOGNAME/SHELL
-// because `incus exec` doesn't read /etc/passwd the way sshd+PAM does — without
-// these, `bash -l` runs with HOME="" and skips ~/.profile, so the user's
-// prompt and rc-driven setup never load. Caller env wins on collision.
+// User-session env (HOME/USER/LOGNAME/SHELL) lives on the container's
+// environment.* config — see ExecAs's note.
 func ExecAttach(name string, uid int, env map[string]string, cwd string, argv ...string) error {
 	bin, err := exec.LookPath("incus")
 	if err != nil {
 		return fmt.Errorf("incus not on PATH: %w", err)
-	}
-	if uid == 1000 {
-		merged := map[string]string{
-			"HOME":    "/home/ubuntu",
-			"USER":    "ubuntu",
-			"LOGNAME": "ubuntu",
-			"SHELL":   "/bin/bash",
-		}
-		for k, v := range env {
-			merged[k] = v
-		}
-		env = merged
 	}
 	cliArgs := []string{"incus", "exec", name, "--force-interactive", "--user", strconv.Itoa(uid)}
 	if cwd != "" {

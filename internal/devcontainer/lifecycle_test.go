@@ -15,8 +15,8 @@ func TestDecodeLifecycle_StringForm(t *testing.T) {
 		t.Fatalf("want 1 step; got %d", len(steps))
 	}
 	got := strings.Join(steps[0].argv, " ")
-	if got != "bash -c echo hi" {
-		t.Fatalf("argv = %q, want %q", got, "bash -c echo hi")
+	if got != "bash -lc echo hi" {
+		t.Fatalf("argv = %q, want %q", got, "bash -lc echo hi")
 	}
 	if steps[0].label != "" {
 		t.Fatalf("string form should have empty label; got %q", steps[0].label)
@@ -51,7 +51,7 @@ func TestDecodeLifecycle_ObjectForm_StableOrder(t *testing.T) {
 	if steps[0].label != "(first)" {
 		t.Fatalf("first label = %q, want (first)", steps[0].label)
 	}
-	if got := strings.Join(steps[0].argv, " "); got != "bash -c echo one" {
+	if got := strings.Join(steps[0].argv, " "); got != "bash -lc echo one" {
 		t.Fatalf("first argv = %q", got)
 	}
 	if steps[1].label != "(second)" {
