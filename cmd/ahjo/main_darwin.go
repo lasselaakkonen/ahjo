@@ -339,7 +339,7 @@ func lookupAlias(path, alias string) (string, error) {
 // completion so re-runs are idempotent.
 func runMacInit(yes bool) error {
 	if _, err := exec.LookPath("brew"); err != nil {
-		return fmt.Errorf("Homebrew is required to install Lima. Install it from https://brew.sh and re-run `ahjo init`")
+		return fmt.Errorf("homebrew is required to install Lima — install it from https://brew.sh and re-run `ahjo init`")
 	}
 	r := initflow.Runner{Yes: yes, In: os.Stdin, Out: os.Stdout, Err: os.Stderr}
 	return r.Execute(macInitSteps(yes))

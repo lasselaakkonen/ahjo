@@ -50,7 +50,7 @@ var upstreamBaseFeatures = []string{
 // these in the order they appear in embeddedBaseFeatures, after the
 // upstream Features above and before `incus publish`.
 type embeddedFeature struct {
-	id         string
+	id          string
 	materialize func(dst string) error
 }
 

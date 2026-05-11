@@ -28,15 +28,15 @@ import (
 )
 
 const (
-	mirrorDeviceName         = "mirror"
-	mirrorContainerPath      = "/mirror"
-	mirrorRepoPath           = "/repo"
-	mirrorUnit               = "ahjo-mirror.service"
-	mirrorUnitContainerPath  = "/etc/systemd/system/ahjo-mirror.service"
-	mirrorBinPath            = "/usr/local/bin/ahjo-mirror"
-	mirrorDropInDir          = "/etc/systemd/system/ahjo-mirror.service.d"
-	mirrorDropInPath         = "/etc/systemd/system/ahjo-mirror.service.d/flags.conf"
-	mirrorNoSkiplistFlag     = "AHJO_MIRROR_NO_SKIPLIST=1"
+	mirrorDeviceName        = "mirror"
+	mirrorContainerPath     = "/mirror"
+	mirrorRepoPath          = "/repo"
+	mirrorUnit              = "ahjo-mirror.service"
+	mirrorUnitContainerPath = "/etc/systemd/system/ahjo-mirror.service"
+	mirrorBinPath           = "/usr/local/bin/ahjo-mirror"
+	mirrorDropInDir         = "/etc/systemd/system/ahjo-mirror.service.d"
+	mirrorDropInPath        = "/etc/systemd/system/ahjo-mirror.service.d/flags.conf"
+	mirrorNoSkiplistFlag    = "AHJO_MIRROR_NO_SKIPLIST=1"
 )
 
 func newMirrorCmd() *cobra.Command {

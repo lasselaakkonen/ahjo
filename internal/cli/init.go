@@ -371,8 +371,8 @@ func subuidGrantStep() initflow.Step {
 // question 4.
 func inotifySysctlStep() initflow.Step {
 	const (
-		sysctlPath  = "/etc/sysctl.d/99-ahjo.conf"
-		sysctlBody  = "# managed by `ahjo init` — see designdocs/in-container-mirror.md\n" +
+		sysctlPath = "/etc/sysctl.d/99-ahjo.conf"
+		sysctlBody = "# managed by `ahjo init` — see designdocs/in-container-mirror.md\n" +
 			"fs.inotify.max_user_watches=1048576\n" +
 			"fs.inotify.max_queued_events=65536\n"
 	)

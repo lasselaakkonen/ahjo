@@ -48,4 +48,3 @@ func newLsCmd() *cobra.Command {
 		},
 	}
 }
-

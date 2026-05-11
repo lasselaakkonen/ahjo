@@ -158,4 +158,3 @@ func applyRepoFeatures(
 	}
 	return newConsent, nil
 }
-

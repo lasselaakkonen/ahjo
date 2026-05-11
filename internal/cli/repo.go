@@ -227,7 +227,7 @@ func repoAddSetup(slug, primary string, aliases []string, url, defaultBase strin
 		return fmt.Errorf("/repo/.ahjoconfig is no longer supported. " +
 			"Migrate it to .devcontainer/devcontainer.json: " +
 			"`run` → `postCreateCommand`, `forward_env` / `auto_expose` → `customizations.ahjo.*`. " +
-			"See designdocs/adopt-devcontainer-spec.md.")
+			"See designdocs/adopt-devcontainer-spec.md")
 	}
 
 	// Parse devcontainer.json (if present). Docker-flavored fields and
@@ -576,8 +576,8 @@ func pushClaudeConfig(containerName string) error {
 	// single-use refresh token — propagating it to N containers would
 	// reintroduce the cross-container refresh race the design avoids.
 	files := []struct {
-		src, dst     string
-		warnMissing  bool
+		src, dst    string
+		warnMissing bool
 	}{
 		{home + "/.claude/settings.json", "/home/ubuntu/.claude/settings.json", true},
 		{home + "/.claude/CLAUDE.md", "/home/ubuntu/.claude/CLAUDE.md", true},

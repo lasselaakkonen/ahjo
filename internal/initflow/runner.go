@@ -17,7 +17,7 @@ var ErrAborted = errors.New("aborted by user")
 
 // Step is one phase of the init flow.
 type Step struct {
-	Title  string
+	Title string
 	// Skip returns (true, reason) if this step is already done.
 	Skip func() (bool, string, error)
 	// Show is a human-readable preview of what Action will do, printed

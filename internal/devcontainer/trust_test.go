@@ -8,10 +8,10 @@ import (
 
 func TestSourceToGlob(t *testing.T) {
 	cases := map[string]string{
-		"ghcr.io/devcontainers/features/node:1":        "ghcr.io/devcontainers/features/*",
-		"ghcr.io/devcontainers/features/common-utils":  "ghcr.io/devcontainers/features/*",
-		"ghcr.io/foo/bar/baz:2.1":                      "ghcr.io/foo/bar/*",
-		"ghcr.io/foo/single@sha256:abc":                "ghcr.io/foo/*",
+		"ghcr.io/devcontainers/features/node:1":       "ghcr.io/devcontainers/features/*",
+		"ghcr.io/devcontainers/features/common-utils": "ghcr.io/devcontainers/features/*",
+		"ghcr.io/foo/bar/baz:2.1":                     "ghcr.io/foo/bar/*",
+		"ghcr.io/foo/single@sha256:abc":               "ghcr.io/foo/*",
 	}
 	for in, want := range cases {
 		t.Run(in, func(t *testing.T) {
@@ -43,11 +43,11 @@ func TestMatchesGlob(t *testing.T) {
 
 func TestIsCuratedTrusted(t *testing.T) {
 	cases := map[string]bool{
-		"ghcr.io/devcontainers/features/node:1":        true,
-		"ghcr.io/devcontainers/features/common-utils":  true,
-		"ghcr.io/devcontainers/features/sub/x":         false, // * doesn't cross /
-		"ghcr.io/foo/node:1":                           false,
-		"docker.io/devcontainers/features/node:1":      false,
+		"ghcr.io/devcontainers/features/node:1":       true,
+		"ghcr.io/devcontainers/features/common-utils": true,
+		"ghcr.io/devcontainers/features/sub/x":        false, // * doesn't cross /
+		"ghcr.io/foo/node:1":                          false,
+		"docker.io/devcontainers/features/node:1":     false,
 	}
 	for src, want := range cases {
 		if got := IsCuratedTrusted(src); got != want {

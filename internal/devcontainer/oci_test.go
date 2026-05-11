@@ -177,10 +177,9 @@ func TestFetcher_BearerHandshakeAndExtract(t *testing.T) {
 	const token = "test-token-xyz"
 	const digest = "sha256:abc"
 
-	var tokenSrv *httptest.Server
-	tokenSrv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	tokenSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Query().Get("scope") == "" {
-			http.Error(w, "missing scope", 400)
+			http.Error(w, "missing scope", http.StatusBadRequest)
 			return
 		}
 		_ = json.NewEncoder(w).Encode(map[string]string{"token": token})
@@ -190,7 +189,7 @@ func TestFetcher_BearerHandshakeAndExtract(t *testing.T) {
 	registry := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") != "Bearer "+token {
 			w.Header().Set("WWW-Authenticate", `Bearer realm="`+tokenSrv.URL+`",service="test",scope="repository:foo/bar:pull"`)
-			http.Error(w, "unauthorized", 401)
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
 		switch r.URL.Path {

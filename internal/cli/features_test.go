@@ -99,4 +99,3 @@ func TestApplyRepoFeatures_PriorConsentSkipsPrompt(t *testing.T) {
 		t.Fatalf("expected `previously trusted` line; output:\n%s", out.String())
 	}
 }
-

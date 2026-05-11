@@ -1,0 +1,23 @@
+version: "2"
+
+linters:
+  default: standard
+
+  settings:
+    errcheck:
+      # Exclude well-known cleanup / output functions whose error returns are
+      # idiomatically ignored across this codebase. Closing already-written
+      # files, deferred temp-file removal, and writes to stdout/stderr / log
+      # writers don't have a useful recovery path; checking them just adds
+      # noise. Anything else still gets flagged.
+      exclude-functions:
+        - (io.Closer).Close
+        - (*os.File).Close
+        - (*os.File).Write
+        - (*github.com/fsnotify/fsnotify.Watcher).Close
+        - fmt.Fprint
+        - fmt.Fprintf
+        - fmt.Fprintln
+        - os.Setenv
+        - os.Remove
+        - os.RemoveAll

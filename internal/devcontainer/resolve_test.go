@@ -170,10 +170,10 @@ func TestNormalizeOptions(t *testing.T) {
 
 func TestStripRefVersion(t *testing.T) {
 	cases := map[string]string{
-		"ghcr.io/x/y:1":             "ghcr.io/x/y",
-		"ghcr.io/x/y@sha256:abc":    "ghcr.io/x/y",
-		"ghcr.io/x/y":               "ghcr.io/x/y",
-		"localhost:5000/x/y:dev":    "localhost:5000/x/y",
+		"ghcr.io/x/y:1":          "ghcr.io/x/y",
+		"ghcr.io/x/y@sha256:abc": "ghcr.io/x/y",
+		"ghcr.io/x/y":            "ghcr.io/x/y",
+		"localhost:5000/x/y:dev": "localhost:5000/x/y",
 	}
 	for in, want := range cases {
 		t.Run(in, func(t *testing.T) {

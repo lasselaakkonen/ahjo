@@ -159,4 +159,3 @@ func forceExposeAllListening(containerName string, br *registry.Branch) (string,
 	}
 	return fmt.Sprintf("exposed %d port(s)", added), nil
 }
-
