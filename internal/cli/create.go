@@ -92,12 +92,15 @@ func runCreate(repoAlias, branch, base, asAlias string, noFetch bool) error {
 		}
 	}
 
-	from := base
-	if from == "" {
-		from = repo.DefaultBase
+	// Default-base resolves to origin/<DefaultBase> (fresh after the fetch
+	// above), not local <DefaultBase> which drifts. Explicit --base is used
+	// verbatim — may be any revspec (tag, SHA), not just a branch.
+	ref := base
+	if ref == "" {
+		ref = "origin/" + repo.DefaultBase
 	}
-	fmt.Printf("→ git checkout -B %s %s (in container)\n", branch, from)
-	if err := incus.ExecAs(containerName, 1000, nil, paths.RepoMountPath, "git", "checkout", "-B", branch, from); err != nil {
+	fmt.Printf("→ git checkout -B %s %s (in container)\n", branch, ref)
+	if err := incus.ExecAs(containerName, 1000, nil, paths.RepoMountPath, "git", "checkout", "-B", branch, ref); err != nil {
 		return fmt.Errorf("git checkout: %w", err)
 	}
 
