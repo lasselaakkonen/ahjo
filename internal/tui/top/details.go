@@ -59,7 +59,7 @@ func renderRepoDetail(repo registry.Repo, snap snapshot) string {
 	return b.String()
 }
 
-func renderBranchDetail(deps Deps, br registry.Branch, snap snapshot) string {
+func renderBranchDetail(deps Deps, br registry.Branch, snap snapshot, status *branchStatus) string {
 	var b strings.Builder
 	alias := br.Slug
 	if len(br.Aliases) > 0 {
@@ -98,7 +98,56 @@ func renderBranchDetail(deps Deps, br registry.Branch, snap snapshot) string {
 		row("default", "yes")
 	}
 	row("created", br.CreatedAt.Format("2006-01-02 15:04"))
+
+	if snap.containers[br.Slug] {
+		row("git", formatGitStatus(status))
+		row("pr", formatPRStatus(status))
+	}
 	return b.String()
+}
+
+// formatGitStatus turns a cached branchStatus into the one-line value shown
+// next to the "git" label. Returns "…" while the first fetch is outstanding
+// so the user gets immediate feedback that work is happening.
+func formatGitStatus(s *branchStatus) string {
+	if s == nil {
+		return "…"
+	}
+	if s.GitErr != nil {
+		return "error"
+	}
+	if !s.GitChecked {
+		return "…"
+	}
+	parts := []string{}
+	if s.Dirty {
+		parts = append(parts, fmt.Sprintf("dirty (%d)", s.DirtyFiles))
+	} else {
+		parts = append(parts, "clean")
+	}
+	if s.Ahead > 0 {
+		parts = append(parts, fmt.Sprintf("ahead %d", s.Ahead))
+	}
+	if s.Behind > 0 {
+		parts = append(parts, fmt.Sprintf("behind %d", s.Behind))
+	}
+	return strings.Join(parts, " · ")
+}
+
+func formatPRStatus(s *branchStatus) string {
+	if s == nil {
+		return "…"
+	}
+	if s.PRErr != nil {
+		return "error"
+	}
+	if !s.PRChecked {
+		return "…"
+	}
+	if s.PR == nil {
+		return "none"
+	}
+	return fmt.Sprintf("#%d %s · %s", s.PR.Number, strings.ToLower(s.PR.State), s.PR.URL)
 }
 
 func branchesFor(snap snapshot, repoName string) []registry.Branch {

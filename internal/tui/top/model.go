@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 
 	"charm.land/bubbles/v2/help"
 	"charm.land/bubbles/v2/key"
@@ -16,6 +17,12 @@ import (
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 )
+
+// branchStatusStaleness bounds how often we'll re-run `git status` + `gh pr
+// list` for the same branch. Cheap enough that the user perceives the panel
+// as live, but slow enough that holding the arrow keys doesn't fan out into
+// a stampede of `gh` subprocesses.
+const branchStatusStaleness = 10 * time.Second
 
 type focus int
 
@@ -132,6 +139,12 @@ type model struct {
 
 	snap    snapshot
 	loadErr error
+
+	// branchStatus caches the most recent git/PR snapshot per branch slug.
+	// inFlightStatus tracks slugs with an outstanding fetchBranchStatus
+	// goroutine so we don't pile on duplicate subprocesses.
+	branchStatus   map[string]branchStatus
+	inFlightStatus map[string]bool
 }
 
 func (m *model) Init() tea.Cmd {
@@ -146,13 +159,26 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tickMsg:
-		return m, tea.Batch(refreshCmd(m.deps), tickCmd())
+		cmds := []tea.Cmd{refreshCmd(m.deps), tickCmd()}
+		if c := m.maybeRefreshBranchStatus(); c != nil {
+			cmds = append(cmds, c)
+		}
+		return m, tea.Batch(cmds...)
 
 	case snapshotMsg:
 		m.loadErr = msg.err
 		m.snap = msg.snap
 		m.repos.SetItems(repoItemsFrom(m.snap))
 		m.refreshContainers()
+		m.refreshDetails()
+		return m, m.maybeRefreshBranchStatus()
+
+	case branchStatusMsg:
+		if m.branchStatus == nil {
+			m.branchStatus = make(map[string]branchStatus)
+		}
+		m.branchStatus[msg.slug] = msg.status
+		delete(m.inFlightStatus, msg.slug)
 		m.refreshDetails()
 		return m, nil
 
@@ -279,8 +305,14 @@ func (m *model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if selectedRepoName(m.repos) != prevRepo {
 		m.refreshContainers()
 		m.refreshDetails()
+		if c := m.maybeRefreshBranchStatus(); c != nil {
+			cmd = tea.Batch(cmd, c)
+		}
 	} else if selectedBranchSlug(m.containers) != prevWt {
 		m.refreshDetails()
+		if c := m.maybeRefreshBranchStatus(); c != nil {
+			cmd = tea.Batch(cmd, c)
+		}
 	}
 	return m, cmd
 }
@@ -397,7 +429,11 @@ func (m *model) refreshDetails() {
 		}
 	case focusContainers:
 		if w := selectedBranch(m.containers); w != nil {
-			content = renderBranchDetail(m.deps, *w, m.snap)
+			var status *branchStatus
+			if s, ok := m.branchStatus[w.Slug]; ok {
+				status = &s
+			}
+			content = renderBranchDetail(m.deps, *w, m.snap, status)
 		} else if repo := selectedRepo(m.repos); repo != nil {
 			content = renderRepoDetail(*repo, m.snap)
 		} else {
@@ -531,6 +567,49 @@ func (m *model) handleToggleMirror() (tea.Model, tea.Cmd) {
 	}
 	m.startInput(inputMirrorTarget)
 	return m, nil
+}
+
+type branchStatusMsg struct {
+	slug   string
+	status branchStatus
+}
+
+// maybeRefreshBranchStatus returns a tea.Cmd that runs fetchBranchStatus for
+// the currently selected branch when the cache is missing or stale, or nil
+// when there's nothing to do (no branch selected, container missing, fetch
+// already in flight, or cached result is fresh).
+func (m *model) maybeRefreshBranchStatus() tea.Cmd {
+	br := selectedBranch(m.containers)
+	if br == nil {
+		return nil
+	}
+	if !m.snap.containers[br.Slug] {
+		return nil
+	}
+	if m.inFlightStatus[br.Slug] {
+		return nil
+	}
+	if cur, ok := m.branchStatus[br.Slug]; ok && time.Since(cur.FetchedAt) < branchStatusStaleness {
+		return nil
+	}
+	container, err := m.deps.ResolveContainerName(br)
+	if err != nil {
+		return nil
+	}
+	remote := ""
+	if repo := findRepoByName(m.snap.repos, br.Repo); repo != nil {
+		remote = repo.Remote
+	}
+	slug := br.Slug
+	branchRef := br.Branch
+
+	if m.inFlightStatus == nil {
+		m.inFlightStatus = make(map[string]bool)
+	}
+	m.inFlightStatus[slug] = true
+	return func() tea.Msg {
+		return branchStatusMsg{slug: slug, status: fetchBranchStatus(container, remote, branchRef)}
+	}
 }
 
 type actionDoneMsg struct {
