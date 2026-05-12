@@ -33,7 +33,7 @@ func newKeymap() keymap {
 		AddRepo:    key.NewBinding(key.WithKeys("a"), key.WithHelp("a", "add repo")),
 		RemoveRepo: key.NewBinding(key.WithKeys("r"), key.WithHelp("r", "remove repo")),
 
-		NewContainer:    key.NewBinding(key.WithKeys("n"), key.WithHelp("n", "new container")),
+		NewContainer:    key.NewBinding(key.WithKeys("c"), key.WithHelp("c", "create container")),
 		RemoveContainer: key.NewBinding(key.WithKeys("r"), key.WithHelp("r", "remove container")),
 
 		ToggleExpose: key.NewBinding(key.WithKeys("e"), key.WithHelp("e", "toggle expose")),
