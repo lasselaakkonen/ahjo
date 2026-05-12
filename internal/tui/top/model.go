@@ -248,6 +248,11 @@ func (m *model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		case key.Matches(msg, m.keys.RemoveContainer):
 			return m, m.execWorktreeRm()
+		case key.Matches(msg, m.keys.Submit):
+			if it, ok := m.containers.SelectedItem().(containerItem); ok && it.kind == "new" {
+				m.startInput(inputNewContainer)
+				return m, nil
+			}
 		}
 	case focusDetails:
 		switch {
