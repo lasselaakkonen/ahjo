@@ -34,7 +34,7 @@ func newRepoCmd() *cobra.Command {
 		Use:   "repo",
 		Short: "Manage the repo registry",
 	}
-	cmd.AddCommand(newRepoAddCmd(), newRepoLsCmd(), newRepoRmCmd())
+	cmd.AddCommand(newRepoAddCmd(), newRepoLsCmd(), newRepoRmCmd(), newRepoPullCmd())
 	return cmd
 }
 
@@ -795,6 +795,55 @@ func runRepoRm(alias string, force bool) error {
 	}
 	fmt.Printf("removed repo %s\n", repo.Aliases[0])
 	return nil
+}
+
+func newRepoPullCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "pull <repo-alias>",
+		Short: "git pull --ff-only in the repo's default-branch container",
+		Long: `Updates the default-branch container (the COW source for every branch
+container in this repo) against origin. Starts the container if it was
+stopped, pulls fast-forward only, and leaves it running. Failures surface
+verbatim from git — no silent recovery.`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(_ *cobra.Command, args []string) error {
+			return runRepoPull(args[0])
+		},
+	}
+}
+
+func runRepoPull(repoAlias string) error {
+	reg, err := registry.Load()
+	if err != nil {
+		return err
+	}
+	repo := reg.FindRepoByAlias(repoAlias)
+	if repo == nil {
+		return fmt.Errorf("no repo with alias %q (try `ahjo repo ls`)", repoAlias)
+	}
+	if repo.BaseContainerName == "" {
+		return fmt.Errorf("repo %q has no base container; re-add it with `ahjo repo add`", repo.Aliases[0])
+	}
+
+	status, err := incus.ContainerStatus(repo.BaseContainerName)
+	if err != nil {
+		return err
+	}
+	if !strings.EqualFold(status, "Running") {
+		fmt.Printf("→ incus start %s\n", repo.BaseContainerName)
+		if err := incus.Start(repo.BaseContainerName); err != nil {
+			return err
+		}
+		if err := incus.WaitReady(repo.BaseContainerName, 30*time.Second); err != nil {
+			return err
+		}
+	}
+
+	fmt.Printf("→ git pull --ff-only (in %s)\n", repo.BaseContainerName)
+	return incus.ExecAs(
+		repo.BaseContainerName, 1000, nil, paths.RepoMountPath,
+		"git", "pull", "--ff-only",
+	)
 }
 
 // EnsureRepo returns the repo registered under repoAlias. If the repo
