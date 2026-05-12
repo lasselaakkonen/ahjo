@@ -28,12 +28,19 @@ func (r repoItem) FilterValue() string {
 }
 
 // containerItem represents one branch row in the middle column.
+// kind == "new" is the sentinel "+ create container" affordance.
 type containerItem struct {
+	kind  string // "container" | "new"
 	br    registry.Branch
 	state string // "present" | "missing"
 }
 
-func (c containerItem) FilterValue() string { return strings.Join(c.br.Aliases, ",") }
+func (c containerItem) FilterValue() string {
+	if c.kind == "new" {
+		return "create container"
+	}
+	return strings.Join(c.br.Aliases, ",")
+}
 
 // compactDelegate renders a single-line item with a `▸` caret on the focused row.
 type compactDelegate struct {
@@ -85,6 +92,9 @@ func itemLabel(item list.Item) string {
 		}
 		return v.repo.Name
 	case containerItem:
+		if v.kind == "new" {
+			return "＋ create container"
+		}
 		alias := v.br.Slug
 		if len(v.br.Aliases) > 0 {
 			alias = v.br.Aliases[0]
@@ -110,7 +120,8 @@ func repoItemsFrom(snap snapshot) []list.Item {
 }
 
 // containerItemsFor returns the branches of a single repo, with their
-// container-existence state pre-resolved.
+// container-existence state pre-resolved. Always appends the
+// "+ create container" sentinel last.
 func containerItemsFor(snap snapshot, repoName string) []list.Item {
 	var out []list.Item
 	for _, br := range snap.branches {
@@ -121,8 +132,9 @@ func containerItemsFor(snap snapshot, repoName string) []list.Item {
 		if snap.containers[br.Slug] {
 			state = "present"
 		}
-		out = append(out, containerItem{br: br, state: state})
+		out = append(out, containerItem{kind: "container", br: br, state: state})
 	}
+	out = append(out, containerItem{kind: "new"})
 	return out
 }
 
@@ -138,10 +150,11 @@ func selectedRepo(l list.Model) *registry.Repo {
 }
 
 // selectedBranch returns the branch currently highlighted in the middle
-// column, or nil if no item is highlighted.
+// column, or nil if no item is highlighted (or the "+ create container"
+// sentinel is selected).
 func selectedBranch(l list.Model) *registry.Branch {
 	it, ok := l.SelectedItem().(containerItem)
-	if !ok {
+	if !ok || it.kind != "container" {
 		return nil
 	}
 	b := it.br
