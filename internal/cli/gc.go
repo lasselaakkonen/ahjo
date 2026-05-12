@@ -47,7 +47,7 @@ func newGCCmd() *cobra.Command {
 			}
 			for _, br := range stale {
 				alias := br.Aliases[0]
-				if err := runRm(alias, false); err != nil {
+				if err := runRm(alias, false, true); err != nil {
 					fmt.Fprintf(cobraOutErr(), "warn: rm %s: %v\n", alias, err)
 				}
 			}
