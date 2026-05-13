@@ -65,6 +65,11 @@ You are reviewing two PRs against `acme-api` and prototyping a feature on `acme-
 # 1. Register the repos. ahjo bare-clones them into ~/.ahjo/repos/ and
 #    auto-aliases each by <owner>/<repo>. Use --as to add a friendlier alias.
 ahjo repo add git@github.com:acme/api.git           # alias: acme/api
+#   → after clone, ahjo asks for a GitHub PAT to forward into containers
+#     for this repo via $GH_TOKEN. Prefer a fine-grained PAT scoped to
+#     JUST this repo (Contents + PRs + Issues + Metadata):
+#         https://github.com/settings/personal-access-tokens/new
+#     Press Enter to skip; set later with `ahjo repo set-token acme/api`.
 ahjo repo add git@github.com:acme/web.git \
   --default-base develop --as web                   # aliases: acme/web, web
 
@@ -122,6 +127,8 @@ State lives under `~/.ahjo/` (registry, ports, host keys, profiles). The Mac shi
 | `ahjo repo add <git-url> [--as <alias>] [--default-base <branch>]` | Register a repo and bare-clone it under `~/.ahjo/repos/`. Auto alias is `<owner>/<repo>` from the URL; `--as` adds a second alias. On collision (e.g. github vs gitlab `acme/api`), ahjo suffixes `-2`/`-3`/… |
 | `ahjo repo ls` | List registered repos with their aliases. |
 | `ahjo repo rm <alias> [--force]` | Drop a repo by any of its aliases. Refuses if worktrees still exist. |
+| `ahjo repo set-token <alias>` | Set/rotate the GitHub PAT forwarded into containers for one repo. Hidden-input prompt; stored at `~/.ahjo/repo-env/<slug>.env` (mode 0600). Use a fine-grained PAT scoped to the repo so autonomous agents can't reach anything else. |
+| `ahjo env set KEY [VALUE]` / `get` / `unset` / `list [--show]` | Read/write `~/.ahjo/.env`. Keys listed in `forward_env` (default: `CLAUDE_CODE_OAUTH_TOKEN`, `GH_TOKEN`) are forwarded into every container. Omit `VALUE` to prompt with hidden input. Per-repo `.env` (via `repo set-token`) takes precedence over the global file. |
 | `ahjo create <repo-alias> <branch> [--as <alias>] [--base <ref>] [--no-fetch]` | Create a COW branch container by copying the repo's default container (`incus copy`) and checking out `<branch>` inside it. Auto alias is `<repo-primary-alias>@<branch>`; `--as` adds a second alias. Idempotent. |
 | `ahjo shell <alias> [--update]` | Start the container if needed, wire SSH proxy + sshd, attach an interactive bash via `incus exec --force-interactive` as the in-container `ubuntu` user. `--update` shuts down and deletes the existing container first so the next attach builds a fresh one from the current `ahjo-base` image; the host keys, registry entry, and ssh port are preserved. |
 | `ahjo claude <alias> [--update]` | Same prep as `ahjo shell`, but launches `claude` inside the container instead of dropping to a shell. |

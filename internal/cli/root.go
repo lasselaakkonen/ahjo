@@ -27,6 +27,7 @@ func NewRoot(version string) *cobra.Command {
 		newTopCmd(),
 		newRmCmd(),
 		newGCCmd(),
+		newEnvCmd(),
 		newDoctorCmd(),
 		newNukeCmd(),
 	)

@@ -72,10 +72,18 @@ func HostKeysDir() string    { return filepath.Join(AhjoDir(), "host-keys") }
 
 func SlugHostKeysDir(slug string) string { return filepath.Join(HostKeysDir(), slug) }
 
+// RepoEnvDir holds per-repo .env files (one per slug, mode 0600). Each file
+// is layered over ~/.ahjo/.env by branchEnv so PATs scoped to one repo never
+// leak into containers for another repo.
+func RepoEnvDir() string { return filepath.Join(AhjoDir(), "repo-env") }
+
+// SlugEnvPath is the per-repo .env file for slug.
+func SlugEnvPath(slug string) string { return filepath.Join(RepoEnvDir(), slug+".env") }
+
 // EnsureSkeleton creates the ~/.ahjo/ directory tree (idempotent).
 func EnsureSkeleton() error {
 	for _, d := range []string{
-		AhjoDir(), HostKeysDir(),
+		AhjoDir(), HostKeysDir(), RepoEnvDir(),
 	} {
 		if err := os.MkdirAll(d, 0o755); err != nil {
 			return fmt.Errorf("mkdir %s: %w", d, err)

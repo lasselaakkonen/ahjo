@@ -22,7 +22,7 @@ const Version = 1
 // see at a glance which side a field applies to.
 type Config struct {
 	Version    int              `toml:"version"`
-	ForwardEnv []string         `toml:"forward_env"` // appended to template's defaults
+	ForwardEnv []string         `toml:"forward_env"` // unioned with binary defaults plus per-repo customizations.ahjo.forward_env
 	PortRange  Range            `toml:"port_range"`
 	AutoExpose AutoExposeConfig `toml:"auto_expose"`
 	Mac        MacConfig        `toml:"mac"` // host-only; ignored in the VM
@@ -60,7 +60,7 @@ func defaults() *Config {
 	enabled := true
 	return &Config{
 		Version:    Version,
-		ForwardEnv: []string{"CLAUDE_CODE_OAUTH_TOKEN"},
+		ForwardEnv: []string{"CLAUDE_CODE_OAUTH_TOKEN", "GH_TOKEN"},
 		PortRange:  Range{Min: 10000, Max: 10999},
 		AutoExpose: AutoExposeConfig{Enabled: &enabled, MinPort: DefaultAutoExposeMinPort},
 	}
@@ -86,6 +86,19 @@ func Load() (*Config, error) {
 	}
 	if len(c.ForwardEnv) == 0 {
 		c.ForwardEnv = defaults().ForwardEnv
+	} else {
+		// Union with binary defaults so existing users picked up GH_TOKEN
+		// (and any future addition) without hand-editing config.toml. Order
+		// preserves the user's entries first; defaults are appended.
+		present := map[string]bool{}
+		for _, k := range c.ForwardEnv {
+			present[k] = true
+		}
+		for _, k := range defaults().ForwardEnv {
+			if !present[k] {
+				c.ForwardEnv = append(c.ForwardEnv, k)
+			}
+		}
 	}
 	if c.PortRange.Min == 0 && c.PortRange.Max == 0 {
 		c.PortRange = defaults().PortRange

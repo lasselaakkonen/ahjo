@@ -1,5 +1,43 @@
 # Changelog
 
+## Unreleased — per-repo GH_TOKEN forwarding
+
+### Added
+
+- `ahjo env {set,get,unset,list}` — generic KV access to `~/.ahjo/.env`.
+  `set KEY` (no value) prompts with hidden input via `term.ReadPassword`
+  so secrets never enter shell history; piping `echo $VAL | ahjo env set
+  KEY` still works (with a stderr note about the non-TTY read).
+- `ahjo repo set-token <alias>` — set/rotate a per-repo GitHub PAT stored
+  at `~/.ahjo/repo-env/<slug>.env` (mode 0600). The PAT is forwarded into
+  every container for the repo as `$GH_TOKEN`, with the per-repo file
+  taking precedence over the global `~/.ahjo/.env`.
+- `ahjo repo add` now prompts for a fine-grained GitHub PAT after clone,
+  before container shutdown. Skipped on `--yes`, non-TTY stdin, or empty
+  paste; an existing PAT for the slug is detected and the prompt is
+  silently skipped on re-runs. Permissive validation (warns + accepts on
+  non-canonical prefixes so enterprise hosts work).
+- `GH_TOKEN` added to the default `forward_env`. Existing `~/.ahjo/
+  config.toml` users get it via a union-with-defaults migration on
+  `Load()` — no manual edits required.
+- `ahjo doctor` gains a `checkAnyGHToken()` warn-level check surveying
+  per-repo PATs and the global fallback; lists slugs missing a PAT.
+
+### Internal
+
+- `internal/tokenstore` promoted from "Claude OAuth token writer" to a
+  generic KV store. New: `Set/Get/Unset/List` (operates on `~/.ahjo/
+  .env`) plus `SetAt/GetAt/UnsetAt/ListAt/LoadInto` taking an explicit
+  path so per-repo `.env` files share the same machinery. `SetToken` and
+  `TokenEnv` retained as the Claude shim.
+- `internal/paths`: `RepoEnvDir()` and `SlugEnvPath(slug)` added;
+  `EnsureSkeleton` creates `~/.ahjo/repo-env/`.
+- `branchEnv` (shell/claude attach path) now layers `~/.ahjo/repo-env/<
+  slug>.env` over the process env, with the slug resolved from the
+  container name via the registry.
+- `ahjo repo rm <alias>` removes the per-repo `.env` file as part of
+  cleanup.
+
 ## Unreleased — adopt-devcontainer-spec Phase 3: drop COI residue
 
 ### Changed

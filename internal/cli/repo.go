@@ -22,6 +22,7 @@ import (
 	"github.com/lasselaakkonen/ahjo/internal/ports"
 	"github.com/lasselaakkonen/ahjo/internal/registry"
 	sshpkg "github.com/lasselaakkonen/ahjo/internal/ssh"
+	"github.com/lasselaakkonen/ahjo/internal/tokenstore"
 )
 
 // featureConsentForNew is the seed FeatureConsent map for a not-yet-
@@ -34,13 +35,14 @@ func newRepoCmd() *cobra.Command {
 		Use:   "repo",
 		Short: "Manage the repo registry",
 	}
-	cmd.AddCommand(newRepoAddCmd(), newRepoLsCmd(), newRepoRmCmd(), newRepoPullCmd())
+	cmd.AddCommand(newRepoAddCmd(), newRepoLsCmd(), newRepoRmCmd(), newRepoPullCmd(), newRepoSetTokenCmd())
 	return cmd
 }
 
 func newRepoAddCmd() *cobra.Command {
 	var defaultBase string
 	var asAlias string
+	var yes bool
 	cmd := &cobra.Command{
 		Use:   "add <git-url>",
 		Short: "Register a repo: clone it inside a fresh ahjo-base container at /repo and warm-install dependencies",
@@ -54,21 +56,22 @@ subsequent ` + "`ahjo create`" + ` clones — its node_modules and pnpm store su
 into branch containers via btrfs reflinks, eliminating the cold-install tax.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(_ *cobra.Command, args []string) error {
-			return runRepoAdd(args[0], asAlias, defaultBase)
+			return runRepoAdd(args[0], asAlias, defaultBase, yes)
 		},
 	}
 	cmd.Flags().StringVar(&defaultBase, "default-base", "", "default branch to base new branches on (default: detect from the remote's HEAD)")
 	cmd.Flags().StringVar(&asAlias, "as", "", "additional alias for this repo (must not collide with any existing alias)")
+	cmd.Flags().BoolVarP(&yes, "yes", "y", false, "skip the GitHub PAT prompt (the repo is added without a per-repo GH_TOKEN; set one later with `ahjo repo set-token`)")
 	return cmd
 }
 
-func runRepoAdd(input, asAlias, defaultBase string) error {
+func runRepoAdd(input, asAlias, defaultBase string, yes bool) error {
 	url := resolveRepoURL(input)
 	slug, primary, aliases, err := repoAddPlan(url, asAlias)
 	if err != nil {
 		return err
 	}
-	return repoAddSetup(slug, primary, aliases, url, defaultBase)
+	return repoAddSetup(slug, primary, aliases, url, defaultBase, yes)
 }
 
 // resolveRepoURL accepts either a git URL or a bare "<owner>/<repo>" alias
@@ -130,7 +133,7 @@ func repoAddPlan(url, asAlias string) (slug, primary string, aliases []string, e
 // Lockfile is acquired only for the final registry write; the long
 // container/network operations run unlocked so concurrent ahjo invocations
 // (e.g. `ahjo top` refresh) aren't starved.
-func repoAddSetup(slug, primary string, aliases []string, url, defaultBase string) error {
+func repoAddSetup(slug, primary string, aliases []string, url, defaultBase string, yes bool) error {
 	cfg, err := config.Load()
 	if err != nil {
 		return err
@@ -209,6 +212,12 @@ func repoAddSetup(slug, primary string, aliases []string, url, defaultBase strin
 	fmt.Printf("→ git clone %s %s (in container as ubuntu)\n", url, paths.RepoMountPath)
 	if err := incus.ExecAs(containerName, 1000, nil, "/", "git", "clone", url, paths.RepoMountPath); err != nil {
 		return wrapCloneErr(err)
+	}
+
+	// Per-repo GitHub token prompt. Non-fatal: skipped on --yes / non-TTY /
+	// already-set / empty paste. See `ahjo repo set-token` to add later.
+	if err := promptRepoGHToken(slug, primary, yes); err != nil {
+		return err
 	}
 
 	if defaultBase == "" {
@@ -786,6 +795,12 @@ func runRepoRm(alias string, force bool) error {
 			fmt.Fprintf(cobraOutErr(), "warn: incus delete %s: %v\n", name, err)
 		}
 	}
+	// Remove the per-repo .env (mode 0600 secret). Best-effort: a missing
+	// file is fine, a permission failure is logged but doesn't block the
+	// rest of the cleanup.
+	if err := os.Remove(paths.SlugEnvPath(repo.Name)); err != nil && !os.IsNotExist(err) {
+		fmt.Fprintf(cobraOutErr(), "warn: remove %s: %v\n", paths.SlugEnvPath(repo.Name), err)
+	}
 	reg.RemoveRepo(repo.Name)
 	if err := reg.Save(); err != nil {
 		return err
@@ -867,7 +882,7 @@ func EnsureRepo(repoAlias string) (*registry.Repo, error) {
 
 	url := pickGitHubURL(owner, name)
 	fmt.Printf("repo %q not registered; adding from %s...\n", repoAlias, url)
-	if err := runRepoAdd(url, "", ""); err != nil {
+	if err := runRepoAdd(url, "", "", false); err != nil {
 		return nil, err
 	}
 
@@ -918,6 +933,120 @@ func probeSSHReachable(url string) bool {
 	cmd.Stdout = io.Discard
 	cmd.Stderr = io.Discard
 	return cmd.Run() == nil
+}
+
+// promptRepoGHToken interactively asks for a GitHub PAT to forward into
+// containers for this repo. Non-fatal in every skip path: --yes, non-TTY
+// stdin, an existing per-repo PAT, and an empty paste all return nil.
+//
+// We prompt at `ahjo repo add` rather than `ahjo init` because least
+// privilege wants a fine-grained PAT scoped to *this* repo — a question only
+// answerable once the repo identity exists. Fine-grained PATs cannot be
+// API-minted; the user creates them through the GitHub UI.
+func promptRepoGHToken(slug, primary string, yes bool) error {
+	envPath := paths.SlugEnvPath(slug)
+	if _, found, err := tokenstore.GetAt(envPath, tokenstore.GHTokenEnv); err != nil {
+		return err
+	} else if found {
+		fmt.Fprintln(cobraOut(), "  → GH_TOKEN already set for this repo; skipping prompt.")
+		return nil
+	}
+	if yes {
+		return nil
+	}
+	if !isTerminal(os.Stdin) {
+		return nil
+	}
+
+	owner, name, ok := splitRepoAlias(primary)
+	scopeURL := "https://github.com/settings/personal-access-tokens/new"
+	scopeNote := ""
+	if ok {
+		scopeNote = fmt.Sprintf("        Repository access:  Only select repositories → %s/%s\n", owner, name)
+	}
+
+	out := cobraOut()
+	fmt.Fprintln(out)
+	fmt.Fprintln(out, "Set a GitHub token for this repo? gh inside containers will use it.")
+	fmt.Fprintln(out)
+	fmt.Fprintln(out, "  Fine-grained PAT (recommended) — scope it to JUST this repo:")
+	fmt.Fprintln(out, "    → "+scopeURL)
+	if scopeNote != "" {
+		fmt.Fprint(out, scopeNote)
+	}
+	fmt.Fprintln(out, "        Permissions:        Contents (read or RW), Pull requests (RW),")
+	fmt.Fprintln(out, "                            Issues (RW), Metadata (read — required)")
+	fmt.Fprintln(out, "        Expiration:         your call")
+	fmt.Fprintln(out)
+	fmt.Fprintln(out, "  Classic PAT — broader, easier, less safe.")
+	fmt.Fprintln(out)
+
+	tok, err := readSecret(os.Stdin, out, cobraOutErr(), "Paste a token now, or press Enter to skip: ")
+	if err != nil {
+		return err
+	}
+	if tok == "" {
+		fmt.Fprintln(out, "  → skipped. `gh` inside containers for this repo will require manual auth.")
+		fmt.Fprintln(out, "     Add later:  ahjo repo set-token "+primary)
+		fmt.Fprintln(out, "     Or globally (warning: exposes all your repos):")
+		fmt.Fprintln(out, "       ahjo env set GH_TOKEN \"$(gh auth token)\"")
+		return nil
+	}
+	return saveRepoGHToken(slug, tok)
+}
+
+// saveRepoGHToken validates tok permissively and writes it to the per-repo
+// .env file. The non-canonical hint is printed to stderr but doesn't reject.
+func saveRepoGHToken(slug, tok string) error {
+	canonical, hint, err := looksLikeGitHubToken(tok)
+	if err != nil {
+		return fmt.Errorf("token rejected: %w", err)
+	}
+	if !canonical && hint != "" {
+		fmt.Fprintln(cobraOutErr(), "warn: "+hint)
+	}
+	envPath := paths.SlugEnvPath(slug)
+	if err := tokenstore.SetAt(envPath, tokenstore.GHTokenEnv, tok); err != nil {
+		return fmt.Errorf("save token: %w", err)
+	}
+	fmt.Fprintf(cobraOut(), "  → saved to %s\n", envPath)
+	return nil
+}
+
+func newRepoSetTokenCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "set-token <alias>",
+		Short: "Set or rotate the GitHub PAT forwarded into containers for one repo",
+		Long: `Prompts (with hidden input) for a GitHub token and stores it at
+~/.ahjo/repo-env/<slug>.env (mode 0600). The token is forwarded into every
+container for this repo via GH_TOKEN.
+
+Prefer fine-grained PATs scoped to a single repo:
+  → https://github.com/settings/personal-access-tokens/new`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(_ *cobra.Command, args []string) error {
+			return runRepoSetToken(args[0])
+		},
+	}
+}
+
+func runRepoSetToken(alias string) error {
+	reg, err := registry.Load()
+	if err != nil {
+		return err
+	}
+	repo := reg.FindRepoByAlias(alias)
+	if repo == nil {
+		return fmt.Errorf("no repo with alias %q (try `ahjo repo ls`)", alias)
+	}
+	tok, err := readSecret(os.Stdin, cobraOut(), cobraOutErr(), fmt.Sprintf("Paste GitHub token for %s: ", repo.Aliases[0]))
+	if err != nil {
+		return err
+	}
+	if tok == "" {
+		return fmt.Errorf("no token entered")
+	}
+	return saveRepoGHToken(repo.Name, tok)
 }
 
 // wrapCloneErr decorates an in-container clone failure with a Lima-aware hint

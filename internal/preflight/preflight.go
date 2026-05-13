@@ -6,10 +6,13 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strings"
 
 	"github.com/lasselaakkonen/ahjo/internal/git"
 	"github.com/lasselaakkonen/ahjo/internal/incus"
 	"github.com/lasselaakkonen/ahjo/internal/paths"
+	"github.com/lasselaakkonen/ahjo/internal/registry"
+	"github.com/lasselaakkonen/ahjo/internal/tokenstore"
 )
 
 type Severity int
@@ -36,6 +39,7 @@ func Run() []Problem {
 	ps = append(ps, checkBinary("ssh-keygen", "sudo apt install openssh-client"))
 	ps = append(ps, checkAhjoDir())
 	ps = append(ps, checkOAuthToken())
+	ps = append(ps, checkAnyGHToken())
 	ps = append(ps, checkGitIdentity())
 	ps = append(ps, checkStoragePool())
 	ps = append(ps, checkAhjoBase())
@@ -84,6 +88,65 @@ func checkOAuthToken() Problem {
 		}
 	}
 	return Problem{Severity: OK, Title: "CLAUDE_CODE_OAUTH_TOKEN set"}
+}
+
+// checkAnyGHToken surveys per-repo PATs (~/.ahjo/repo-env/<slug>.env) and
+// the global GH_TOKEN. A warn fires when no registered repo has a per-repo
+// PAT *and* no global GH_TOKEN is set, since that means `gh` won't work in
+// any container. Repos without their own PAT are listed so the user can
+// decide which ones to set.
+func checkAnyGHToken() Problem {
+	reg, err := registry.Load()
+	if err != nil {
+		return Problem{Severity: Warn, Title: "could not load registry for GH_TOKEN survey", Detail: err.Error()}
+	}
+	globalSet := false
+	if v, ok, err := tokenstore.Get(tokenstore.GHTokenEnv); err == nil && ok && v != "" {
+		globalSet = true
+	} else if os.Getenv(tokenstore.GHTokenEnv) != "" {
+		globalSet = true
+	}
+	var withPAT, withoutPAT []string
+	for i := range reg.Repos {
+		slug := reg.Repos[i].Name
+		_, found, _ := tokenstore.GetAt(paths.SlugEnvPath(slug), tokenstore.GHTokenEnv)
+		if found {
+			withPAT = append(withPAT, slug)
+		} else {
+			withoutPAT = append(withoutPAT, slug)
+		}
+	}
+	if len(reg.Repos) == 0 {
+		if globalSet {
+			return Problem{Severity: OK, Title: "GH_TOKEN set globally (no repos registered)"}
+		}
+		return Problem{Severity: OK, Title: "no repos registered; GH_TOKEN survey skipped"}
+	}
+	if len(withPAT) > 0 && len(withoutPAT) == 0 {
+		return Problem{Severity: OK, Title: fmt.Sprintf("per-repo GH_TOKEN set for all %d repo(s)", len(withPAT))}
+	}
+	if globalSet && len(withoutPAT) > 0 {
+		return Problem{
+			Severity: Warn,
+			Title:    "global GH_TOKEN covers repos without their own PAT — broad scope",
+			Detail:   fmt.Sprintf("no per-repo PAT for: %s", strings.Join(withoutPAT, ", ")),
+			Fix:      "ahjo repo set-token <alias>  # fine-grained PAT scoped to one repo",
+		}
+	}
+	if !globalSet && len(withPAT) > 0 {
+		return Problem{
+			Severity: Warn,
+			Title:    "some repos have no GH_TOKEN and no global fallback",
+			Detail:   fmt.Sprintf("missing for: %s", strings.Join(withoutPAT, ", ")),
+			Fix:      "ahjo repo set-token <alias>",
+		}
+	}
+	return Problem{
+		Severity: Warn,
+		Title:    "no GH_TOKEN set (per-repo or global); `gh` inside containers will be unauthenticated",
+		Detail:   fmt.Sprintf("registered repos: %s", strings.Join(withoutPAT, ", ")),
+		Fix:      "ahjo repo set-token <alias>  # or `ahjo env set GH_TOKEN \"$(gh auth token)\"` (broad)",
+	}
 }
 
 // checkGitIdentity reports whether ahjo can resolve a host git identity to

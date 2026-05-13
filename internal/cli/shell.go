@@ -14,6 +14,7 @@ import (
 	"github.com/lasselaakkonen/ahjo/internal/lockfile"
 	"github.com/lasselaakkonen/ahjo/internal/paths"
 	"github.com/lasselaakkonen/ahjo/internal/registry"
+	"github.com/lasselaakkonen/ahjo/internal/tokenstore"
 )
 
 func newShellCmd() *cobra.Command {
@@ -224,19 +225,32 @@ func applyRawIdmap(containerName string) error {
 
 // branchEnv builds the env map propagated into the container at attach time:
 // global cfg.ForwardEnv ∪ customizations.ahjo.forward_env from the parsed
-// devcontainer.json, resolved against the host's current environment. Keys
-// that aren't set on the host fall through silently. dcConf may be nil when
-// the repo has no devcontainer.json; the global default still applies.
+// devcontainer.json, resolved against the per-repo .env (highest precedence)
+// then the host's current environment. Keys that aren't set anywhere fall
+// through silently. dcConf may be nil when the repo has no devcontainer.json;
+// the global default still applies.
+//
+// Per-repo overrides come from ~/.ahjo/repo-env/<slug>.env, populated by
+// `ahjo repo add` (PAT prompt) and `ahjo repo set-token`. The slug is
+// resolved from containerName via the registry; if no row exists (e.g. a
+// brand-new container during `repo add`) only the process env is consulted.
 func branchEnv(containerName string, dcConf *devcontainer.Config) (map[string]string, error) {
 	gcfg, err := config.Load()
 	if err != nil {
 		return nil, err
 	}
-	_ = containerName // dcConf is read by the caller; signature retained for symmetry
 	keys := append([]string(nil), gcfg.ForwardEnv...)
 	if dcConf != nil {
 		keys = append(keys, dcConf.Customizations.Ahjo.ForwardEnv...)
 	}
+
+	repoEnv := map[string]string{}
+	if slug := slugForContainer(containerName); slug != "" {
+		if err := tokenstore.LoadInto(paths.SlugEnvPath(slug), repoEnv); err != nil {
+			fmt.Fprintf(cobraOutErr(), "warn: load per-repo env for %s: %v\n", slug, err)
+		}
+	}
+
 	env := make(map[string]string, len(keys))
 	seen := make(map[string]struct{}, len(keys))
 	for _, k := range keys {
@@ -247,9 +261,39 @@ func branchEnv(containerName string, dcConf *devcontainer.Config) (map[string]st
 			continue
 		}
 		seen[k] = struct{}{}
+		if v, ok := repoEnv[k]; ok {
+			env[k] = v
+			continue
+		}
 		if v, ok := os.LookupEnv(k); ok {
 			env[k] = v
 		}
 	}
 	return env, nil
+}
+
+// slugForContainer maps an Incus container name back to the repo slug that
+// owns it. The repo container is "ahjo-<slug>" and branch containers are
+// "ahjo-<slug>-<branch-safe>"; both rows are queried via the registry rather
+// than parsed out of the name (branch slugs themselves contain hyphens, so
+// string-splitting is ambiguous).
+func slugForContainer(containerName string) string {
+	if containerName == "" {
+		return ""
+	}
+	reg, err := registry.Load()
+	if err != nil {
+		return ""
+	}
+	for i := range reg.Repos {
+		if reg.Repos[i].BaseContainerName == containerName {
+			return reg.Repos[i].Name
+		}
+	}
+	for i := range reg.Branches {
+		if reg.Branches[i].IncusName == containerName {
+			return reg.Branches[i].Repo
+		}
+	}
+	return ""
 }
