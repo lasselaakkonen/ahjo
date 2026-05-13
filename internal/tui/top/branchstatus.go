@@ -1,7 +1,9 @@
 package top
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os/exec"
 	"regexp"
@@ -48,7 +50,13 @@ func fetchBranchStatus(container, remote, branchRef string) branchStatus {
 	bs := branchStatus{FetchedAt: time.Now()}
 
 	if container != "" {
-		out, err := exec.Command("incus", "exec", container, "--", "git", "-C", "/repo", "status", "--porcelain=v1", "--branch").Output()
+		// -c safe.directory=/repo: incus exec runs as root, but /repo is
+		// owned by the container's ubuntu user — without this override git
+		// refuses with "fatal: detected dubious ownership". Scoped to /repo
+		// rather than "*" so it doesn't loosen anything unrelated.
+		out, err := runCapturing("incus", "exec", container, "--",
+			"git", "-c", "safe.directory=/repo",
+			"-C", "/repo", "status", "--porcelain=v1", "--branch")
 		if err != nil {
 			bs.GitErr = err
 		} else {
@@ -58,15 +66,19 @@ func fetchBranchStatus(container, remote, branchRef string) branchStatus {
 	}
 
 	owner, name, ok := parseGitHubRepo(remote)
-	if ok && branchRef != "" {
-		// --state all so we surface merged/closed PRs too; --limit 1 because
-		// gh sorts newest-first and we only want the most recent for this head.
-		out, err := exec.Command("gh", "pr", "list",
+	if ok && branchRef != "" && container != "" {
+		// gh runs inside the container so the host (lima VM on macOS) doesn't
+		// need its own gh+auth setup — the container's devcontainer feature
+		// already provides both. --state all surfaces merged/closed PRs too;
+		// --limit 1 because gh sorts newest-first and we only want the most
+		// recent for this head.
+		out, err := runCapturing("incus", "exec", container, "--",
+			"gh", "pr", "list",
 			"-R", owner+"/"+name,
 			"--head", branchRef,
 			"--state", "all",
 			"--limit", "1",
-			"--json", "number,url,state,title").Output()
+			"--json", "number,url,state,title")
 		if err != nil {
 			bs.PRErr = err
 		} else {
@@ -83,6 +95,52 @@ func fetchBranchStatus(container, remote, branchRef string) branchStatus {
 		}
 	}
 	return bs
+}
+
+// runCapturing wraps exec.Command so we keep stdout for parsing AND attach
+// stderr to the returned error. The default `.Output()` discards stderr,
+// which is exactly the text that makes a failure interpretable ("Error:
+// Container is not running", "gh auth login required", etc.). On failure we
+// return an error whose Error() is the last non-empty stderr line, falling
+// back to the original exec error when stderr is empty (e.g. binary missing
+// from $PATH — that surfaces as the wrapped *exec.Error message).
+func runCapturing(name string, args ...string) ([]byte, error) {
+	cmd := exec.Command(name, args...)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		if msg := lastErrLine(stderr.Bytes()); msg != "" {
+			return nil, errors.New(msg)
+		}
+		return nil, fmt.Errorf("%s: %w", name, err)
+	}
+	return stdout.Bytes(), nil
+}
+
+// lastErrLine returns the last non-blank line of stderr with common noise
+// prefixes ("Error: ", "error: ", "fatal: ") trimmed so the message reads
+// cleanly when shown in a one-row detail field.
+func lastErrLine(b []byte) string {
+	for _, line := range reverseSplit(string(b), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		for _, p := range []string{"Error: ", "error: ", "fatal: "} {
+			line = strings.TrimPrefix(line, p)
+		}
+		return line
+	}
+	return ""
+}
+
+func reverseSplit(s, sep string) []string {
+	parts := strings.Split(s, sep)
+	for i, j := 0, len(parts)-1; i < j; i, j = i+1, j-1 {
+		parts[i], parts[j] = parts[j], parts[i]
+	}
+	return parts
 }
 
 // parseGitStatus consumes `git status --porcelain=v1 --branch` output. The

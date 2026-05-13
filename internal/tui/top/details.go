@@ -94,6 +94,17 @@ func renderBranchDetail(deps Deps, br registry.Branch, snap snapshot, status *br
 	}
 	row("exposed", exposed)
 	row("path", "/repo")
+	if snap.mirrorSlug == br.Slug {
+		state := "active"
+		if !snap.mirrorAlive {
+			state = "inactive"
+		}
+		if target := mirrorTargetFor(snap, br.Repo); target != "" {
+			row("mirror", fmt.Sprintf("%s → %s", state, target))
+		} else {
+			row("mirror", state)
+		}
+	}
 	if br.IsDefault {
 		row("default", "yes")
 	}
@@ -114,7 +125,7 @@ func formatGitStatus(s *branchStatus) string {
 		return "…"
 	}
 	if s.GitErr != nil {
-		return "error"
+		return errLine(s.GitErr)
 	}
 	if !s.GitChecked {
 		return "…"
@@ -139,7 +150,7 @@ func formatPRStatus(s *branchStatus) string {
 		return "…"
 	}
 	if s.PRErr != nil {
-		return "error"
+		return errLine(s.PRErr)
 	}
 	if !s.PRChecked {
 		return "…"
@@ -148,6 +159,26 @@ func formatPRStatus(s *branchStatus) string {
 		return "none"
 	}
 	return fmt.Sprintf("#%d %s · %s", s.PR.Number, strings.ToLower(s.PR.State), s.PR.URL)
+}
+
+// errLine renders an error for the one-row detail field. Truncates to keep
+// the panel layout stable when the underlying tool prints a long stderr.
+func errLine(err error) string {
+	msg := err.Error()
+	const max = 80
+	if len(msg) > max {
+		msg = msg[:max-1] + "…"
+	}
+	return msg
+}
+
+func mirrorTargetFor(snap snapshot, repoName string) string {
+	for i := range snap.repos {
+		if snap.repos[i].Name == repoName {
+			return snap.repos[i].MacMirrorTarget
+		}
+	}
+	return ""
 }
 
 func branchesFor(snap snapshot, repoName string) []registry.Branch {
