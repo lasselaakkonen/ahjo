@@ -19,6 +19,7 @@ import (
 
 func newShellCmd() *cobra.Command {
 	var update bool
+	var force bool
 	cmd := &cobra.Command{
 		Use:   "shell <alias>",
 		Short: "Start (if needed) and attach an interactive shell to the branch's container",
@@ -29,18 +30,24 @@ in /repo. Use ` + "`ahjo claude`" + ` to launch ` + "`claude`" + ` instead.
 Pass --update to discard the existing container before attaching: ahjo stops
 it, deletes it, and recreates it from the repo's default-branch container
 (running ` + "`git checkout -b <branch>`" + ` again on the fresh COW copy). The
-host-keys, registry entry, and ssh port are preserved.`,
+host-keys, registry entry, and ssh port are preserved.
+
+Before recreating with --update, ahjo inspects /repo for uncommitted/unpushed
+work (starting a stopped container for the check, after prompting). If /repo
+is dirty — or the user declines the start prompt — the command refuses to
+proceed; pass --force to skip the check and recreate anyway.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(_ *cobra.Command, args []string) error {
-			return runShell(args[0], update)
+			return runShell(args[0], update, force)
 		},
 	}
 	cmd.Flags().BoolVar(&update, "update", false, "destroy the existing container before attaching so it picks up the current ahjo-base image")
+	cmd.Flags().BoolVar(&force, "force", false, "with --update, skip the /repo cleanliness check and recreate even when uncommitted/unpushed work is present")
 	return cmd
 }
 
-func runShell(alias string, update bool) error {
-	br, containerName, err := prepareBranchContainer(alias, update)
+func runShell(alias string, update, force bool) error {
+	br, containerName, err := prepareBranchContainer(alias, update, force)
 	if err != nil {
 		return err
 	}
@@ -63,7 +70,7 @@ func runShell(alias string, update bool) error {
 // exists (recreating from the default-branch base when missing or --update),
 // starts it, wires the ssh proxy + sshd, and reconciles auto-expose. Returns
 // the branch row and the resolved container name ready for an attach call.
-func prepareBranchContainer(alias string, update bool) (*registry.Branch, string, error) {
+func prepareBranchContainer(alias string, update, force bool) (*registry.Branch, string, error) {
 	if _, err := EnsureBranch(alias); err != nil {
 		return nil, "", err
 	}
@@ -87,6 +94,9 @@ func prepareBranchContainer(alias string, update bool) (*registry.Branch, string
 	}
 	if update {
 		if exists {
+			if err := ensureRepoCleanOrForce(br, "recreate", force); err != nil {
+				return nil, "", err
+			}
 			if err := stopAndRemoveMirror(containerName); err != nil {
 				fmt.Fprintf(cobraOutErr(), "warn: stop mirror on %s: %v\n", containerName, err)
 			}
