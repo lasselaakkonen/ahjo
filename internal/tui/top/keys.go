@@ -16,6 +16,10 @@ type keymap struct {
 
 	// Contextual: details pane (when a worktree is selected).
 	ToggleExpose, ToggleMirror key.Binding
+
+	// Contextual: when a container is selected (in the containers column
+	// or in the details pane showing that container's info).
+	CopyClaudeCmd, CopyShellCmd key.Binding
 }
 
 func newKeymap() keymap {
@@ -38,5 +42,8 @@ func newKeymap() keymap {
 
 		ToggleExpose: key.NewBinding(key.WithKeys("e"), key.WithHelp("e", "toggle expose")),
 		ToggleMirror: key.NewBinding(key.WithKeys("m"), key.WithHelp("m", "toggle mirror")),
+
+		CopyClaudeCmd: key.NewBinding(key.WithKeys("a"), key.WithHelp("a", "copy `ahjo claude` cmd")),
+		CopyShellCmd:  key.NewBinding(key.WithKeys("s"), key.WithHelp("s", "copy `ahjo shell` cmd")),
 	}
 }

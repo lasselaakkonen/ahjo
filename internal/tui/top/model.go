@@ -274,6 +274,10 @@ func (m *model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		case key.Matches(msg, m.keys.RemoveContainer):
 			return m, m.execWorktreeRm()
+		case key.Matches(msg, m.keys.CopyClaudeCmd):
+			return m, m.copyAhjoCmdForBranch("claude")
+		case key.Matches(msg, m.keys.CopyShellCmd):
+			return m, m.copyAhjoCmdForBranch("shell")
 		case key.Matches(msg, m.keys.Submit):
 			if it, ok := m.containers.SelectedItem().(containerItem); ok && it.kind == "new" {
 				m.startInput(inputNewContainer)
@@ -286,6 +290,10 @@ func (m *model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m, m.execToggleExpose()
 		case key.Matches(msg, m.keys.ToggleMirror):
 			return m.handleToggleMirror()
+		case key.Matches(msg, m.keys.CopyClaudeCmd):
+			return m, m.copyAhjoCmdForBranch("claude")
+		case key.Matches(msg, m.keys.CopyShellCmd):
+			return m, m.copyAhjoCmdForBranch("shell")
 		}
 	}
 
@@ -534,6 +542,21 @@ func (m *model) execWorktreeRm() tea.Cmd {
 	return execAhjo("removed", alias, "rm", alias)
 }
 
+// copyAhjoCmdForBranch yanks `ahjo <sub> <alias>` for the currently selected
+// branch into the system clipboard via OSC 52 (tea.SetClipboard). Returns nil
+// when no real container is selected (e.g. focus is on the "+ create
+// container" sentinel, or focusDetails with no branch chosen) — silent in
+// that case rather than misleading.
+func (m *model) copyAhjoCmdForBranch(sub string) tea.Cmd {
+	w := selectedBranch(m.containers)
+	if w == nil {
+		return nil
+	}
+	cmdStr := "ahjo " + sub + " " + w.Aliases[0]
+	m.flash = "copied to clipboard: " + cmdStr
+	return tea.SetClipboard(cmdStr)
+}
+
 func (m *model) execToggleExpose() tea.Cmd {
 	w := selectedBranch(m.containers)
 	if w == nil {
@@ -741,9 +764,12 @@ func (m *model) renderFooter() string {
 		bindings = append(bindings, m.keys.AddRepo, m.keys.RemoveRepo)
 	case focusContainers:
 		bindings = append(bindings, m.keys.NewContainer, m.keys.RemoveContainer)
+		if selectedBranch(m.containers) != nil {
+			bindings = append(bindings, m.keys.CopyClaudeCmd, m.keys.CopyShellCmd)
+		}
 	case focusDetails:
 		if selectedBranch(m.containers) != nil {
-			bindings = append(bindings, m.keys.ToggleExpose, m.keys.ToggleMirror)
+			bindings = append(bindings, m.keys.ToggleExpose, m.keys.ToggleMirror, m.keys.CopyClaudeCmd, m.keys.CopyShellCmd)
 		}
 	}
 	bindings = append(bindings, m.keys.Submit, m.keys.Refresh, m.keys.Quit)
