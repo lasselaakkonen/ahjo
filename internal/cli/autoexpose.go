@@ -50,7 +50,12 @@ func reconcileAutoExpose(out io.Writer, br *registry.Branch) error {
 			return fmt.Errorf("scan listening ports: %w", err)
 		}
 		for _, p := range listening {
-			if p == 22 || p < minPort {
+			// 22 is sshd (already wired by ahjo-ssh). The paste-daemon's
+			// in-container loopback is a synthetic listener created by
+			// ahjo itself — `ss -tlnH` sees it like any other process,
+			// but it isn't a user service and must not be exposed to
+			// the host.
+			if p == 22 || p == incus.PasteDaemonContainerPort || p < minPort {
 				continue
 			}
 			want[p] = struct{}{}

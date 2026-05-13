@@ -27,6 +27,7 @@ import (
 	"github.com/lasselaakkonen/ahjo/internal/git"
 	"github.com/lasselaakkonen/ahjo/internal/initflow"
 	"github.com/lasselaakkonen/ahjo/internal/lima"
+	"github.com/lasselaakkonen/ahjo/internal/paste"
 )
 
 const (
@@ -67,6 +68,16 @@ func main() {
 		yes := hasFlag(args[1:], "-y", "--yes")
 		if err := runMacNuke(yes); err != nil {
 			fmt.Fprintln(os.Stderr, "ahjo:", err)
+			os.Exit(1)
+		}
+		return
+	case "paste-daemon":
+		// Hidden launchd entry point. The plist written by
+		// paste.EnsureRunning targets `ahjo paste-daemon`; launchd
+		// supervises this process with KeepAlive=true. Errors bubble
+		// out so launchd's respawn loop can do its job.
+		if err := paste.Run(); err != nil {
+			fmt.Fprintln(os.Stderr, "ahjo paste-daemon:", err)
 			os.Exit(1)
 		}
 		return
@@ -113,6 +124,16 @@ func main() {
 	if _, err := exec.LookPath("limactl"); err != nil {
 		fmt.Fprintln(os.Stderr, "ahjo: limactl not on PATH; run `ahjo init` first")
 		os.Exit(1)
+	}
+
+	// Bring up the host-side paste-daemon (NSPasteboard -> HTTP bridge at
+	// 127.0.0.1:18340) before relaying into the VM. Hot path: a 200ms
+	// healthz probe returns immediately when launchd already has it
+	// running. Cold path: writes ~/Library/LaunchAgents plist and
+	// bootstraps the service. Failures are non-fatal — paste image into
+	// `claude` won't work, but every other ahjo subcommand still does.
+	if err := paste.EnsureRunning(); err != nil {
+		fmt.Fprintln(os.Stderr, "warn: paste-daemon:", err)
 	}
 	// Bridge the host's git identity into the VM. The in-VM ahjo's
 	// `git config --global` and `gh auth status` see a clean Linux user
@@ -649,6 +670,7 @@ func runMacNuke(yes bool) error {
 		} else {
 			fmt.Printf("  - skip %s (already absent)\n", cacheDir)
 		}
+		fmt.Println("  - unload the paste-daemon launchd agent (~/Library/LaunchAgents/net.ahjo.paste-daemon.plist)")
 		fmt.Println("It will NOT touch ~/.ahjo/{config.toml,registry.toml,profiles,repos}.")
 		fmt.Println("Re-run with -y to proceed.")
 		return nil
@@ -679,6 +701,13 @@ func runMacNuke(yes bool) error {
 		fmt.Println("[ok]   removed")
 	} else {
 		fmt.Printf("[skip] %s already absent\n", cacheDir)
+	}
+
+	fmt.Println("[step] Unload paste-daemon launchd agent")
+	if err := paste.Unload(); err != nil {
+		fmt.Fprintf(os.Stderr, "warn: paste-daemon unload: %v\n", err)
+	} else {
+		fmt.Println("[ok]   unloaded")
 	}
 
 	fmt.Println("\nDone. Run `ahjo init` to rebuild.")

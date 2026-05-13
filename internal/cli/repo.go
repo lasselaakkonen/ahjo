@@ -193,6 +193,10 @@ func repoAddSetup(slug, primary string, aliases []string, url, defaultBase strin
 	if err := attachSSHAgent(containerName); err != nil {
 		return fmt.Errorf("attach ssh-agent: %w", err)
 	}
+	// Paste-shim wiring: best-effort, never blocks repo add.
+	if err := attachPasteShim(containerName); err != nil {
+		fmt.Fprintf(cobraOutErr(), "warn: paste shim: %v\n", err)
+	}
 
 	if err := pushClaudeConfig(containerName); err != nil {
 		return fmt.Errorf("push claude config: %w", err)
@@ -462,6 +466,26 @@ func attachSSHAgent(containerName string) error {
 		return nil
 	}
 	return incus.EnsureSSHAgentProxy(containerName, sock)
+}
+
+// attachPasteShim installs the in-container half of the macOS host paste
+// bridge: the xclip/wl-paste shims at /usr/local/bin/* and an Incus proxy
+// device that forwards container:127.0.0.1:18340 to host.lima.internal:18340.
+// Must run post-start — the proxy uses bind=container, which needs a live
+// container namespace, and `incus file push` requires the container to be
+// running too.
+//
+// Every component is best-effort: a missing host paste-daemon, a failed
+// proxy add, or a refused `incus file push` must not block `ahjo shell` /
+// `ahjo claude` from launching. Caller wraps each error in a warn and moves
+// on. The shims gracefully exit 1 when the daemon is unreachable, which
+// Claude treats as "no image on clipboard" — same as a stock Linux box
+// with nothing in xclip.
+func attachPasteShim(containerName string) error {
+	if err := incus.EnsurePasteDaemonProxy(containerName); err != nil {
+		return err
+	}
+	return incus.WritePasteShims(containerName)
 }
 
 // securityConfigFlags are the per-container Incus config keys ahjo applies:

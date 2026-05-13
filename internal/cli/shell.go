@@ -135,6 +135,12 @@ func prepareBranchContainer(alias string, update, force bool) (*registry.Branch,
 	if err := attachSSHAgent(containerName); err != nil {
 		fmt.Fprintf(cobraOutErr(), "warn: ssh-agent proxy: %v\n", err)
 	}
+	// Paste-shim wiring is also post-start (bind=container proxy + file
+	// push). Old branch containers self-heal on their next ahjo shell /
+	// ahjo claude run because both helpers are idempotent.
+	if err := attachPasteShim(containerName); err != nil {
+		fmt.Fprintf(cobraOutErr(), "warn: paste shim: %v\n", err)
+	}
 	if err := incus.AddProxyDevice(
 		containerName, "ahjo-ssh",
 		fmt.Sprintf("tcp:127.0.0.1:%d", br.SSHPort),
