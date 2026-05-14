@@ -57,15 +57,22 @@ func runClaude(alias string, update, force bool) error {
 	if err := runPostAttach(containerName, dcConf, env); err != nil {
 		return err
 	}
-	_ = br
 	model := promptStartingModel(cobraOut(), os.Stdin)
 	// Launch through `bash -lc 'exec claude …'` so ~/.profile fires and
 	// ~/.local/bin lands on PATH — otherwise claude's self-check ("native
 	// install exists but ~/.local/bin not in PATH") prints on every start.
 	// `exec` replaces bash with claude so signals + exit codes still pass
 	// through unchanged.
-	return incus.ExecAttach(containerName, 1000, env, paths.RepoMountPath,
+	code, err := incus.ExecAttachWait(containerName, 1000, env, paths.RepoMountPath,
 		"bash", "-lc", `exec claude --dangerously-skip-permissions --model "$1"`, "bash", model)
+	showPostAttachStatus(br, containerName)
+	if err != nil {
+		return err
+	}
+	if code != 0 {
+		os.Exit(code)
+	}
+	return nil
 }
 
 // promptStartingModel asks which alias to pass to `claude` via --model on

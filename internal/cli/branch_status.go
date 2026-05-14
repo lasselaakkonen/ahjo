@@ -90,51 +90,62 @@ func fetchBranchStatusInVM(slug string) (top.BranchStatus, error) {
 	}
 
 	if container != "" {
-		// -c safe.directory=/repo: incus exec runs as root, but /repo is
-		// owned by the container's ubuntu user — without this override git
-		// refuses with "fatal: detected dubious ownership". Scoped to /repo
-		// rather than "*" so it doesn't loosen anything unrelated.
-		out, err := runCapturing("incus", "exec", container, "--",
-			"git", "-c", "safe.directory=/repo",
-			"-C", "/repo", "status", "--porcelain=v1", "--branch")
-		if err != nil {
-			bs.GitErr = err.Error()
-		} else {
-			parseGitStatus(out, &bs)
-			bs.GitChecked = true
-		}
+		applyGitStatus(container, &bs)
 	}
 
 	owner, name, ok := parseGitHubRepo(remote)
 	if ok && br.Branch != "" && container != "" {
-		// gh runs inside the container so the host doesn't need its own
-		// gh+auth setup — the container's devcontainer feature already
-		// provides both. --state all surfaces merged/closed PRs too;
-		// --limit 1 because gh sorts newest-first and we only want the most
-		// recent for this head.
-		out, err := runCapturing("incus", "exec", container, "--",
-			"gh", "pr", "list",
-			"-R", owner+"/"+name,
-			"--head", br.Branch,
-			"--state", "all",
-			"--limit", "1",
-			"--json", "number,url,state,title")
-		if err != nil {
-			bs.PRErr = err.Error()
-		} else {
-			var rows []top.PRStatus
-			if jerr := json.Unmarshal(out, &rows); jerr != nil {
-				bs.PRErr = fmt.Errorf("parse gh pr list: %w", jerr).Error()
-			} else {
-				if len(rows) > 0 {
-					pr := rows[0]
-					bs.PR = &pr
-				}
-				bs.PRChecked = true
-			}
-		}
+		applyPRStatus(container, owner, name, br.Branch, &bs)
 	}
 	return bs, nil
+}
+
+// applyGitStatus runs `git status` inside the container and folds the
+// result (or error) into bs. Extracted from fetchBranchStatusInVM so the
+// post-attach renderer can call it directly from a goroutine.
+func applyGitStatus(container string, bs *top.BranchStatus) {
+	// -c safe.directory=/repo: incus exec runs as root, but /repo is
+	// owned by the container's ubuntu user — without this override git
+	// refuses with "fatal: detected dubious ownership". Scoped to /repo
+	// rather than "*" so it doesn't loosen anything unrelated.
+	out, err := runCapturing("incus", "exec", container, "--",
+		"git", "-c", "safe.directory=/repo",
+		"-C", "/repo", "status", "--porcelain=v1", "--branch")
+	if err != nil {
+		bs.GitErr = err.Error()
+		return
+	}
+	parseGitStatus(out, bs)
+	bs.GitChecked = true
+}
+
+// applyPRStatus runs `gh pr list` inside the container and folds the
+// result (or error) into bs. gh runs in-container so the host doesn't
+// need its own gh+auth setup. --state all surfaces merged/closed PRs;
+// --limit 1 because gh sorts newest-first and we only want the most
+// recent for this head.
+func applyPRStatus(container, owner, name, branch string, bs *top.BranchStatus) {
+	out, err := runCapturing("incus", "exec", container, "--",
+		"gh", "pr", "list",
+		"-R", owner+"/"+name,
+		"--head", branch,
+		"--state", "all",
+		"--limit", "1",
+		"--json", "number,url,state,title")
+	if err != nil {
+		bs.PRErr = err.Error()
+		return
+	}
+	var rows []top.PRStatus
+	if jerr := json.Unmarshal(out, &rows); jerr != nil {
+		bs.PRErr = fmt.Errorf("parse gh pr list: %w", jerr).Error()
+		return
+	}
+	if len(rows) > 0 {
+		pr := rows[0]
+		bs.PR = &pr
+	}
+	bs.PRChecked = true
 }
 
 // runCapturing wraps exec.Command so we keep stdout for parsing AND attach

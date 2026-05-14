@@ -62,8 +62,15 @@ func runShell(alias string, update, force bool) error {
 	if err := runPostAttach(containerName, dcConf, env); err != nil {
 		return err
 	}
-	_ = br
-	return incus.ExecAttach(containerName, 1000, env, paths.RepoMountPath, "bash", "-l")
+	code, err := incus.ExecAttachWait(containerName, 1000, env, paths.RepoMountPath, "bash", "-l")
+	showPostAttachStatus(br, containerName)
+	if err != nil {
+		return err
+	}
+	if code != 0 {
+		os.Exit(code)
+	}
+	return nil
 }
 
 // prepareBranchContainer resolves the branch by alias, ensures its container
