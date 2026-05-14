@@ -10,9 +10,9 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
-	"golang.org/x/term"
 
 	"github.com/lasselaakkonen/ahjo/internal/tokenstore"
+	"github.com/lasselaakkonen/ahjo/internal/ttysecret"
 )
 
 var envKeyRE = regexp.MustCompile(`^[A-Z_][A-Z0-9_]*$`)
@@ -166,7 +166,7 @@ func validateEnvKey(key string) error {
 func readSecret(in *os.File, out, errw io.Writer, prompt string) (string, error) {
 	if isTerminal(in) {
 		fmt.Fprint(out, prompt)
-		s, err := readSecretEcho(in, out)
+		s, err := ttysecret.Read(in, out)
 		fmt.Fprintln(out)
 		if err != nil {
 			return "", fmt.Errorf("read password: %w", err)
@@ -182,68 +182,6 @@ func readSecret(in *os.File, out, errw io.Writer, prompt string) (string, error)
 		return "", errors.New("no value entered")
 	}
 	return strings.TrimSpace(sc.Text()), nil
-}
-
-// readSecretEcho puts the TTY in raw mode and reads bytes until CR/LF/EOF,
-// echoing `*` for each accepted byte and handling Backspace/DEL. Ctrl-C and
-// Ctrl-D abort; Ctrl-U clears the current input.
-func readSecretEcho(in *os.File, out io.Writer) (string, error) {
-	fd := int(in.Fd())
-	prev, err := term.MakeRaw(fd)
-	if err != nil {
-		// Raw mode unavailable (e.g. unusual TTY) — fall back to silent
-		// read so we never accidentally echo the secret in cooked mode.
-		b, perr := term.ReadPassword(fd)
-		if perr != nil {
-			return "", perr
-		}
-		return string(b), nil
-	}
-	defer func() { _ = term.Restore(fd, prev) }()
-
-	var buf []byte
-	one := make([]byte, 1)
-	for {
-		n, err := in.Read(one)
-		if err != nil {
-			if errors.Is(err, io.EOF) {
-				break
-			}
-			return "", err
-		}
-		if n == 0 {
-			continue
-		}
-		c := one[0]
-		switch c {
-		case '\r', '\n':
-			return string(buf), nil
-		case 0x03: // Ctrl-C
-			return "", errors.New("interrupted")
-		case 0x04: // Ctrl-D
-			if len(buf) == 0 {
-				return "", io.EOF
-			}
-			return string(buf), nil
-		case 0x15: // Ctrl-U: clear line
-			for range buf {
-				fmt.Fprint(out, "\b \b")
-			}
-			buf = buf[:0]
-		case 0x7f, 0x08: // DEL / Backspace
-			if len(buf) > 0 {
-				buf = buf[:len(buf)-1]
-				fmt.Fprint(out, "\b \b")
-			}
-		default:
-			if c < 0x20 { // ignore other control bytes
-				continue
-			}
-			buf = append(buf, c)
-			fmt.Fprint(out, "*")
-		}
-	}
-	return string(buf), nil
 }
 
 // maskSecret replaces all but the last 4 chars with an ellipsis. Empty and

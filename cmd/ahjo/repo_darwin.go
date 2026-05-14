@@ -16,6 +16,7 @@ import (
 	"github.com/lasselaakkonen/ahjo/internal/paths"
 	"github.com/lasselaakkonen/ahjo/internal/registry"
 	"github.com/lasselaakkonen/ahjo/internal/repoauth"
+	"github.com/lasselaakkonen/ahjo/internal/ttysecret"
 )
 
 // ghTokenKey is the canonical key for per-repo GitHub PATs in the Keychain.
@@ -195,11 +196,7 @@ func readHiddenLine(fd int) (string, error) {
 		}
 		return sc.Text(), nil
 	}
-	b, err := term.ReadPassword(fd)
-	if err != nil {
-		return "", err
-	}
-	return string(b), nil
+	return ttysecret.Read(os.Stdin, os.Stdout)
 }
 
 // sweepKeychainCleanup processes every marker file at
