@@ -23,8 +23,25 @@ jobs:
       - name: generate-mirror
         run: make generate-mirror
 
+      - name: gofmt
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then
+            echo "gofmt: unformatted files (run \`gofmt -w .\`):"
+            echo "$unformatted"
+            exit 1
+          fi
+
       - name: go vet
         run: go vet ./...
 
-      - name: go test
-        run: go test ./...
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: latest
+
+      - name: go test -race
+        run: go test -race ./...
+
+      - name: make dist (cross-compile smoke test)
+        run: make dist VERSION=ci-${{ github.sha }}
