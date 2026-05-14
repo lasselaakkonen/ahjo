@@ -36,10 +36,15 @@ import (
 func runMacDoctor(w io.Writer, fix bool) bool {
 	fmt.Fprintln(w, "[host-side checks]")
 	hostP := checkAgentConfigured()
+	sshIncludeIdx := 3
 	ps := []preflight.Problem{
 		hostP,
 		checkSSHAuthSockKind(),
 		checkKeychainPATs(),
+		checkSSHInclude(),
+	}
+	if fix && ps[sshIncludeIdx].Severity == preflight.Warn {
+		ps[sshIncludeIdx] = fixSSHInclude()
 	}
 	vmP, runVMCheck := checkVMRunning()
 	ps = append(ps, vmP)
@@ -123,6 +128,67 @@ func fixStaleAgentForward() preflight.Problem {
 		Title:    "fix applied: closed ssh ControlMaster, but " + post.Title,
 		Detail:   post.Detail,
 		Fix:      post.Fix,
+	}
+}
+
+// checkSSHInclude reports whether ~/.ssh/config wires in ahjo's generated
+// aggregate config so per-branch `Host ahjo-<slug>` aliases are visible to
+// system ssh, Cursor / VSCode Remote-SSH, plain git, scp, etc. Warn (not
+// Fail) when missing: ahjo's own `ahjo ssh <alias>` still works via -F.
+func checkSSHInclude() preflight.Problem {
+	st, err := sshIncludeStatus()
+	if err != nil {
+		return preflight.Problem{
+			Severity: preflight.Warn,
+			Title:    "could not check ~/.ssh/config for ahjo Include",
+			Detail:   err.Error(),
+		}
+	}
+	switch st {
+	case sshIncludePresent:
+		return preflight.Problem{
+			Severity: preflight.OK,
+			Title:    "~/.ssh/config includes ahjo's ssh-config (ahjo-managed)",
+		}
+	case sshIncludePresentManual:
+		return preflight.Problem{
+			Severity: preflight.OK,
+			Title:    "~/.ssh/config includes ahjo's ssh-config (user-managed; ahjo will not modify)",
+		}
+	case sshIncludePresentMisplaced:
+		return preflight.Problem{
+			Severity: preflight.Warn,
+			Title:    "ahjo's Include block in ~/.ssh/config sits below a Host directive and is silently ineffective",
+			Detail:   "ssh_config evaluates `Include` lazily inside the surrounding Host scope; the block needs to be above any Host/Match keyword to register the per-branch aliases. Likely left by an older ahjo that appended instead of prepending.",
+			Fix:      "ahjo doctor --fix",
+		}
+	}
+	return preflight.Problem{
+		Severity: preflight.Warn,
+		Title:    "~/.ssh/config is missing the ahjo Include directive",
+		Detail:   "system ssh, Cursor/VSCode Remote-SSH, plain git/scp can't resolve `ahjo-<slug>` aliases without it; `ahjo ssh <alias>` is unaffected (uses -F)",
+		Fix:      "ahjo doctor --fix",
+	}
+}
+
+// fixSSHInclude adds the ahjo-managed Include block to ~/.ssh/config and
+// returns a Problem describing the action. Called from runMacDoctor when
+// --fix is set and the check came back Warn.
+func fixSSHInclude() preflight.Problem {
+	added, err := ensureSSHInclude()
+	if err != nil {
+		return preflight.Problem{
+			Severity: preflight.Fail,
+			Title:    "could not add Include block to ~/.ssh/config",
+			Detail:   err.Error(),
+		}
+	}
+	if !added {
+		return checkSSHInclude()
+	}
+	return preflight.Problem{
+		Severity: preflight.OK,
+		Title:    "fix applied: added ahjo-managed Include block to ~/.ssh/config",
 	}
 }
 

@@ -91,7 +91,7 @@ func writeKnownHosts(dst string, bs []registry.Branch) error {
 	var b strings.Builder
 	fmt.Fprintln(&b, "# ahjo-managed: do not edit")
 	for _, br := range bs {
-		src := filepath.Join(paths.SlugHostKeysDir(br.Slug), paths.KnownHostsFile)
+		src := filepath.Join(paths.SlugHostKeysDir(br.HostKeysSlug()), paths.KnownHostsFile)
 		c, err := os.ReadFile(src)
 		if err != nil {
 			if os.IsNotExist(err) {

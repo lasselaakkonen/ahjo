@@ -110,9 +110,9 @@ func itemLabel(item list.Item) string {
 
 // repoItemsFrom builds the leftmost column's items from a snapshot, always
 // appending the "+ new repo" sentinel last.
-func repoItemsFrom(snap snapshot) []list.Item {
-	out := make([]list.Item, 0, len(snap.repos)+1)
-	for _, r := range snap.repos {
+func repoItemsFrom(snap Snapshot) []list.Item {
+	out := make([]list.Item, 0, len(snap.Repos)+1)
+	for _, r := range snap.Repos {
 		out = append(out, repoItem{kind: "repo", repo: r})
 	}
 	out = append(out, repoItem{kind: "new"})
@@ -122,14 +122,14 @@ func repoItemsFrom(snap snapshot) []list.Item {
 // containerItemsFor returns the branches of a single repo, with their
 // container-existence state pre-resolved. Always appends the
 // "+ create container" sentinel last.
-func containerItemsFor(snap snapshot, repoName string) []list.Item {
+func containerItemsFor(snap Snapshot, repoName string) []list.Item {
 	var out []list.Item
-	for _, br := range snap.branches {
+	for _, br := range snap.Branches {
 		if br.Repo != repoName {
 			continue
 		}
 		state := "missing"
-		if snap.containers[br.Slug] {
+		if snap.Containers[br.Slug] {
 			state = "present"
 		}
 		out = append(out, containerItem{kind: "container", br: br, state: state})

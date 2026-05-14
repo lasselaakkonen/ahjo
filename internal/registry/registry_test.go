@@ -60,3 +60,29 @@ func TestMakeSlugCollisionAtCap(t *testing.T) {
 		t.Fatalf("expected -2 suffix, got %q", second)
 	}
 }
+
+func TestBranchHostKeysSlug(t *testing.T) {
+	tests := []struct {
+		name string
+		br   Branch
+		want string
+	}{
+		{
+			"default branch shares base container dir",
+			Branch{Slug: "acme-main", IncusName: "ahjo-acme", IsDefault: true},
+			"acme",
+		},
+		{
+			"non-default branch uses its own dir",
+			Branch{Slug: "acme-feature", IncusName: "ahjo-acme-feature"},
+			"acme-feature",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.br.HostKeysSlug(); got != tt.want {
+				t.Fatalf("HostKeysSlug() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}

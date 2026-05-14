@@ -20,6 +20,7 @@ type keymap struct {
 	// Contextual: when a container is selected (in the containers column
 	// or in the details pane showing that container's info).
 	CopyClaudeCmd, CopyShellCmd key.Binding
+	OpenIDE                     key.Binding
 }
 
 func newKeymap() keymap {
@@ -45,5 +46,6 @@ func newKeymap() keymap {
 
 		CopyClaudeCmd: key.NewBinding(key.WithKeys("a"), key.WithHelp("a", "copy `ahjo claude` cmd")),
 		CopyShellCmd:  key.NewBinding(key.WithKeys("s"), key.WithHelp("s", "copy `ahjo shell` cmd")),
+		OpenIDE:       key.NewBinding(key.WithKeys("i"), key.WithHelp("i", "ide")),
 	}
 }

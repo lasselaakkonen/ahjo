@@ -26,41 +26,55 @@ const Version = 2
 const maxSlugLen = 55
 
 type Registry struct {
-	Version  int      `toml:"version"`
-	Repos    []Repo   `toml:"repos"`
-	Branches []Branch `toml:"branches"`
+	Version  int      `toml:"version" json:"version"`
+	Repos    []Repo   `toml:"repos" json:"repos"`
+	Branches []Branch `toml:"branches" json:"branches"`
 }
 
 type Repo struct {
-	Name              string   `toml:"name"`
-	Aliases           []string `toml:"aliases"`
-	Remote            string   `toml:"remote"`
-	DefaultBase       string   `toml:"default_base"`
-	BaseContainerName string   `toml:"base_container_name,omitempty"`
+	Name              string   `toml:"name" json:"name"`
+	Aliases           []string `toml:"aliases" json:"aliases"`
+	Remote            string   `toml:"remote" json:"remote"`
+	DefaultBase       string   `toml:"default_base" json:"default_base"`
+	BaseContainerName string   `toml:"base_container_name,omitempty" json:"base_container_name,omitempty"`
 	// MacMirrorTarget is the per-repo default Mac path used by
 	// `ahjo mirror`. Set on first activation; subsequent calls without
 	// --target reuse it.
-	MacMirrorTarget string `toml:"mac_mirror_target,omitempty"`
+	MacMirrorTarget string `toml:"mac_mirror_target,omitempty" json:"mac_mirror_target,omitempty"`
 	// FeatureConsent records the user's one-time trust decisions for
 	// non-curated devcontainer Feature sources, keyed by glob pattern
 	// (e.g. `ghcr.io/foo/*`). The curated `ghcr.io/devcontainers/features/*`
 	// set is auto-trusted and never appears here. Phase 2a reserves the
 	// schema; the consent prompt and OCI fetch land in Phase 2b.
-	FeatureConsent map[string]bool `toml:"feature_consent,omitempty"`
+	FeatureConsent map[string]bool `toml:"feature_consent,omitempty" json:"feature_consent,omitempty"`
 }
 
 // Branch is a per-branch container holding a checkout at /repo. Replaces
 // the v1 Worktree struct (containers no longer bind-mount a host worktree).
 type Branch struct {
-	Repo           string    `toml:"repo"`
-	Aliases        []string  `toml:"aliases"`
-	Branch         string    `toml:"branch"`
-	Slug           string    `toml:"slug"`
-	ContainerAlias string    `toml:"container_alias"`
-	SSHPort        int       `toml:"ssh_port"`
-	IncusName      string    `toml:"incus_name"`
-	IsDefault      bool      `toml:"is_default,omitempty"`
-	CreatedAt      time.Time `toml:"created_at"`
+	Repo           string    `toml:"repo" json:"repo"`
+	Aliases        []string  `toml:"aliases" json:"aliases"`
+	Branch         string    `toml:"branch" json:"branch"`
+	Slug           string    `toml:"slug" json:"slug"`
+	ContainerAlias string    `toml:"container_alias" json:"container_alias"`
+	SSHPort        int       `toml:"ssh_port" json:"ssh_port"`
+	IncusName      string    `toml:"incus_name" json:"incus_name"`
+	IsDefault      bool      `toml:"is_default,omitempty" json:"is_default,omitempty"`
+	CreatedAt      time.Time `toml:"created_at" json:"created_at"`
+}
+
+// HostKeysSlug returns the on-disk directory name under HostKeysDir() that
+// holds this branch's authorized_keys, sshd host keys, and per-slug
+// known_hosts. It equals the container name without the "ahjo-" prefix —
+// the convention `ahjo repo add` (default branch) and `ahjo create`
+// (non-default) both produce when first writing the dir.
+//
+// Slug carries the branch suffix for default branches too (e.g.
+// "<repo>-main"), but the host-keys dir for a default branch is shared with
+// the base container and is named after the repo slug only. Callers that
+// need the on-disk dir must go through this method.
+func (b Branch) HostKeysSlug() string {
+	return strings.TrimPrefix(b.IncusName, "ahjo-")
 }
 
 var (

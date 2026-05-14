@@ -39,6 +39,7 @@ const (
 	inputAddRepo
 	inputNewContainer
 	inputMirrorTarget
+	inputIDE
 )
 
 const (
@@ -137,14 +138,23 @@ type model struct {
 
 	width, height int
 
-	snap    snapshot
+	snap    Snapshot
 	loadErr error
 
 	// branchStatus caches the most recent git/PR snapshot per branch slug.
-	// inFlightStatus tracks slugs with an outstanding fetchBranchStatus
-	// goroutine so we don't pile on duplicate subprocesses.
-	branchStatus   map[string]branchStatus
+	// inFlightStatus tracks slugs with an outstanding Deps.LoadBranchStatus
+	// call so we don't pile on duplicate requests.
+	branchStatus   map[string]BranchStatus
 	inFlightStatus map[string]bool
+
+	// idePickerIDEs / idePickerIdx back the inputIDE picker. Populated on
+	// entry from deps.IDEs() against the then-selected branch, so the
+	// launcher inside each IDE entry already knows which host/path to
+	// open. Reset on cancel/submit.
+	idePickerIDEs []IDE
+	idePickerIdx  int
+	idePickerHost string
+	idePickerPath string
 }
 
 func (m *model) Init() tea.Cmd {
@@ -175,7 +185,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case branchStatusMsg:
 		if m.branchStatus == nil {
-			m.branchStatus = make(map[string]branchStatus)
+			m.branchStatus = make(map[string]BranchStatus)
 		}
 		m.branchStatus[msg.slug] = msg.status
 		delete(m.inFlightStatus, msg.slug)
@@ -223,6 +233,9 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m *model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	if m.inputMode == inputIDE {
+		return m.handleIDEPickerKey(msg)
+	}
 	if m.inputMode != inputNone {
 		switch {
 		case key.Matches(msg, m.keys.Submit):
@@ -278,6 +291,9 @@ func (m *model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m, m.copyAhjoCmdForBranch("claude")
 		case key.Matches(msg, m.keys.CopyShellCmd):
 			return m, m.copyAhjoCmdForBranch("shell")
+		case key.Matches(msg, m.keys.OpenIDE):
+			m.startIDEPicker()
+			return m, nil
 		case key.Matches(msg, m.keys.Submit):
 			if it, ok := m.containers.SelectedItem().(containerItem); ok && it.kind == "new" {
 				m.startInput(inputNewContainer)
@@ -294,6 +310,9 @@ func (m *model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m, m.copyAhjoCmdForBranch("claude")
 		case key.Matches(msg, m.keys.CopyShellCmd):
 			return m, m.copyAhjoCmdForBranch("shell")
+		case key.Matches(msg, m.keys.OpenIDE):
+			m.startIDEPicker()
+			return m, nil
 		}
 	}
 
@@ -343,7 +362,7 @@ func (m *model) startInput(mode inputMode) {
 			m.flash = "select a branch first"
 			return
 		}
-		repo := findRepoByName(m.snap.repos, w.Repo)
+		repo := findRepoByName(m.snap.Repos, w.Repo)
 		if repo != nil && repo.MacMirrorTarget != "" {
 			prefill = repo.MacMirrorTarget
 		} else {
@@ -364,6 +383,78 @@ func (m *model) startInput(mode inputMode) {
 func (m *model) cancelInput() {
 	m.inputMode = inputNone
 	m.input.Reset()
+	m.idePickerIDEs = nil
+	m.idePickerIdx = 0
+	m.idePickerHost = ""
+	m.idePickerPath = ""
+}
+
+// startIDEPicker enters inputIDE mode for the currently selected branch.
+// Resolves the SSH host alias + remote path up-front so the launchers in
+// the picker don't need branch context. Flashes (without switching modes)
+// when no branch is selected or no IDEs were detected on the host.
+func (m *model) startIDEPicker() {
+	br := selectedBranch(m.containers)
+	if br == nil {
+		m.flash = "select a container first"
+		return
+	}
+	if m.deps.IDEs == nil {
+		m.flash = "ide picker not wired"
+		return
+	}
+	ides := m.deps.IDEs()
+	if len(ides) == 0 {
+		m.flash = "no SSH-capable IDEs found on host"
+		return
+	}
+	m.idePickerIDEs = ides
+	m.idePickerIdx = 0
+	m.idePickerHost = "ahjo-" + br.Slug
+	m.idePickerPath = "/repo"
+	m.inputMode = inputIDE
+	m.flash = ""
+}
+
+// handleIDEPickerKey owns the keypress loop while inputIDE is active.
+// Up/down navigate; enter launches; esc cancels. All other keys are
+// dropped so an in-flight picker can't leak keys into the underlying
+// list/viewport.
+func (m *model) handleIDEPickerKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	switch {
+	case key.Matches(msg, m.keys.Cancel):
+		m.cancelInput()
+		return m, nil
+	case key.Matches(msg, m.keys.Up):
+		if m.idePickerIdx > 0 {
+			m.idePickerIdx--
+		}
+		return m, nil
+	case key.Matches(msg, m.keys.Down):
+		if m.idePickerIdx < len(m.idePickerIDEs)-1 {
+			m.idePickerIdx++
+		}
+		return m, nil
+	case key.Matches(msg, m.keys.Submit):
+		if m.idePickerIdx < 0 || m.idePickerIdx >= len(m.idePickerIDEs) {
+			m.cancelInput()
+			return m, nil
+		}
+		ide := m.idePickerIDEs[m.idePickerIdx]
+		host, path := m.idePickerHost, m.idePickerPath
+		m.cancelInput()
+		if ide.Open == nil {
+			m.flash = "ide " + ide.Name + ": no launcher"
+			return m, nil
+		}
+		if err := ide.Open(host, path); err != nil {
+			m.flash = "open " + ide.Name + " failed: " + err.Error()
+			return m, nil
+		}
+		m.flash = "opening " + ide.Name + " → " + host + ":" + path
+		return m, nil
+	}
+	return m, nil
 }
 
 func (m *model) submitInput() (tea.Model, tea.Cmd) {
@@ -437,7 +528,7 @@ func (m *model) refreshDetails() {
 		}
 	case focusContainers:
 		if w := selectedBranch(m.containers); w != nil {
-			var status *branchStatus
+			var status *BranchStatus
 			if s, ok := m.branchStatus[w.Slug]; ok {
 				status = &s
 			}
@@ -584,7 +675,7 @@ func (m *model) handleToggleMirror() (tea.Model, tea.Cmd) {
 	if w == nil {
 		return m, nil
 	}
-	if m.snap.mirrorSlug == w.Slug && m.snap.mirrorAlive {
+	if m.snap.MirrorSlug == w.Slug && m.snap.MirrorAlive {
 		m.flash = "stopping mirror…"
 		return m, execAhjoCaptured("mirror", "off", "mirror", "off")
 	}
@@ -594,19 +685,19 @@ func (m *model) handleToggleMirror() (tea.Model, tea.Cmd) {
 
 type branchStatusMsg struct {
 	slug   string
-	status branchStatus
+	status BranchStatus
 }
 
-// maybeRefreshBranchStatus returns a tea.Cmd that runs fetchBranchStatus for
-// the currently selected branch when the cache is missing or stale, or nil
-// when there's nothing to do (no branch selected, container missing, fetch
-// already in flight, or cached result is fresh).
+// maybeRefreshBranchStatus returns a tea.Cmd that fetches a fresh
+// BranchStatus for the currently selected branch via Deps.LoadBranchStatus,
+// or nil when there's nothing to do (no branch selected, container missing,
+// fetch already in flight, cached result still fresh, or no fetcher wired).
 func (m *model) maybeRefreshBranchStatus() tea.Cmd {
 	br := selectedBranch(m.containers)
 	if br == nil {
 		return nil
 	}
-	if !m.snap.containers[br.Slug] {
+	if !m.snap.Containers[br.Slug] {
 		return nil
 	}
 	if m.inFlightStatus[br.Slug] {
@@ -615,23 +706,22 @@ func (m *model) maybeRefreshBranchStatus() tea.Cmd {
 	if cur, ok := m.branchStatus[br.Slug]; ok && time.Since(cur.FetchedAt) < branchStatusStaleness {
 		return nil
 	}
-	container, err := m.deps.ResolveContainerName(br)
-	if err != nil {
+	if m.deps.LoadBranchStatus == nil {
 		return nil
 	}
-	remote := ""
-	if repo := findRepoByName(m.snap.repos, br.Repo); repo != nil {
-		remote = repo.Remote
-	}
 	slug := br.Slug
-	branchRef := br.Branch
 
 	if m.inFlightStatus == nil {
 		m.inFlightStatus = make(map[string]bool)
 	}
 	m.inFlightStatus[slug] = true
 	return func() tea.Msg {
-		return branchStatusMsg{slug: slug, status: fetchBranchStatus(container, remote, branchRef)}
+		bs, err := m.deps.LoadBranchStatus(slug)
+		if err != nil {
+			bs.FetchedAt = time.Now()
+			bs.GitErr = err.Error()
+		}
+		return branchStatusMsg{slug: slug, status: bs}
 	}
 }
 
@@ -668,8 +758,8 @@ func lastNonEmptyLine(s string) string {
 	return ""
 }
 
-func hasBranches(snap snapshot, repoName string) bool {
-	for _, br := range snap.branches {
+func hasBranches(snap Snapshot, repoName string) bool {
+	for _, br := range snap.Branches {
 		if br.Repo == repoName {
 			return true
 		}
@@ -685,7 +775,12 @@ func (m *model) View() tea.View {
 	}
 
 	rightContent := m.details.View()
-	if m.inputMode != inputNone {
+	switch m.inputMode {
+	case inputNone:
+		// no overlay
+	case inputIDE:
+		rightContent = m.idePickerBlock()
+	default:
 		rightContent = m.inputBlock()
 	}
 
@@ -755,6 +850,28 @@ func (m *model) inputBlock() string {
 	return strings.Join([]string{title, "", m.input.View(), "", hint}, "\n")
 }
 
+// idePickerBlock renders the inputIDE overlay: a ▸-marked list of the
+// host's detected SSH-capable IDEs. Uses the same title/hint chrome as
+// inputBlock so the modal feels consistent with text-input prompts.
+func (m *model) idePickerBlock() string {
+	title := detailTitle.Render("open in IDE · " + m.idePickerHost + ":" + m.idePickerPath)
+	hint := detailLabel.Render("↑/↓ pick · enter to open · esc to cancel")
+	lines := make([]string, 0, len(m.idePickerIDEs))
+	for i, ide := range m.idePickerIDEs {
+		caret := "  "
+		style := detailValue
+		if i == m.idePickerIdx {
+			caret = "▸ "
+			style = detailTitle
+		}
+		lines = append(lines, style.Render(caret+ide.Name))
+	}
+	parts := []string{title, ""}
+	parts = append(parts, lines...)
+	parts = append(parts, "", hint)
+	return strings.Join(parts, "\n")
+}
+
 func (m *model) renderFooter() string {
 	bindings := []key.Binding{
 		m.keys.Left, m.keys.Right, m.keys.Up, m.keys.Down,
@@ -765,11 +882,11 @@ func (m *model) renderFooter() string {
 	case focusContainers:
 		bindings = append(bindings, m.keys.NewContainer, m.keys.RemoveContainer)
 		if selectedBranch(m.containers) != nil {
-			bindings = append(bindings, m.keys.CopyClaudeCmd, m.keys.CopyShellCmd)
+			bindings = append(bindings, m.keys.CopyClaudeCmd, m.keys.CopyShellCmd, m.keys.OpenIDE)
 		}
 	case focusDetails:
 		if selectedBranch(m.containers) != nil {
-			bindings = append(bindings, m.keys.ToggleExpose, m.keys.ToggleMirror, m.keys.CopyClaudeCmd, m.keys.CopyShellCmd)
+			bindings = append(bindings, m.keys.ToggleExpose, m.keys.ToggleMirror, m.keys.CopyClaudeCmd, m.keys.CopyShellCmd, m.keys.OpenIDE)
 		}
 	}
 	bindings = append(bindings, m.keys.Submit, m.keys.Refresh, m.keys.Quit)

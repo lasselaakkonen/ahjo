@@ -26,11 +26,72 @@ func newTopCmd() *cobra.Command {
 				FormatExposed:        formatExposed,
 				HostStatus:           hostStatusForTop,
 				ToggleExpose:         toggleExposeForTop,
+				IDEs:                 idesForTop,
+				LoadSnapshot:         loadSnapshotInVM,
+				LoadBranchStatus:     fetchBranchStatusInVM,
 			}
 			_, err := tea.NewProgram(top.New(deps)).Run()
 			return err
 		},
 	}
+}
+
+// loadSnapshotInVM builds a TUI snapshot from in-process state — registry +
+// ports on disk plus incus probes for each branch container. The Mac side
+// reaches this via `ahjo top-state --json`, which calls the same function;
+// bare-Linux `ahjo top` calls it directly through Deps.LoadSnapshot.
+func loadSnapshotInVM() (top.Snapshot, error) {
+	var snap top.Snapshot
+	reg, err := registry.Load()
+	if err != nil {
+		return snap, err
+	}
+	snap.Repos = reg.Repos
+	snap.Branches = reg.Branches
+
+	pp, err := ports.Load()
+	if err != nil {
+		return snap, err
+	}
+	snap.PortsByBranch = make(map[string][]ports.Allocation, len(reg.Branches))
+	for i := range reg.Branches {
+		slug := reg.Branches[i].Slug
+		allocs := pp.AllocationsForSlug(slug)
+		if len(allocs) > 0 {
+			snap.PortsByBranch[slug] = allocs
+		}
+	}
+
+	snap.Containers = make(map[string]bool, len(reg.Branches))
+	for i := range reg.Branches {
+		br := &reg.Branches[i]
+		name, err := resolveContainerName(br)
+		if err != nil {
+			continue
+		}
+		exists, err := incus.ContainerExists(name)
+		if err != nil {
+			continue
+		}
+		snap.Containers[br.Slug] = exists
+	}
+
+	for i := range reg.Branches {
+		br := &reg.Branches[i]
+		name, err := resolveContainerName(br)
+		if err != nil {
+			continue
+		}
+		has, err := incus.HasDevice(name, "mirror")
+		if err != nil || !has {
+			continue
+		}
+		snap.MirrorSlug = br.Slug
+		alive, err := incus.SystemctlIsActive(name, "ahjo-mirror.service")
+		snap.MirrorAlive = err == nil && alive
+		break
+	}
+	return snap, nil
 }
 
 func hostStatusForTop() top.HostStatus {
@@ -41,6 +102,41 @@ func hostStatusForTop() top.HostStatus {
 		}
 	}
 	return defaultMacHostStatus()
+}
+
+// newTopToggleExposeCmd is the hidden `ahjo top-toggle-expose <slug>` RPC
+// endpoint the Mac TUI invokes via `limactl shell ahjo` to fold expose
+// state via toggleExposeForTop. Stdout is the one-line status string the
+// TUI flashes; on success it's printed bare so the Mac side can read it.
+func newTopToggleExposeCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:    "top-toggle-expose <slug>",
+		Short:  "internal: toggle expose for one branch slug; print status",
+		Args:   cobra.ExactArgs(1),
+		Hidden: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			reg, err := registry.Load()
+			if err != nil {
+				return err
+			}
+			var br *registry.Branch
+			for i := range reg.Branches {
+				if reg.Branches[i].Slug == args[0] {
+					br = &reg.Branches[i]
+					break
+				}
+			}
+			if br == nil {
+				return fmt.Errorf("no branch with slug %q", args[0])
+			}
+			msg, err := toggleExposeForTop(br)
+			if err != nil {
+				return err
+			}
+			fmt.Fprintln(cmd.OutOrStdout(), msg)
+			return nil
+		},
+	}
 }
 
 // toggleExposeForTop flips the branch's container between "all listening

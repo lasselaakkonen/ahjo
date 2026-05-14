@@ -86,6 +86,12 @@ func main() {
 			execSSHFromMac(args[1])
 			return
 		}
+	case "top":
+		if err := runMacTop(); err != nil {
+			fmt.Fprintln(os.Stderr, "ahjo:", err)
+			os.Exit(1)
+		}
+		return
 	case "doctor":
 		fix := hasFlag(args[1:], "--fix")
 		macFail := runMacDoctor(os.Stdout, fix)
@@ -649,6 +655,33 @@ func macInitSteps(yes bool) []initflow.Step {
 			},
 		},
 		{
+			Title: "Add Include directive for ahjo aliases to ~/.ssh/config",
+			Skip: func() (bool, string, error) {
+				st, err := sshIncludeStatus()
+				if err != nil {
+					return false, "", err
+				}
+				switch st {
+				case sshIncludePresent:
+					return true, "ahjo-managed Include block already present", nil
+				case sshIncludePresentManual:
+					return true, "user already maintains an Include line; ahjo will not modify ~/.ssh/config", nil
+				}
+				return false, "", nil
+			},
+			Show: "write ahjo-managed `Include ~/.ahjo-shared/ssh-config` block into ~/.ssh/config so system ssh / cursor / vscode resolve `ahjo-<slug>` Host aliases",
+			Action: func(out io.Writer) error {
+				added, err := ensureSSHInclude()
+				if err != nil {
+					return err
+				}
+				if added {
+					fmt.Fprintln(out, "  added ahjo-managed Include block to ~/.ssh/config")
+				}
+				return nil
+			},
+		},
+		{
 			Title: "Run in-VM bring-up (Incus + ahjo-base via the devcontainer Feature pipeline + claude setup-token)",
 			Note:  "interactive only for claude setup-token: it prints a URL — open it in this Mac's browser, complete the flow, paste the code back, then paste the resulting sk-ant-oat01-… token when ahjo asks. After usermod the in-VM init re-execs itself under `sg incus-admin` so everything runs end-to-end in a single call.",
 			Show:  fmt.Sprintf("limactl shell %s ahjo init -y", vmName),
@@ -726,6 +759,14 @@ func runMacNuke(yes bool) error {
 			fmt.Printf("  - skip %s (already absent)\n", cacheDir)
 		}
 		fmt.Println("  - unload the paste-daemon launchd agent (~/Library/LaunchAgents/net.ahjo.paste-daemon.plist)")
+		switch st, _ := sshIncludeStatus(); st {
+		case sshIncludePresent:
+			fmt.Println("  - strip the ahjo-managed Include block from ~/.ssh/config")
+		case sshIncludePresentManual:
+			fmt.Println("  - leave ~/.ssh/config alone (Include line is user-managed, not ours)")
+		default:
+			fmt.Println("  - skip ~/.ssh/config (no ahjo Include block present)")
+		}
 		fmt.Println("It will NOT touch ~/.ahjo/{config.toml,registry.toml,profiles,repos}.")
 		fmt.Println("Re-run with -y to proceed.")
 		return nil
@@ -763,6 +804,15 @@ func runMacNuke(yes bool) error {
 		fmt.Fprintf(os.Stderr, "warn: paste-daemon unload: %v\n", err)
 	} else {
 		fmt.Println("[ok]   unloaded")
+	}
+
+	fmt.Println("[step] Strip ahjo-managed Include block from ~/.ssh/config")
+	if removed, err := removeSSHInclude(); err != nil {
+		fmt.Fprintf(os.Stderr, "warn: ssh-include cleanup: %v\n", err)
+	} else if removed {
+		fmt.Println("[ok]   removed")
+	} else {
+		fmt.Println("[skip] no ahjo-managed block present")
 	}
 
 	fmt.Println("\nDone. Run `ahjo init` to rebuild.")

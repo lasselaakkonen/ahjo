@@ -84,7 +84,7 @@ func removeBranchLocked(reg *registry.Registry, br *registry.Branch, forceDefaul
 		}
 	}
 
-	_ = os.RemoveAll(paths.SlugHostKeysDir(br.Slug))
+	_ = os.RemoveAll(paths.SlugHostKeysDir(br.HostKeysSlug()))
 
 	pp, err := ports.Load()
 	if err != nil {

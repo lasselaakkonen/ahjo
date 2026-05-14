@@ -15,26 +15,26 @@ var (
 	detailTitle = lipgloss.NewStyle().Foreground(lipgloss.Color("#238FF9")).Bold(true)
 )
 
-func renderHostDetail(snap snapshot) string {
+func renderHostDetail(snap Snapshot) string {
 	var b strings.Builder
-	title := snap.host.Title
+	title := snap.Host.Title
 	if title == "" {
 		title = "host"
 	}
 	b.WriteString(detailTitle.Render(title))
 	b.WriteString("\n\n")
-	if len(snap.host.Lines) == 0 {
+	if len(snap.Host.Lines) == 0 {
 		b.WriteString(detailValue.Render("(no host details)"))
 		return b.String()
 	}
-	for _, line := range snap.host.Lines {
+	for _, line := range snap.Host.Lines {
 		b.WriteString(detailValue.Render(line))
 		b.WriteString("\n")
 	}
 	return b.String()
 }
 
-func renderRepoDetail(repo registry.Repo, snap snapshot) string {
+func renderRepoDetail(repo registry.Repo, snap Snapshot) string {
 	var b strings.Builder
 	b.WriteString(detailTitle.Render(repo.Name))
 	b.WriteString("\n\n")
@@ -59,7 +59,7 @@ func renderRepoDetail(repo registry.Repo, snap snapshot) string {
 	return b.String()
 }
 
-func renderBranchDetail(deps Deps, br registry.Branch, snap snapshot, status *branchStatus) string {
+func renderBranchDetail(deps Deps, br registry.Branch, snap Snapshot, status *BranchStatus) string {
 	var b strings.Builder
 	alias := br.Slug
 	if len(br.Aliases) > 0 {
@@ -79,7 +79,7 @@ func renderBranchDetail(deps Deps, br registry.Branch, snap snapshot, status *br
 	row("ssh", fmt.Sprintf("127.0.0.1:%d", br.SSHPort))
 
 	state := "missing"
-	if snap.containers[br.Slug] {
+	if snap.Containers[br.Slug] {
 		state = "present"
 	}
 	if name, err := deps.ResolveContainerName(&br); err == nil {
@@ -88,15 +88,11 @@ func renderBranchDetail(deps Deps, br registry.Branch, snap snapshot, status *br
 		row("container", state)
 	}
 
-	exposed := "-"
-	if snap.ports != nil {
-		exposed = deps.FormatExposed(snap.ports.AllocationsForSlug(br.Slug))
-	}
-	row("exposed", exposed)
+	row("exposed", deps.FormatExposed(snap.PortsByBranch[br.Slug]))
 	row("path", "/repo")
-	if snap.mirrorSlug == br.Slug {
+	if snap.MirrorSlug == br.Slug {
 		state := "active"
-		if !snap.mirrorAlive {
+		if !snap.MirrorAlive {
 			state = "inactive"
 		}
 		if target := mirrorTargetFor(snap, br.Repo); target != "" {
@@ -110,21 +106,21 @@ func renderBranchDetail(deps Deps, br registry.Branch, snap snapshot, status *br
 	}
 	row("created", br.CreatedAt.Format("2006-01-02 15:04"))
 
-	if snap.containers[br.Slug] {
+	if snap.Containers[br.Slug] {
 		row("git", formatGitStatus(status))
 		row("pr", formatPRStatus(status))
 	}
 	return b.String()
 }
 
-// formatGitStatus turns a cached branchStatus into the one-line value shown
+// formatGitStatus turns a cached BranchStatus into the one-line value shown
 // next to the "git" label. Returns "…" while the first fetch is outstanding
 // so the user gets immediate feedback that work is happening.
-func formatGitStatus(s *branchStatus) string {
+func formatGitStatus(s *BranchStatus) string {
 	if s == nil {
 		return "…"
 	}
-	if s.GitErr != nil {
+	if s.GitErr != "" {
 		return errLine(s.GitErr)
 	}
 	if !s.GitChecked {
@@ -145,11 +141,11 @@ func formatGitStatus(s *branchStatus) string {
 	return strings.Join(parts, " · ")
 }
 
-func formatPRStatus(s *branchStatus) string {
+func formatPRStatus(s *BranchStatus) string {
 	if s == nil {
 		return "…"
 	}
-	if s.PRErr != nil {
+	if s.PRErr != "" {
 		return errLine(s.PRErr)
 	}
 	if !s.PRChecked {
@@ -161,10 +157,10 @@ func formatPRStatus(s *branchStatus) string {
 	return fmt.Sprintf("#%d %s · %s", s.PR.Number, strings.ToLower(s.PR.State), s.PR.URL)
 }
 
-// errLine renders an error for the one-row detail field. Truncates to keep
-// the panel layout stable when the underlying tool prints a long stderr.
-func errLine(err error) string {
-	msg := err.Error()
+// errLine renders an error message for the one-row detail field. Truncates
+// to keep the panel layout stable when the underlying tool prints a long
+// stderr.
+func errLine(msg string) string {
 	const max = 80
 	if len(msg) > max {
 		msg = msg[:max-1] + "…"
@@ -172,18 +168,18 @@ func errLine(err error) string {
 	return msg
 }
 
-func mirrorTargetFor(snap snapshot, repoName string) string {
-	for i := range snap.repos {
-		if snap.repos[i].Name == repoName {
-			return snap.repos[i].MacMirrorTarget
+func mirrorTargetFor(snap Snapshot, repoName string) string {
+	for i := range snap.Repos {
+		if snap.Repos[i].Name == repoName {
+			return snap.Repos[i].MacMirrorTarget
 		}
 	}
 	return ""
 }
 
-func branchesFor(snap snapshot, repoName string) []registry.Branch {
+func branchesFor(snap Snapshot, repoName string) []registry.Branch {
 	var out []registry.Branch
-	for _, br := range snap.branches {
+	for _, br := range snap.Branches {
 		if br.Repo == repoName {
 			out = append(out, br)
 		}
