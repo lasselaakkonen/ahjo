@@ -110,11 +110,11 @@ func main() {
 		return
 	case "mirror":
 		// Run the "is the target dir clean?" check on Mac before relaying.
-		// The same check inside the VM reads the Mac repo through virtiofs and
-		// reports false positives (file mode + stat-cache mismatches), even
-		// when `git status` on the Mac shows clean. Mac-side is the source of
-		// truth; if it passes we tell the in-VM activate to skip its own check
-		// by passing --force.
+		// The in-VM mirror has no equivalent cleanliness check (v3 lives off
+		// systemd + incus device state), and even if it did it would read
+		// through virtiofs and false-positive on file-mode/stat-cache deltas.
+		// Mac-side is the only place we can answer the question correctly;
+		// `--force` is a Mac-only override and is stripped before relay.
 		newArgs, err := preflightMirrorOnMac(args)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "ahjo:", err)
@@ -264,11 +264,11 @@ func hasFlag(args []string, flags ...string) bool {
 
 // preflightMirrorOnMac handles the Mac-side cleanliness check for
 // `ahjo mirror <alias> --target <path>`. It runs `git status --porcelain`
-// in the target on Mac, where the user's view is authoritative. If the target
-// is clean, --force is appended so the in-VM activate skips its own check
-// (which sees the dir through virtiofs and false-positives on file-mode and
-// stat-cache deltas). If the target is dirty, it errors here instead of
-// inside the VM, where the message would be muddled by virtiofs noise.
+// in the target on Mac, where the user's view is authoritative. If the
+// target is dirty, it errors here so the user can commit/stash; `--force`
+// is the Mac-only override that bypasses the check. The in-VM mirror has
+// no `--force` flag (v3 has no in-VM cleanliness check to skip), so it's
+// always stripped before relay.
 //
 // Returns the (possibly-modified) args to relay. Forms that don't activate
 // (off, status, --daemon, no alias arg) are passed through unchanged.
@@ -277,6 +277,8 @@ func preflightMirrorOnMac(args []string) ([]string, error) {
 	rest := args[1:]
 	var alias, target string
 	force := false
+	stripped := make([]string, 0, len(args))
+	stripped = append(stripped, args[0])
 	for i := 0; i < len(rest); i++ {
 		a := rest[i]
 		switch {
@@ -286,45 +288,48 @@ func preflightMirrorOnMac(args []string) ([]string, error) {
 			return args, nil
 		case a == "--force":
 			force = true
+			// Mac-only flag; do not relay.
+			continue
 		case a == "--target":
 			if i+1 < len(rest) {
 				target = rest[i+1]
+				stripped = append(stripped, a, rest[i+1])
 				i++
+				continue
 			}
 		case strings.HasPrefix(a, "--target="):
 			target = strings.TrimPrefix(a, "--target=")
 		case strings.HasPrefix(a, "-"):
-			// other flags: ignore
+			// other flags: pass through
 		default:
 			if alias == "" {
 				alias = a
 			}
 		}
+		stripped = append(stripped, a)
 	}
 	if alias == "" || force || target == "" {
-		// No activation, or user already passed --force, or target left to
+		// No activation, user opted out of the Mac check, or target left to
 		// per-repo default (which lives in the in-VM registry — we can't see
-		// it from here). Defer to the in-VM check.
-		return args, nil
+		// it from here). Relay without the Mac-only --force.
+		return stripped, nil
 	}
 	target = expandHomeOnMac(target)
 	if !filepath.IsAbs(target) {
-		return args, nil
+		return stripped, nil
 	}
 	if _, err := os.Stat(filepath.Join(target, ".git")); err != nil {
-		return args, nil
+		return stripped, nil
 	}
 	out, err := exec.Command("git", "-C", target, "status", "--porcelain").Output()
 	if err != nil {
-		// git missing or broken: defer to in-VM. Best-effort.
-		return args, nil
+		// git missing or broken: defer. Best-effort.
+		return stripped, nil
 	}
 	if len(strings.TrimSpace(string(out))) > 0 {
 		return nil, fmt.Errorf("target %q has uncommitted changes; commit/stash first or pass --force", target)
 	}
-	// Clean per Mac. Append --force so the in-VM check (which would
-	// false-positive over virtiofs) is skipped.
-	return append(args, "--force"), nil
+	return stripped, nil
 }
 
 func expandHomeOnMac(p string) string {
