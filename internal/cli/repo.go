@@ -21,6 +21,7 @@ import (
 	"github.com/lasselaakkonen/ahjo/internal/paths"
 	"github.com/lasselaakkonen/ahjo/internal/ports"
 	"github.com/lasselaakkonen/ahjo/internal/registry"
+	"github.com/lasselaakkonen/ahjo/internal/repotoken"
 	sshpkg "github.com/lasselaakkonen/ahjo/internal/ssh"
 )
 
@@ -41,6 +42,7 @@ func newRepoCmd() *cobra.Command {
 func newRepoAddCmd() *cobra.Command {
 	var defaultBase string
 	var asAlias string
+	var tokenFile string
 	cmd := &cobra.Command{
 		Use:   "add <git-url>",
 		Short: "Register a repo: clone it inside a fresh ahjo-base container at /repo and warm-install dependencies",
@@ -49,26 +51,114 @@ Pass --as <alias> to register an additional alias for the same repo.
 On auto-alias collision (e.g. github.com/acme/api vs gitlab.com/acme/api),
 ahjo appends -2/-3/... to keep aliases unique.
 
+For GitHub remotes, ahjo prompts for a fine-grained personal access token
+scoped to that one repo. The token is stored at ~/.ahjo/repo-tokens/<slug>.env
+(mode 0600) and forwarded into the container as GH_TOKEN so the in-container
+` + "`gh`" + ` and ` + "`git`" + ` are both scoped to a single repo. Pass --token-file <path>
+to read the token from a file (one line, or a GH_TOKEN=<value> env file)
+instead of prompting — useful for automation.
+
 The repo's default-branch container becomes the COW source from which every
 subsequent ` + "`ahjo create`" + ` clones — its node_modules and pnpm store survive
 into branch containers via btrfs reflinks, eliminating the cold-install tax.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(_ *cobra.Command, args []string) error {
-			return runRepoAdd(args[0], asAlias, defaultBase)
+			return runRepoAdd(args[0], asAlias, defaultBase, tokenFile)
 		},
 	}
 	cmd.Flags().StringVar(&defaultBase, "default-base", "", "default branch to base new branches on (default: detect from the remote's HEAD)")
 	cmd.Flags().StringVar(&asAlias, "as", "", "additional alias for this repo (must not collide with any existing alias)")
+	cmd.Flags().StringVar(&tokenFile, "token-file", "", "read the GitHub PAT from this file instead of prompting (raw token or GH_TOKEN=<value> env file)")
 	return cmd
 }
 
-func runRepoAdd(input, asAlias, defaultBase string) error {
+func runRepoAdd(input, asAlias, defaultBase, tokenFile string) error {
 	url := resolveRepoURL(input)
 	slug, primary, aliases, err := repoAddPlan(url, asAlias)
 	if err != nil {
 		return err
 	}
+	// Acquire the per-repo PAT up front for GitHub remotes — failing here
+	// (user pastes nothing, --token-file unreadable, etc.) costs nothing
+	// downstream and avoids leaving a half-built container with no auth.
+	// Non-GitHub remotes use whatever auth git already has (forwarded
+	// ssh-agent, etc.); we don't manage it.
+	if owner, repo, ok := githubOwnerRepo(url); ok {
+		if err := acquireRepoToken(slug, owner+"/"+repo, tokenFile); err != nil {
+			return err
+		}
+		// Force HTTPS so the credential helper (gh auth git-credential)
+		// is what authenticates the clone. SSH would silently try the
+		// host's forwarded ssh-agent and either fail or — worse —
+		// succeed with a credential that isn't scoped to this repo.
+		url = fmt.Sprintf("https://github.com/%s/%s.git", owner, repo)
+	}
 	return repoAddSetup(slug, primary, aliases, url, defaultBase)
+}
+
+// githubOwnerRepo returns (owner, repo, true) when url points at a
+// github.com remote. Used to decide whether `ahjo repo add` should prompt
+// for a fine-grained PAT; non-GitHub remotes fall through to the existing
+// ssh-agent / public path.
+func githubOwnerRepo(url string) (owner, repo string, ok bool) {
+	url = strings.TrimSpace(url)
+	switch {
+	case strings.HasPrefix(url, "git@github.com:"):
+		rest := strings.TrimPrefix(url, "git@github.com:")
+		rest = strings.TrimSuffix(rest, ".git")
+		rest = strings.TrimSuffix(rest, "/")
+		parts := strings.SplitN(rest, "/", 3)
+		if len(parts) >= 2 && parts[0] != "" && parts[1] != "" {
+			return parts[0], parts[1], true
+		}
+	case strings.HasPrefix(url, "https://github.com/"), strings.HasPrefix(url, "http://github.com/"),
+		strings.HasPrefix(url, "ssh://git@github.com/"), strings.HasPrefix(url, "ssh://git@github.com:"):
+		// Strip scheme + host; same path-parsing as the scp-like form.
+		idx := strings.Index(url, "github.com")
+		if idx < 0 {
+			return "", "", false
+		}
+		rest := url[idx+len("github.com"):]
+		// drop optional :port
+		if strings.HasPrefix(rest, ":") {
+			if slash := strings.Index(rest, "/"); slash >= 0 {
+				rest = rest[slash:]
+			}
+		}
+		rest = strings.TrimPrefix(rest, "/")
+		rest = strings.TrimSuffix(rest, ".git")
+		rest = strings.TrimSuffix(rest, "/")
+		parts := strings.SplitN(rest, "/", 3)
+		if len(parts) >= 2 && parts[0] != "" && parts[1] != "" {
+			return parts[0], parts[1], true
+		}
+	}
+	return "", "", false
+}
+
+// acquireRepoToken obtains the per-repo PAT (from --token-file or an
+// interactive prompt) and stores it at ~/.ahjo/repo-tokens/<slug>.env.
+// Caller has already allocated slug under the lockfile; the token file
+// outlives the lockfile, which is fine — the file is per-slug and slugs
+// are unique by construction.
+func acquireRepoToken(slug, ownerRepo, tokenFile string) error {
+	var tok repotoken.Token
+	var err error
+	if tokenFile != "" {
+		tok, err = repotoken.LoadFromFile(tokenFile)
+		if err != nil {
+			return fmt.Errorf("--token-file: %w", err)
+		}
+	} else {
+		tok, err = repotoken.Prompt(cobraOut(), os.Stdin, ownerRepo)
+		if err != nil {
+			return err
+		}
+	}
+	if err := repotoken.Save(slug, tok); err != nil {
+		return fmt.Errorf("save token: %w", err)
+	}
+	return nil
 }
 
 // resolveRepoURL accepts either a git URL or a bare "<owner>/<repo>" alias
@@ -199,6 +289,15 @@ func repoAddSetup(slug, primary string, aliases []string, url, defaultBase strin
 	}
 	if err := seedGitIdentity(containerName, identity); err != nil {
 		return fmt.Errorf("seed git identity: %w", err)
+	}
+
+	// If this is a GitHub repo, runRepoAdd already stored the per-repo PAT
+	// at ~/.ahjo/repo-tokens/<slug>.env. Push it into the container as
+	// GH_TOKEN (Incus environment.* propagates to every `incus exec` and
+	// the user's interactive shell, and `incus copy` carries it to branch
+	// containers) and configure git's credential helper to use it.
+	if err := installRepoToken(containerName, slug); err != nil {
+		return fmt.Errorf("install repo token: %w", err)
 	}
 
 	// /repo is at the container root, where uid 1000 can't `mkdir`. Create
@@ -380,6 +479,39 @@ func repoAddSetup(slug, primary string, aliases []string, url, defaultBase strin
 	}
 	fmt.Printf("Repo %s ready (default: %s, ssh port %d). Try: ahjo shell %s\n",
 		slug, defaultBase, port, branchAlias)
+	return nil
+}
+
+// installRepoToken loads the per-slug PAT (if any), sets it as the
+// container's GH_TOKEN + GITHUB_TOKEN environment variables, and runs
+// `gh auth setup-git` so git uses gh's credential helper for github.com.
+// No-op when no token file exists (non-GitHub remote, or user pre-cleaned).
+//
+// environment.* keys are picked up by every subsequent `incus exec` and by
+// the user's interactive shell (the way Docker exec inherits image ENV).
+// `incus copy` propagates them to branch containers, so this runs once on
+// the default-branch container.
+func installRepoToken(containerName, slug string) error {
+	tok, ok, err := repotoken.Load(slug)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return nil
+	}
+	for _, k := range []string{"GH_TOKEN", "GITHUB_TOKEN"} {
+		if err := incus.ConfigSet(containerName, "environment."+k, string(tok)); err != nil {
+			return fmt.Errorf("set %s: %w", k, err)
+		}
+	}
+	// Make git use gh's credential helper. One-shot; the resulting
+	// ~/.gitconfig entries ride along with `incus copy` to branch
+	// containers. HOME must be explicit (incus exec doesn't read /etc/passwd).
+	env := map[string]string{"HOME": "/home/ubuntu", "GH_TOKEN": string(tok)}
+	if err := incus.ExecAs(containerName, 1000, env, "/home/ubuntu",
+		"gh", "auth", "setup-git"); err != nil {
+		return fmt.Errorf("gh auth setup-git: %w", err)
+	}
 	return nil
 }
 
@@ -787,6 +919,9 @@ func runRepoRm(alias string, force bool) error {
 		}
 	}
 	reg.RemoveRepo(repo.Name)
+	if err := repotoken.Delete(repo.Name); err != nil {
+		fmt.Fprintf(cobraOutErr(), "warn: rm token for %s: %v\n", repo.Name, err)
+	}
 	if err := reg.Save(); err != nil {
 		return err
 	}
@@ -867,7 +1002,7 @@ func EnsureRepo(repoAlias string) (*registry.Repo, error) {
 
 	url := pickGitHubURL(owner, name)
 	fmt.Printf("repo %q not registered; adding from %s...\n", repoAlias, url)
-	if err := runRepoAdd(url, "", ""); err != nil {
+	if err := runRepoAdd(url, "", "", ""); err != nil {
 		return nil, err
 	}
 

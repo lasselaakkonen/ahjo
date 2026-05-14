@@ -15,6 +15,7 @@ import (
 	"github.com/lasselaakkonen/ahjo/internal/paths"
 	"github.com/lasselaakkonen/ahjo/internal/ports"
 	"github.com/lasselaakkonen/ahjo/internal/registry"
+	"github.com/lasselaakkonen/ahjo/internal/repotoken"
 	sshpkg "github.com/lasselaakkonen/ahjo/internal/ssh"
 )
 
@@ -226,6 +227,14 @@ func removeBranchLocked(reg *registry.Registry, br *registry.Branch, forceDefaul
 	// dangle a half-broken entry.
 	if wasDefault {
 		reg.RemoveRepo(repoName)
+		// The per-repo PAT lives at ~/.ahjo/repo-tokens/<slug>.env; rm it
+		// once the repo is actually gone from the registry. Best-effort —
+		// missing file is normal (non-GitHub repo, or user pre-cleaned).
+		if err := repotoken.Delete(repoName); err != nil {
+			fmt.Fprintf(cobraOutErr(), "warn: rm token for %s: %v\n", repoName, err)
+		} else {
+			fmt.Printf("note: revoke the PAT for %s in GitHub if you no longer need it:\n  https://github.com/settings/personal-access-tokens\n", repoName)
+		}
 	}
 
 	if err := reg.Save(); err != nil {

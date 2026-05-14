@@ -69,17 +69,28 @@ func SSHConfigPath() string  { return filepath.Join(SharedDir(), SSHConfigFile) 
 func AliasesPath() string    { return filepath.Join(SharedDir(), AliasesFile) }
 func KnownHostsPath() string { return filepath.Join(SharedDir(), KnownHostsFile) }
 func HostKeysDir() string    { return filepath.Join(AhjoDir(), "host-keys") }
+func RepoTokensDir() string  { return filepath.Join(AhjoDir(), "repo-tokens") }
 
 func SlugHostKeysDir(slug string) string { return filepath.Join(HostKeysDir(), slug) }
 
-// EnsureSkeleton creates the ~/.ahjo/ directory tree (idempotent).
+// RepoTokenFile is the per-repo fine-grained GitHub PAT file. One file per
+// slug, mode 0600, single line `GH_TOKEN=<pat>`. `ahjo repo add` writes it;
+// `ahjo repo rm` deletes it. The token value is forwarded into the matching
+// container via Incus' `environment.GH_TOKEN` config key so every `incus exec`
+// (and the user's interactive shell) sees it.
+func RepoTokenFile(slug string) string { return filepath.Join(RepoTokensDir(), slug+".env") }
+
+// EnsureSkeleton creates the ~/.ahjo/ directory tree (idempotent). The
+// repo-tokens directory is mode 0700 because it holds secrets; everything
+// else is 0755.
 func EnsureSkeleton() error {
-	for _, d := range []string{
-		AhjoDir(), HostKeysDir(),
-	} {
+	for _, d := range []string{AhjoDir(), HostKeysDir()} {
 		if err := os.MkdirAll(d, 0o755); err != nil {
 			return fmt.Errorf("mkdir %s: %w", d, err)
 		}
+	}
+	if err := os.MkdirAll(RepoTokensDir(), 0o700); err != nil {
+		return fmt.Errorf("mkdir %s: %w", RepoTokensDir(), err)
 	}
 	return ensureShared()
 }
