@@ -13,6 +13,15 @@ var (
 	detailLabel = lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
 	detailValue = lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
 	detailTitle = lipgloss.NewStyle().Foreground(lipgloss.Color("#238FF9")).Bold(true)
+
+	// PR state palette — Primer dark-theme fg tokens so the colors match
+	// what users see on github.com. Only the dot + state label get tinted;
+	// the rest of the row (number, url) stays detailValue grey.
+	prStateOpen     = lipgloss.NewStyle().Foreground(lipgloss.Color("#3fb950"))
+	prStateChecking = lipgloss.NewStyle().Foreground(lipgloss.Color("#d29922"))
+	prStateFailed   = lipgloss.NewStyle().Foreground(lipgloss.Color("#f85149"))
+	prStateMerged   = lipgloss.NewStyle().Foreground(lipgloss.Color("#a371f7"))
+	prStateClosed   = lipgloss.NewStyle().Foreground(lipgloss.Color("#f85149"))
 )
 
 func renderHostDetail(snap Snapshot) string {
@@ -154,7 +163,31 @@ func FormatPRStatus(s *BranchStatus) string {
 	if s.PR == nil {
 		return "none"
 	}
-	return fmt.Sprintf("#%d %s · %s", s.PR.Number, strings.ToLower(s.PR.State), s.PR.URL)
+	label, style := prLabelStyle(s.PR)
+	colored := style.Render("● " + label)
+	return fmt.Sprintf("%s · #%d %s", colored, s.PR.Number, s.PR.URL)
+}
+
+// prLabelStyle picks the label text and color for a PR. For open PRs the
+// CI rollup (s.Checks) becomes a comma-suffix; for merged/closed the
+// state alone wins. Unknown states fall back to plain "open" styling so
+// the renderer never produces an uncolored dot.
+func prLabelStyle(pr *PRStatus) (string, lipgloss.Style) {
+	switch strings.ToUpper(pr.State) {
+	case "MERGED":
+		return "merged", prStateMerged
+	case "CLOSED":
+		return "closed", prStateClosed
+	}
+	switch pr.Checks {
+	case "failed":
+		return "open, failed", prStateFailed
+	case "checking":
+		return "open, checking", prStateChecking
+	case "passed":
+		return "open, passed", prStateOpen
+	}
+	return "open", prStateOpen
 }
 
 // errLine renders an error message for the one-row detail field. Truncates

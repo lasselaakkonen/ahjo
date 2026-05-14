@@ -123,7 +123,8 @@ func applyGitStatus(container string, bs *top.BranchStatus) {
 // result (or error) into bs. gh runs in-container so the host doesn't
 // need its own gh+auth setup. --state all surfaces merged/closed PRs;
 // --limit 1 because gh sorts newest-first and we only want the most
-// recent for this head.
+// recent for this head. statusCheckRollup is summarized down to a single
+// "passed/checking/failed" tag so the RPC payload stays small.
 func applyPRStatus(container, owner, name, branch string, bs *top.BranchStatus) {
 	out, err := runCapturing("incus", "exec", container, "--",
 		"gh", "pr", "list",
@@ -131,21 +132,97 @@ func applyPRStatus(container, owner, name, branch string, bs *top.BranchStatus) 
 		"--head", branch,
 		"--state", "all",
 		"--limit", "1",
-		"--json", "number,url,state,title")
+		"--json", "number,url,state,title,statusCheckRollup")
 	if err != nil {
 		bs.PRErr = err.Error()
 		return
 	}
-	var rows []top.PRStatus
+	var rows []prRow
 	if jerr := json.Unmarshal(out, &rows); jerr != nil {
 		bs.PRErr = fmt.Errorf("parse gh pr list: %w", jerr).Error()
 		return
 	}
 	if len(rows) > 0 {
-		pr := rows[0]
+		r := rows[0]
+		pr := top.PRStatus{
+			Number: r.Number,
+			URL:    r.URL,
+			State:  r.State,
+			Title:  r.Title,
+		}
+		if strings.EqualFold(r.State, "OPEN") {
+			pr.Checks = summarizeChecks(r.StatusCheckRollup)
+		}
 		bs.PR = &pr
 	}
 	bs.PRChecked = true
+}
+
+// prRow shadows top.PRStatus for unmarshalling the gh response so we can
+// pull statusCheckRollup off the wire without bloating top.PRStatus with
+// fields it never reads.
+type prRow struct {
+	Number            int          `json:"number"`
+	URL               string       `json:"url"`
+	State             string       `json:"state"`
+	Title             string       `json:"title"`
+	StatusCheckRollup []checkEntry `json:"statusCheckRollup"`
+}
+
+// checkEntry unions the two shapes gh returns inside statusCheckRollup:
+// CheckRun (status+conclusion) and StatusContext (state). We don't get
+// __typename from gh; presence of `status` is enough to disambiguate.
+type checkEntry struct {
+	Status     string `json:"status"`
+	Conclusion string `json:"conclusion"`
+	State      string `json:"state"`
+}
+
+// summarizeChecks folds a rollup into one label. Priority: any failure
+// wins, then any in-flight check, otherwise passed. Empty rollup → ""
+// so the renderer knows to drop the comma-suffix entirely.
+func summarizeChecks(rollup []checkEntry) string {
+	if len(rollup) == 0 {
+		return ""
+	}
+	hasPending := false
+	for _, c := range rollup {
+		switch classifyCheck(c) {
+		case "failed":
+			return "failed"
+		case "pending":
+			hasPending = true
+		}
+	}
+	if hasPending {
+		return "checking"
+	}
+	return "passed"
+}
+
+// classifyCheck reduces one rollup entry to "failed", "pending", or "ok".
+// CheckRun: not-yet-COMPLETED is pending; a COMPLETED run's conclusion
+// decides. StatusContext: state alone decides. Conclusions/states we
+// don't recognise (NEUTRAL, SKIPPED, STALE…) fall through as "ok" — they
+// shouldn't block a "passed" rollup.
+func classifyCheck(c checkEntry) string {
+	if c.Status != "" {
+		if !strings.EqualFold(c.Status, "COMPLETED") {
+			return "pending"
+		}
+		switch strings.ToUpper(c.Conclusion) {
+		case "FAILURE", "CANCELLED", "TIMED_OUT", "ACTION_REQUIRED", "STARTUP_FAILURE":
+			return "failed"
+		}
+		return "ok"
+	}
+	switch strings.ToUpper(c.State) {
+	case "FAILURE", "ERROR":
+		return "failed"
+	case "PENDING", "EXPECTED":
+		return "pending"
+	}
+	return "ok"
 }
 
 // runCapturing wraps exec.Command so we keep stdout for parsing AND attach

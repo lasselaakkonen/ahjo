@@ -25,10 +25,13 @@ type BranchStatus struct {
 	FetchedAt time.Time `json:"fetched_at"`
 }
 
-// PRStatus is the GitHub-side half of BranchStatus.
+// PRStatus is the GitHub-side half of BranchStatus. Checks summarizes the
+// statusCheckRollup into one of "passed", "checking", "failed", or "" (no
+// checks configured / not applicable). Only meaningful while State=="OPEN".
 type PRStatus struct {
 	Number int    `json:"number"`
 	URL    string `json:"url"`
 	State  string `json:"state"`
 	Title  string `json:"title"`
+	Checks string `json:"checks,omitempty"`
 }
