@@ -282,28 +282,15 @@ func (m *model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 		}
-	case focusContainers:
+	case focusContainers, focusDetails:
+		// Container-context shortcuts work the same whether focus is on the
+		// containers list or on the details pane for that container.
 		switch {
 		case key.Matches(msg, m.keys.NewContainer):
 			m.startInput(inputNewContainer)
 			return m, nil
 		case key.Matches(msg, m.keys.RemoveContainer):
 			return m, m.execWorktreeRm()
-		case key.Matches(msg, m.keys.CopyClaudeCmd):
-			return m, m.copyAhjoCmdForBranch("claude")
-		case key.Matches(msg, m.keys.CopyShellCmd):
-			return m, m.copyAhjoCmdForBranch("shell")
-		case key.Matches(msg, m.keys.OpenIDE):
-			m.startIDEPicker()
-			return m, nil
-		case key.Matches(msg, m.keys.Submit):
-			if it, ok := m.containers.SelectedItem().(containerItem); ok && it.kind == "new" {
-				m.startInput(inputNewContainer)
-				return m, nil
-			}
-		}
-	case focusDetails:
-		switch {
 		case key.Matches(msg, m.keys.ToggleExpose):
 			return m, m.execToggleExpose()
 		case key.Matches(msg, m.keys.ToggleMirror):
@@ -315,6 +302,13 @@ func (m *model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		case key.Matches(msg, m.keys.OpenIDE):
 			m.startIDEPicker()
 			return m, nil
+		case key.Matches(msg, m.keys.Submit):
+			if m.focus == focusContainers {
+				if it, ok := m.containers.SelectedItem().(containerItem); ok && it.kind == "new" {
+					m.startInput(inputNewContainer)
+					return m, nil
+				}
+			}
 		}
 	}
 
@@ -891,12 +885,8 @@ func (m *model) renderFooter() string {
 	switch m.focus {
 	case focusRepos:
 		bindings = append(bindings, m.keys.AddRepo, m.keys.RemoveRepo)
-	case focusContainers:
+	case focusContainers, focusDetails:
 		bindings = append(bindings, m.keys.NewContainer, m.keys.RemoveContainer)
-		if selectedBranch(m.containers) != nil {
-			bindings = append(bindings, m.keys.CopyClaudeCmd, m.keys.CopyShellCmd, m.keys.OpenIDE)
-		}
-	case focusDetails:
 		if selectedBranch(m.containers) != nil {
 			bindings = append(bindings, m.keys.ToggleExpose, m.keys.ToggleMirror, m.keys.CopyClaudeCmd, m.keys.CopyShellCmd, m.keys.OpenIDE)
 		}
