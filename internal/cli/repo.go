@@ -1119,7 +1119,7 @@ new ` + "`incus exec`" + ` invocations (and therefore new ` + "`ahjo shell`" + `
 sessions) pick it up immediately.
 
 Prefer fine-grained PATs scoped to a single repo:
-  → https://github.com/settings/personal-access-tokens/new`,
+  → ` + repoauth.PATSettingsURL,
 		Args: cobra.ExactArgs(1),
 		RunE: func(_ *cobra.Command, args []string) error {
 			return runRepoSetToken(args[0])
