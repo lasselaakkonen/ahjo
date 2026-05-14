@@ -28,7 +28,7 @@ On macOS, the host binary is a thin shim that relays into a Lima VM where the re
 - `ahjo-linux-amd64` — in-VM CLI (Lima on Intel)
 - `SHA256SUMS` — checksums for all four
 
-All binaries are statically linked (`CGO_ENABLED=0`) and stripped (`-s -w`). Each one carries its own version via `-X main.version=$VERSION`; check it with `ahjo version`.
+All binaries are statically linked (`CGO_ENABLED=0`) and stripped (`-s -w`). Each one carries its own version via `-X main.version=$VERSION`; check it with `ahjo --version`.
 
 The Mac binaries do not embed the Linux binary. At `ahjo init` time the Mac shim resolves the matching `ahjo-linux-<arch>` by checking, in order: `$AHJO_LINUX_BIN`, sibling of self, `<self-dir>/dist/`, `~/.ahjo/cache/`, then downloads from `releases/download/<version>/` and verifies against the same release's `SHA256SUMS`. So shipping the four binaries + `SHA256SUMS` is what makes a release self-installing.
 
@@ -66,5 +66,5 @@ Before tagging, dry-run the full pipeline locally:
 ```sh
 make clean && make dist VERSION=v0.0.0-test
 file dist/ahjo-*           # confirm Mach-O vs ELF and arch for each
-./dist/ahjo-darwin-arm64 version   # or whichever matches your host
+./dist/ahjo-darwin-arm64 --version   # or whichever matches your host
 ```
