@@ -117,6 +117,19 @@ func main() {
 		args = newArgs
 	}
 
+	// Per-repo PAT handling: on macOS we keep PATs in the user's login
+	// Keychain instead of as plaintext on the shared disk. The shim is the
+	// only writer; the in-VM ahjo reads through GH_TOKEN injected on the
+	// relay command line. Errors here are fatal — they only happen when the
+	// Keychain is locked or `security` is broken, both of which the user
+	// must fix before continuing.
+	newArgs, repoEnv, err := interceptRepoSubcommand(args)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "ahjo:", err)
+		os.Exit(1)
+	}
+	args = newArgs
+
 	if err := preflightLima(); err != nil {
 		fmt.Fprintln(os.Stderr, "ahjo:", err)
 		os.Exit(1)
@@ -165,15 +178,57 @@ func main() {
 	if home, err := os.UserHomeDir(); err == nil {
 		envPairs = append(envPairs, "AHJO_HOST_HOME="+home)
 	}
+	envPairs = append(envPairs, repoEnv...)
 	if len(envPairs) > 0 {
 		relayPrefix = append(relayPrefix, "env")
 		relayPrefix = append(relayPrefix, envPairs...)
 	}
 	relayArgs := append(relayPrefix, append([]string{"ahjo"}, args...)...)
+
+	// `rm` and `repo rm` need to drop their Keychain rows after the in-VM
+	// ahjo decides whether the alias actually removed the repo (true for the
+	// default branch, false otherwise). The in-VM ahjo writes a marker file
+	// under <SharedDir>/.keychain-cleanup/; we sweep it after relay returns.
+	// `lima.Exec` syscall.Exec's into limactl, so for the sweep to run we
+	// must use a cmd.Run + propagate-exit pattern instead.
+	if needsKeychainSweep(args) {
+		cmd := exec.Command("limactl", relayArgs...)
+		cmd.Stdin = os.Stdin
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		err := cmd.Run()
+		sweepKeychainCleanup()
+		if err != nil {
+			if ee, ok := err.(*exec.ExitError); ok {
+				os.Exit(ee.ExitCode())
+			}
+			fmt.Fprintln(os.Stderr, "ahjo: exec limactl:", err)
+			os.Exit(1)
+		}
+		return
+	}
 	if err := lima.Exec(relayArgs...); err != nil {
 		fmt.Fprintln(os.Stderr, "ahjo: exec limactl:", err)
 		os.Exit(1)
 	}
+}
+
+// needsKeychainSweep reports whether the relay must run as a child (so the
+// shim can sweep cleanup markers after it returns) instead of `syscall.Exec`.
+// `rm <alias>` may end up removing a repo if alias names the default branch;
+// `repo rm <alias>` always does. Either way, the in-VM ahjo writes a marker
+// file the shim consumes here.
+func needsKeychainSweep(args []string) bool {
+	if len(args) == 0 {
+		return false
+	}
+	if args[0] == "rm" {
+		return true
+	}
+	if args[0] == "repo" && len(args) >= 2 && args[1] == "rm" {
+		return true
+	}
+	return false
 }
 
 func printUsage() {

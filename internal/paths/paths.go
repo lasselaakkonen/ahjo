@@ -17,6 +17,7 @@ const (
 	LockFile        = ".lock"
 	SSHConfigFile   = "ssh-config"
 	AliasesFile     = "aliases"
+	RepoAliasesFile = "repo-aliases"
 	KnownHostsFile  = "known_hosts"
 	AhjoBaseProfile = "ahjo-base"
 
@@ -61,14 +62,20 @@ func SharedDir() string {
 	}
 	return filepath.Join(home(), SharedDirName)
 }
-func RegistryPath() string   { return filepath.Join(AhjoDir(), RegistryFile) }
-func PortsPath() string      { return filepath.Join(AhjoDir(), PortsFile) }
-func ConfigPath() string     { return filepath.Join(AhjoDir(), ConfigFile) }
-func LockPath() string       { return filepath.Join(AhjoDir(), LockFile) }
-func SSHConfigPath() string  { return filepath.Join(SharedDir(), SSHConfigFile) }
-func AliasesPath() string    { return filepath.Join(SharedDir(), AliasesFile) }
-func KnownHostsPath() string { return filepath.Join(SharedDir(), KnownHostsFile) }
-func HostKeysDir() string    { return filepath.Join(AhjoDir(), "host-keys") }
+func RegistryPath() string  { return filepath.Join(AhjoDir(), RegistryFile) }
+func PortsPath() string     { return filepath.Join(AhjoDir(), PortsFile) }
+func ConfigPath() string    { return filepath.Join(AhjoDir(), ConfigFile) }
+func LockPath() string      { return filepath.Join(AhjoDir(), LockFile) }
+func SSHConfigPath() string { return filepath.Join(SharedDir(), SSHConfigFile) }
+func AliasesPath() string   { return filepath.Join(SharedDir(), AliasesFile) }
+
+// RepoAliasesPath is the alias→repo-slug mapping. Written by the in-VM ahjo,
+// read by the Mac shim to resolve which Keychain account to read/write for a
+// given user-typed alias. Both repo aliases (e.g. "acme/api") and branch
+// aliases (e.g. "acme/api@main") resolve to the parent repo's slug.
+func RepoAliasesPath() string { return filepath.Join(SharedDir(), RepoAliasesFile) }
+func KnownHostsPath() string  { return filepath.Join(SharedDir(), KnownHostsFile) }
+func HostKeysDir() string     { return filepath.Join(AhjoDir(), "host-keys") }
 
 func SlugHostKeysDir(slug string) string { return filepath.Join(HostKeysDir(), slug) }
 
@@ -85,6 +92,18 @@ func RepoEnvDir() string { return filepath.Join(SharedDir(), "repo-env") }
 
 // SlugEnvPath is the per-repo .env file for slug.
 func SlugEnvPath(slug string) string { return filepath.Join(RepoEnvDir(), slug+".env") }
+
+// KeychainCleanupDir is the marker-file drop point the in-VM ahjo writes when
+// a repo's per-repo PAT should be deleted from the Mac Keychain. The Mac shim
+// reads this directory after every relay and runs `security
+// delete-generic-password` for each marker. Lives under SharedDir() so the
+// shim and the in-VM build see the same paths via virtiofs.
+func KeychainCleanupDir() string { return filepath.Join(SharedDir(), ".keychain-cleanup") }
+
+// KeychainCleanupMarker is the marker file path for slug.
+func KeychainCleanupMarker(slug string) string {
+	return filepath.Join(KeychainCleanupDir(), slug)
+}
 
 // EnsureSkeleton creates the ~/.ahjo/ directory tree (idempotent).
 func EnsureSkeleton() error {

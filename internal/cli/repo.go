@@ -30,6 +30,47 @@ import (
 // decisions, so applyRepoFeatures prompts on every non-curated source.
 var featureConsentForNew = map[string]bool{}
 
+// dropRepoToken removes the per-repo PAT side-effect. On Linux bare-metal the
+// per-repo .env file under SharedDir() is the authoritative store, so it gets
+// `os.Remove`d directly. On Mac users' VM the Keychain entry lives on the
+// host where the in-VM ahjo can't reach `security`; we drop a marker file
+// under <SharedDir>/.keychain-cleanup/<slug> for the Mac shim to sweep after
+// it sees the in-VM call return. Either side is best-effort; the registry
+// row is the source of truth for "is this repo gone?".
+func dropRepoToken(slug string) {
+	if _, isMac := paths.MacHostHome(); isMac {
+		dir := paths.KeychainCleanupDir()
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			fmt.Fprintf(cobraOutErr(), "warn: mkdir %s: %v\n", dir, err)
+			return
+		}
+		marker := paths.KeychainCleanupMarker(slug)
+		if err := os.WriteFile(marker, nil, 0o600); err != nil {
+			fmt.Fprintf(cobraOutErr(), "warn: write Keychain cleanup marker %s: %v\n", marker, err)
+		}
+		return
+	}
+	if err := os.Remove(paths.SlugEnvPath(slug)); err != nil && !os.IsNotExist(err) {
+		fmt.Fprintf(cobraOutErr(), "warn: remove %s: %v\n", paths.SlugEnvPath(slug), err)
+	}
+}
+
+// repoToken centralizes "what's the GH PAT for this repo right now?" across
+// the two backends. On Mac users' VM (MacHostHome() truthy) the Mac shim
+// reads from Keychain pre-relay and injects GH_TOKEN; the in-VM code never
+// touches the disk path so a script grepping ~ for `ghp_*` finds nothing.
+// On standalone Linux the per-repo .env file under SharedDir() is the
+// canonical store and the env var is unused.
+func repoToken(slug string) (string, bool, error) {
+	if v := os.Getenv(tokenstore.GHTokenEnv); v != "" {
+		return v, true, nil
+	}
+	if _, isMac := paths.MacHostHome(); isMac {
+		return "", false, nil
+	}
+	return tokenstore.GetAt(paths.SlugEnvPath(slug), tokenstore.GHTokenEnv)
+}
+
 func newRepoCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "repo",
@@ -230,13 +271,13 @@ func repoAddSetup(slug, primary string, aliases []string, url, defaultBase strin
 		return err
 	}
 	// If a token landed (either from this prompt or a prior repo-set-token
-	// run that failed mid-flow), promote it from the per-repo .env onto the
-	// container as environment.GH_TOKEN/GITHUB_TOKEN and configure git's
-	// HTTPS credential helper. Both are no-ops when the token is absent —
-	// users who skipped the prompt keep the existing ssh-agent/public-clone
-	// paths exactly. `incus copy` carries environment.* and the in-$HOME
-	// .gitconfig into every branch container, so this runs once.
-	if tok, found, err := tokenstore.GetAt(paths.SlugEnvPath(slug), tokenstore.GHTokenEnv); err != nil {
+	// run that failed mid-flow), promote it onto the container as
+	// environment.GH_TOKEN/GITHUB_TOKEN and configure git's HTTPS credential
+	// helper. Both are no-ops when the token is absent — users who skipped
+	// the prompt keep the existing ssh-agent/public-clone paths exactly.
+	// `incus copy` carries environment.* and the in-$HOME .gitconfig into
+	// every branch container, so this runs once.
+	if tok, found, err := repoToken(slug); err != nil {
 		return err
 	} else if found && tok != "" {
 		if err := installRepoToken(func(k, v string) error { return incus.ConfigSet(containerName, k, v) }, tok); err != nil {
@@ -847,12 +888,10 @@ func runRepoRm(alias string, force bool) error {
 			fmt.Fprintf(cobraOutErr(), "warn: incus delete %s: %v\n", name, err)
 		}
 	}
-	// Remove the per-repo .env (mode 0600 secret). Best-effort: a missing
-	// file is fine, a permission failure is logged but doesn't block the
-	// rest of the cleanup.
-	if err := os.Remove(paths.SlugEnvPath(repo.Name)); err != nil && !os.IsNotExist(err) {
-		fmt.Fprintf(cobraOutErr(), "warn: remove %s: %v\n", paths.SlugEnvPath(repo.Name), err)
-	}
+	// Drop the per-repo PAT (Linux: the .env on disk; Mac: a marker file the
+	// shim sweeps post-relay against Keychain). Best-effort: a missing file
+	// is fine; permission failures log but don't block the rest of cleanup.
+	dropRepoToken(repo.Name)
 	reg.RemoveRepo(repo.Name)
 	if err := reg.Save(); err != nil {
 		return err
@@ -996,11 +1035,18 @@ func probeSSHReachable(url string) bool {
 // answerable once the repo identity exists. Fine-grained PATs cannot be
 // API-minted; the user creates them through the GitHub UI.
 func promptRepoGHToken(slug, primary string, yes bool) error {
-	envPath := paths.SlugEnvPath(slug)
-	if _, found, err := tokenstore.GetAt(envPath, tokenstore.GHTokenEnv); err != nil {
+	if _, found, err := repoToken(slug); err != nil {
 		return err
 	} else if found {
 		fmt.Fprintln(cobraOut(), "  → GH_TOKEN already set for this repo; skipping prompt.")
+		return nil
+	}
+	// On Mac users' VM the shim is the canonical writer; an unset token here
+	// means the user declined or hasn't been prompted yet by the shim. The
+	// in-VM prompt path stays disabled — re-prompting would either land the
+	// PAT on disk (the whole point of the Keychain move is to avoid that) or
+	// silently no-op via saveRepoGHToken's guard.
+	if _, isMac := paths.MacHostHome(); isMac {
 		return nil
 	}
 	if yes {
@@ -1052,7 +1098,15 @@ func promptRepoGHToken(slug, primary string, yes bool) error {
 
 // saveRepoGHToken validates tok permissively and writes it to the per-repo
 // .env file. The non-canonical hint is printed to stderr but doesn't reject.
+//
+// On Mac users' VM this path is unreachable: the Mac shim intercepts the
+// PAT prompt pre-relay and stores in Keychain instead. We still guard here
+// so a future caller can't accidentally land a plaintext PAT on disk —
+// returns a clear error rather than silently writing.
 func saveRepoGHToken(slug, tok string) error {
+	if _, isMac := paths.MacHostHome(); isMac {
+		return fmt.Errorf("refusing to write per-repo PAT to disk on macOS — the Mac shim is the canonical writer (Keychain)")
+	}
 	canonical, hint, err := looksLikeGitHubToken(tok)
 	if err != nil {
 		return fmt.Errorf("token rejected: %w", err)
@@ -1101,15 +1155,29 @@ func runRepoSetToken(alias string) error {
 	if repo == nil {
 		return fmt.Errorf("no repo with alias %q (try `ahjo repo ls`)", alias)
 	}
-	tok, err := readSecret(os.Stdin, cobraOut(), cobraOutErr(), fmt.Sprintf("Paste GitHub token for %s: ", repo.Aliases[0]))
-	if err != nil {
-		return err
-	}
-	if tok == "" {
-		return fmt.Errorf("no token entered")
-	}
-	if err := saveRepoGHToken(repo.Name, tok); err != nil {
-		return err
+	// On Mac users' VM the shim has already prompted, written Keychain, and
+	// forwarded the value via GH_TOKEN. Skip the in-VM prompt + disk write,
+	// just re-apply environment.GH_TOKEN to existing containers using the env
+	// value. If the env is empty here despite being on Mac, the shim refused
+	// to relay — surface that as a defensive error rather than re-prompting
+	// (which would route through saveRepoGHToken's Mac guard anyway).
+	var tok string
+	if _, isMac := paths.MacHostHome(); isMac {
+		tok = os.Getenv(tokenstore.GHTokenEnv)
+		if tok == "" {
+			return fmt.Errorf("on macOS the Mac shim is the canonical path; rerun `ahjo repo set-token %s` outside the VM, or unlock your login Keychain", alias)
+		}
+	} else {
+		tok, err = readSecret(os.Stdin, cobraOut(), cobraOutErr(), fmt.Sprintf("Paste GitHub token for %s: ", repo.Aliases[0]))
+		if err != nil {
+			return err
+		}
+		if tok == "" {
+			return fmt.Errorf("no token entered")
+		}
+		if err := saveRepoGHToken(repo.Name, tok); err != nil {
+			return err
+		}
 	}
 
 	// Re-apply environment.GH_TOKEN to every container in this repo (the

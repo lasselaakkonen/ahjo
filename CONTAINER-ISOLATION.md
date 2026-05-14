@@ -45,7 +45,8 @@ These are the *intentional* leaks — every other path is closed.
 | `~/.ahjo-shared/` (Lima 9p mount) | VM → Mac, read-write | generated `ssh-config` + `aliases` map so `ahjo ssh <alias>` works from the Mac |
 | `forward_env` | VM → container | only the names listed in `~/.ahjo/config.toml` (default: `ANTHROPIC_AUTH_TOKEN` from `~/.ahjo/.env`) |
 | Host keys dir | VM → container, read-only | per-branch sshd keys + `authorized_keys` (single-file bind mount at `/home/ubuntu/.ssh/authorized_keys`) |
-| SSH agent socket | Mac → VM → container | **see below** |
+| SSH agent socket | Mac → VM → container | **see "GitHub credentials" below** |
+| Per-repo GH PAT | Mac Keychain (or Linux disk) → VM → container | one `GH_TOKEN` per repo, injected on each relay; **see below** |
 
 Nothing else crosses — no `~/.ssh/`, no `~/.gitconfig`, no shell history, no `~/Library`.
 
@@ -62,6 +63,21 @@ ahjo applies the mapping itself, with two pieces both wired into `ahjo init` / `
 The two-line `uid` + `gid` form is deliberate (instead of incus's shorter `both` form): on Lima setups where macOS uid (e.g. 501) propagates into the VM but the gid stays the Lima default (1000), `both 501 1000` would also try to map gid 501 onto 1000, which `/etc/subgid` doesn't grant. Splitting uid and gid lets each map independently.
 
 See the [Incus docs on `raw.idmap`](https://linuxcontainers.org/incus/docs/main/reference/instance_options/#instance-raw) for the kernel-level mechanism.
+
+## GitHub credentials
+
+ahjo handles SSH and HTTPS remotes differently. SSH leans on agent forwarding (next section). HTTPS uses a per-repo PAT prompted at `ahjo repo add` (or set later with `ahjo repo set-token <alias>`), forwarded into containers as `GH_TOKEN` / `GITHUB_TOKEN`, and wired into git via `gh auth setup-git`.
+
+Where the PAT lives:
+
+| Host         | Store                                                                          | Reader                                                                                |
+| ---          | ---                                                                            | ---                                                                                   |
+| macOS        | login Keychain, service `ahjo.GH_TOKEN`, account = repo slug                   | Mac shim only — reads pre-relay, injects `GH_TOKEN` on `limactl shell`                |
+| Linux bare-metal | `~/.ahjo-shared/repo-env/<slug>.env` (mode 0600)                           | in-VM ahjo reads disk directly                                                        |
+
+On Mac the shim is the only writer; the in-VM ahjo never touches disk for the PAT. A `grep ~/ -r 'ghp_\|github_pat_'` finds nothing — the Keychain DB is encrypted. `ahjo repo rm` (or `ahjo rm` of the default branch) drops a marker the shim sweeps post-relay so Keychain rows don't outlive the repo.
+
+What this does **not** defend against: code running as you on the Mac (it can call `security` itself, or read the live container's env); the PAT inside the container (any process there sees `GH_TOKEN`). The Keychain move closes accidental disk leakage — Time Machine, `rsync ~`, secret scanners — not an active adversary with shell.
 
 ## The SSH-agent hole
 

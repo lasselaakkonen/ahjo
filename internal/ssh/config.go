@@ -53,7 +53,35 @@ func RegenerateConfig(reg *registry.Registry) error {
 		return err
 	}
 
+	if err := writeRepoAliases(reg); err != nil {
+		return err
+	}
+
 	return writeKnownHosts(knownHosts, bs)
+}
+
+// writeRepoAliases emits the alias→repo-slug map the Mac shim consults to
+// pick the Keychain account for a user-typed alias. Each repo alias resolves
+// to the repo's own slug; each branch alias resolves to the parent repo's
+// slug (not the branch slug) so per-repo PATs key off one identity regardless
+// of how many branches share them.
+func writeRepoAliases(reg *registry.Registry) error {
+	repos := append([]registry.Repo(nil), reg.Repos...)
+	sort.Slice(repos, func(i, j int) bool { return repos[i].Name < repos[j].Name })
+
+	var b strings.Builder
+	fmt.Fprintln(&b, "# ahjo-managed: alias\trepo-slug, do not edit")
+	for _, r := range repos {
+		for _, a := range r.Aliases {
+			fmt.Fprintf(&b, "%s\t%s\n", a, r.Name)
+		}
+	}
+	for _, br := range reg.Branches {
+		for _, a := range br.Aliases {
+			fmt.Fprintf(&b, "%s\t%s\n", a, br.Repo)
+		}
+	}
+	return writeAtomic(paths.RepoAliasesPath(), b.String(), 0o644)
 }
 
 // writeKnownHosts concatenates each branch's per-slug known_hosts into a

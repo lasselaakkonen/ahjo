@@ -13,10 +13,13 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"sort"
 	"strings"
 
 	"github.com/lasselaakkonen/ahjo/internal/agent"
 	"github.com/lasselaakkonen/ahjo/internal/lima"
+	"github.com/lasselaakkonen/ahjo/internal/macsecret"
+	"github.com/lasselaakkonen/ahjo/internal/paths"
 	"github.com/lasselaakkonen/ahjo/internal/preflight"
 )
 
@@ -36,6 +39,7 @@ func runMacDoctor(w io.Writer, fix bool) bool {
 	ps := []preflight.Problem{
 		hostP,
 		checkSSHAuthSockKind(),
+		checkKeychainPATs(),
 	}
 	vmP, runVMCheck := checkVMRunning()
 	ps = append(ps, vmP)
@@ -120,6 +124,95 @@ func fixStaleAgentForward() preflight.Problem {
 		Detail:   post.Detail,
 		Fix:      post.Fix,
 	}
+}
+
+// checkKeychainPATs surveys per-repo PAT coverage in the macOS login
+// Keychain. It reads the in-VM-written <SharedDir>/repo-aliases file to
+// enumerate registered repo slugs and probes (without `-w`, so values are
+// never read) each one's GH_TOKEN row. A miss means the user added the repo
+// without pasting a PAT, or deleted it manually from Keychain Access.app.
+//
+// The "[ok]" baseline is "every registered repo has a Keychain entry, OR
+// none are registered yet"; one or more misses is a Warn (matching the
+// Linux-side "no GH_TOKEN" wording) rather than Fail because public-repo
+// flows + ssh-agent still work.
+func checkKeychainPATs() preflight.Problem {
+	slugs, err := readRepoSlugsFromFile(paths.RepoAliasesPath())
+	if err != nil {
+		if os.IsNotExist(err) {
+			return preflight.Problem{Severity: preflight.OK, Title: "no repos registered; Keychain survey skipped"}
+		}
+		return preflight.Problem{
+			Severity: preflight.Warn,
+			Title:    "could not read repo-aliases for Keychain survey",
+			Detail:   err.Error(),
+		}
+	}
+	if len(slugs) == 0 {
+		return preflight.Problem{Severity: preflight.OK, Title: "no repos registered; Keychain survey skipped"}
+	}
+	var present, missing []string
+	for _, s := range slugs {
+		ok, err := macsecret.Probe(s, ghTokenKey)
+		if err != nil {
+			return preflight.Problem{
+				Severity: preflight.Fail,
+				Title:    "could not probe Keychain for per-repo PATs",
+				Detail:   err.Error(),
+				Fix:      "unlock the login keychain in Keychain Access, then re-run `ahjo doctor`",
+			}
+		}
+		if ok {
+			present = append(present, s)
+		} else {
+			missing = append(missing, s)
+		}
+	}
+	if len(missing) == 0 {
+		return preflight.Problem{
+			Severity: preflight.OK,
+			Title:    fmt.Sprintf("per-repo PAT in Keychain for all %d repo(s)", len(present)),
+		}
+	}
+	return preflight.Problem{
+		Severity: preflight.Warn,
+		Title:    fmt.Sprintf("per-repo PAT in Keychain: %d of %d repo(s)", len(present), len(slugs)),
+		Detail:   "missing: " + strings.Join(missing, ", "),
+		Fix:      "ahjo repo set-token <alias>  # prompt + Keychain write",
+	}
+}
+
+// readRepoSlugsFromFile parses <SharedDir>/repo-aliases for unique repo slugs.
+// Returns them in deterministic (alphabetic) order so doctor output is stable
+// across runs.
+func readRepoSlugsFromFile(path string) ([]string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	seen := map[string]struct{}{}
+	sc := bufio.NewScanner(f)
+	for sc.Scan() {
+		line := strings.TrimSpace(sc.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		parts := strings.SplitN(line, "\t", 2)
+		if len(parts) != 2 || parts[1] == "" {
+			continue
+		}
+		seen[parts[1]] = struct{}{}
+	}
+	if err := sc.Err(); err != nil {
+		return nil, err
+	}
+	out := make([]string, 0, len(seen))
+	for s := range seen {
+		out = append(out, s)
+	}
+	sort.Strings(out)
+	return out, nil
 }
 
 // checkAgentConfigured reports whether `ahjo init` has picked an agent

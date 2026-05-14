@@ -45,6 +45,9 @@ func Run() []Problem {
 	if p, ok := checkLegacyRepoEnv(); ok {
 		ps = append(ps, p)
 	}
+	if p, ok := checkSharedRepoEnvOnMac(); ok {
+		ps = append(ps, p)
+	}
 	ps = append(ps, checkGitIdentity())
 	ps = append(ps, checkStoragePool())
 	ps = append(ps, checkAhjoBase())
@@ -101,6 +104,12 @@ func checkOAuthToken() Problem {
 // work in any container. Repos without their own PAT are listed so the user
 // can decide which ones to set.
 func checkAnyGHToken() Problem {
+	if _, isMac := paths.MacHostHome(); isMac {
+		// Per-repo PATs live in the user's login Keychain on macOS, not on
+		// disk. The in-VM ahjo has no Keychain visibility from inside the VM;
+		// the Mac-side doctor block (checkKeychainPATs) surveys them.
+		return Problem{Severity: OK, Title: "per-repo PATs surveyed Mac-side; see host checks above"}
+	}
 	reg, err := registry.Load()
 	if err != nil {
 		return Problem{Severity: Warn, Title: "could not load registry for GH_TOKEN survey", Detail: err.Error()}
@@ -189,6 +198,43 @@ func checkLegacyRepoEnv() (Problem, bool) {
 	}, true
 }
 
+// checkSharedRepoEnvOnMac warns when, on a Mac users' VM, the new shared
+// repo-env path (~/.ahjo-shared/repo-env/<slug>.env) still has plaintext PAT
+// files. After the Keychain move, PATs should live in the macOS login
+// Keychain only; on-disk copies defeat the "grep ~ for ghp_… finds nothing"
+// goal. Per the project's no-runtime-migration rule, the user self-migrates
+// by running `ahjo repo set-token <alias>` once Mac-side and then removing
+// the leftover dir.
+func checkSharedRepoEnvOnMac() (Problem, bool) {
+	if _, isMac := paths.MacHostHome(); !isMac {
+		return Problem{}, false
+	}
+	shared := paths.RepoEnvDir()
+	entries, err := os.ReadDir(shared)
+	if err != nil {
+		return Problem{}, false
+	}
+	var slugs []string
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".env") {
+			continue
+		}
+		slugs = append(slugs, strings.TrimSuffix(e.Name(), ".env"))
+	}
+	if len(slugs) == 0 {
+		return Problem{}, false
+	}
+	return Problem{
+		Severity: Warn,
+		Title:    fmt.Sprintf("%d per-repo PAT file(s) on disk at %s", len(slugs), shared),
+		Detail: "on macOS, per-repo PATs should live in the login Keychain — not in the " +
+			"shared host directory where a backup or `grep ~` would find them. " +
+			"Affected repos: " + strings.Join(slugs, ", "),
+		Fix: "for each: ahjo repo set-token <alias>  # stores in Keychain via the Mac shim\n" +
+			"       then: rm -rf " + shared,
+	}, true
+}
+
 // checkRepoTokenForwarding probes each registered repo's default-branch
 // container for the two pieces of in-container plumbing that make raw
 // `git clone/fetch/push/pull` over HTTPS work without per-call env juggling:
@@ -204,6 +250,14 @@ func checkLegacyRepoEnv() (Problem, bool) {
 // container-side propagation of an existing token.
 func checkRepoTokenForwarding() []Problem {
 	if _, err := exec.LookPath("incus"); err != nil {
+		return nil
+	}
+	// On Mac users' VM the per-repo PAT lives in the Keychain on the host.
+	// The Mac shim injects GH_TOKEN onto every `ahjo shell` / `ahjo claude`
+	// relay; container env may legitimately be empty between sessions.
+	// Surveying it from the in-VM side produces false negatives, so the
+	// Mac-side doctor block is the source of truth.
+	if _, isMac := paths.MacHostHome(); isMac {
 		return nil
 	}
 	reg, err := registry.Load()
