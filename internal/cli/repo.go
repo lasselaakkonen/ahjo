@@ -53,7 +53,13 @@ ahjo appends -2/-3/... to keep aliases unique.
 
 The repo's default-branch container becomes the COW source from which every
 subsequent ` + "`ahjo create`" + ` clones — its node_modules and pnpm store survive
-into branch containers via btrfs reflinks, eliminating the cold-install tax.`,
+into branch containers via btrfs reflinks, eliminating the cold-install tax.
+
+URL handling: pass the URL you actually want to use. SSH remotes
+(git@github.com:…) keep using the host's ssh-agent (forwarded into the
+container). HTTPS remotes (https://github.com/…) authenticate via the
+per-repo PAT prompted for after clone — ` + "`gh auth setup-git`" + ` wires git's
+HTTPS credential helper to read it. ahjo does not auto-rewrite SSH ↔ HTTPS.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(_ *cobra.Command, args []string) error {
 			return runRepoAdd(args[0], asAlias, defaultBase, yes)
@@ -222,6 +228,28 @@ func repoAddSetup(slug, primary string, aliases []string, url, defaultBase strin
 	// already-set / empty paste. See `ahjo repo set-token` to add later.
 	if err := promptRepoGHToken(slug, primary, yes); err != nil {
 		return err
+	}
+	// If a token landed (either from this prompt or a prior repo-set-token
+	// run that failed mid-flow), promote it from the per-repo .env onto the
+	// container as environment.GH_TOKEN/GITHUB_TOKEN and configure git's
+	// HTTPS credential helper. Both are no-ops when the token is absent —
+	// users who skipped the prompt keep the existing ssh-agent/public-clone
+	// paths exactly. `incus copy` carries environment.* and the in-$HOME
+	// .gitconfig into every branch container, so this runs once.
+	if tok, found, err := tokenstore.GetAt(paths.SlugEnvPath(slug), tokenstore.GHTokenEnv); err != nil {
+		return err
+	} else if found && tok != "" {
+		if err := installRepoToken(func(k, v string) error { return incus.ConfigSet(containerName, k, v) }, tok); err != nil {
+			return fmt.Errorf("forward GH_TOKEN to container: %w", err)
+		}
+		if err := incus.ExecAs(
+			containerName, 1000,
+			map[string]string{"HOME": "/home/ubuntu", "GH_TOKEN": tok},
+			"/home/ubuntu",
+			"gh", "auth", "setup-git",
+		); err != nil {
+			return fmt.Errorf("gh auth setup-git: %w", err)
+		}
 	}
 
 	if defaultBase == "" {
@@ -998,8 +1026,11 @@ func promptRepoGHToken(slug, primary string, yes bool) error {
 	if scopeNote != "" {
 		fmt.Fprint(out, scopeNote)
 	}
-	fmt.Fprintln(out, "        Permissions:        Contents (read or RW), Pull requests (RW),")
-	fmt.Fprintln(out, "                            Issues (RW), Metadata (read — required)")
+	fmt.Fprintln(out, "        Permissions:")
+	fmt.Fprintln(out, "          - Contents       (RW — needed to push commits and merge PRs)")
+	fmt.Fprintln(out, "          - Pull requests  (RW)")
+	fmt.Fprintln(out, "          - Issues         (RW)")
+	fmt.Fprintln(out, "          - Metadata       (read — required)")
 	fmt.Fprintln(out, "        Expiration:         your call")
 	fmt.Fprintln(out)
 	fmt.Fprintln(out, "  Classic PAT — broader, easier, less safe.")
@@ -1045,6 +1076,12 @@ func newRepoSetTokenCmd() *cobra.Command {
 ~/.ahjo/repo-env/<slug>.env (mode 0600). The token is forwarded into every
 container for this repo via GH_TOKEN.
 
+ahjo also re-applies environment.GH_TOKEN/GITHUB_TOKEN on each existing
+container (default-branch + every branch). Already-running containers will
+need a restart for any currently-attached shells to see the new value;
+new ` + "`incus exec`" + ` invocations (and therefore new ` + "`ahjo shell`" + ` / ` + "`ahjo claude`" + `
+sessions) pick it up immediately.
+
 Prefer fine-grained PATs scoped to a single repo:
   → https://github.com/settings/personal-access-tokens/new`,
 		Args: cobra.ExactArgs(1),
@@ -1070,7 +1107,90 @@ func runRepoSetToken(alias string) error {
 	if tok == "" {
 		return fmt.Errorf("no token entered")
 	}
-	return saveRepoGHToken(repo.Name, tok)
+	if err := saveRepoGHToken(repo.Name, tok); err != nil {
+		return err
+	}
+
+	// Re-apply environment.GH_TOKEN to every container in this repo (the
+	// default-branch container plus each branch). Already-running
+	// containers won't pick this up in shells that are already attached;
+	// new `incus exec` invocations do. The credential helper line in
+	// .gitconfig doesn't depend on the token value, so no second
+	// `gh auth setup-git` is needed here.
+	containers := repoContainerNames(reg, repo.Name)
+	updated := 0
+	for _, name := range containers {
+		exists, err := incus.ContainerExists(name)
+		if err != nil {
+			fmt.Fprintf(cobraOutErr(), "warn: probe %s: %v\n", name, err)
+			continue
+		}
+		if !exists {
+			continue
+		}
+		if err := installRepoToken(func(k, v string) error { return incus.ConfigSet(name, k, v) }, tok); err != nil {
+			fmt.Fprintf(cobraOutErr(), "warn: forward GH_TOKEN to %s: %v\n", name, err)
+			continue
+		}
+		updated++
+	}
+	if updated > 0 {
+		fmt.Fprintf(cobraOut(), "  → forwarded to %d container(s); restart any already-attached shells to pick up the new value\n", updated)
+	}
+	return nil
+}
+
+// installRepoToken pushes the per-repo GH PAT onto a container as
+// environment.GH_TOKEN and environment.GITHUB_TOKEN via setter. Both names
+// are set because tools split on which one they read: gh prefers GH_TOKEN
+// but `git` invoked through gh's credential helper falls through to
+// whichever the OAuth helper hands it, and some legacy tooling in
+// downstream Features still keys off GITHUB_TOKEN. Setting one without the
+// other leaves a confusing half-state where some calls auth and others
+// don't.
+//
+// Returned errors carry the underlying setter error verbatim — the caller
+// decides whether a single config-set failure is fatal (repo add) or
+// best-effort per container (repo set-token).
+func installRepoToken(setter func(key, value string) error, tok string) error {
+	for _, k := range []string{"environment.GH_TOKEN", "environment.GITHUB_TOKEN"} {
+		if err := setter(k, tok); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// repoContainerNames returns every container name owned by repoSlug — the
+// default-branch container plus each branch's incus_name. Filters out
+// empty entries (legacy registry rows that pre-date BaseContainerName).
+func repoContainerNames(reg *registry.Registry, repoSlug string) []string {
+	var out []string
+	if r := reg.FindRepo(repoSlug); r != nil && r.BaseContainerName != "" {
+		out = append(out, r.BaseContainerName)
+	}
+	for i := range reg.Branches {
+		if reg.Branches[i].Repo != repoSlug {
+			continue
+		}
+		name := reg.Branches[i].IncusName
+		if name == "" {
+			continue
+		}
+		// Skip the default-branch container we already added above (its
+		// IncusName matches BaseContainerName).
+		dup := false
+		for _, existing := range out {
+			if existing == name {
+				dup = true
+				break
+			}
+		}
+		if !dup {
+			out = append(out, name)
+		}
+	}
+	return out
 }
 
 // wrapCloneErr decorates an in-container clone failure with a Lima-aware hint

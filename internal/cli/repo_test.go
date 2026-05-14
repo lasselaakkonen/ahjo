@@ -1,6 +1,9 @@
 package cli
 
-import "testing"
+import (
+	"errors"
+	"testing"
+)
 
 func TestSplitRepoAlias(t *testing.T) {
 	cases := []struct {
@@ -54,6 +57,47 @@ func TestSplitBranchAlias(t *testing.T) {
 					c.in, repo, branch, ok, c.wantRepo, c.wantBranch, c.wantOK)
 			}
 		})
+	}
+}
+
+func TestInstallRepoToken_SetsBothEnvKeys(t *testing.T) {
+	got := map[string]string{}
+	setter := func(k, v string) error {
+		got[k] = v
+		return nil
+	}
+	if err := installRepoToken(setter, "ghp_abc"); err != nil {
+		t.Fatalf("installRepoToken: %v", err)
+	}
+	want := map[string]string{
+		"environment.GH_TOKEN":     "ghp_abc",
+		"environment.GITHUB_TOKEN": "ghp_abc",
+	}
+	if len(got) != len(want) {
+		t.Fatalf("setter calls = %v, want %v", got, want)
+	}
+	for k, v := range want {
+		if got[k] != v {
+			t.Fatalf("setter[%q] = %q, want %q", k, got[k], v)
+		}
+	}
+}
+
+func TestInstallRepoToken_PropagatesSetterError(t *testing.T) {
+	// First setter call fails — installRepoToken returns immediately,
+	// so the second key is never written. Mirrors how a config-set
+	// against a stopped/missing container would surface.
+	calls := 0
+	wantErr := errors.New("incus config set: exit 1")
+	setter := func(_, _ string) error {
+		calls++
+		return wantErr
+	}
+	if err := installRepoToken(setter, "ghp_abc"); !errors.Is(err, wantErr) {
+		t.Fatalf("err = %v, want %v", err, wantErr)
+	}
+	if calls != 1 {
+		t.Fatalf("setter called %d times, want 1 (early return on error)", calls)
 	}
 }
 

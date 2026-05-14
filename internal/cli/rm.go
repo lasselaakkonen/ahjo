@@ -102,9 +102,14 @@ func removeBranchLocked(reg *registry.Registry, br *registry.Branch, forceDefaul
 
 	// If we just removed the default branch, the repo entry can no longer
 	// spawn new branches. Drop the repo row too so `ahjo repo ls` doesn't
-	// dangle a half-broken entry.
+	// dangle a half-broken entry — and drop the per-repo .env so a future
+	// `ahjo repo add` of the same URL prompts for a fresh PAT instead of
+	// silently reusing the stale one stored at SlugEnvPath.
 	if wasDefault {
 		reg.RemoveRepo(repoName)
+		if err := os.Remove(paths.SlugEnvPath(repoName)); err != nil && !os.IsNotExist(err) {
+			fmt.Fprintf(cobraOutErr(), "warn: remove %s: %v\n", paths.SlugEnvPath(repoName), err)
+		}
 	}
 
 	if err := reg.Save(); err != nil {

@@ -70,6 +70,15 @@ ahjo repo add git@github.com:acme/api.git           # alias: acme/api
 #     JUST this repo (Contents + PRs + Issues + Metadata):
 #         https://github.com/settings/personal-access-tokens/new
 #     Press Enter to skip; set later with `ahjo repo set-token acme/api`.
+#
+#     Auth model in containers:
+#       - SSH remotes (git@…) — host's ssh-agent forwarded into the
+#         container; PAT is irrelevant for plain `git`.
+#       - HTTPS remotes (https://…) — `gh auth setup-git` wires git's
+#         HTTPS credential helper to read the per-repo PAT, so raw
+#         `git clone/fetch/push/pull` works without per-call env juggling.
+#       - `gh` itself — uses the per-repo PAT either way.
+#     ahjo never auto-rewrites SSH ↔ HTTPS.
 ahjo repo add git@github.com:acme/web.git \
   --default-base develop --as web                   # aliases: acme/web, web
 

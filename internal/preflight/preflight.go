@@ -40,6 +40,7 @@ func Run() []Problem {
 	ps = append(ps, checkAhjoDir())
 	ps = append(ps, checkOAuthToken())
 	ps = append(ps, checkAnyGHToken())
+	ps = append(ps, checkRepoTokenForwarding()...)
 	ps = append(ps, checkGitIdentity())
 	ps = append(ps, checkStoragePool())
 	ps = append(ps, checkAhjoBase())
@@ -147,6 +148,88 @@ func checkAnyGHToken() Problem {
 		Detail:   fmt.Sprintf("registered repos: %s", strings.Join(withoutPAT, ", ")),
 		Fix:      "ahjo repo set-token <alias>  # or `ahjo env set GH_TOKEN \"$(gh auth token)\"` (broad)",
 	}
+}
+
+// checkRepoTokenForwarding probes each registered repo's default-branch
+// container for the two pieces of in-container plumbing that make raw
+// `git clone/fetch/push/pull` over HTTPS work without per-call env juggling:
+//
+//  1. environment.GH_TOKEN set on the container (so every `incus exec`
+//     inherits it, not just attach-time helpers).
+//  2. credential.https://github.com.helper configured in the in-container
+//     /home/ubuntu/.gitconfig (written by `gh auth setup-git`).
+//
+// Skips repos whose container is missing or stopped — both checks need
+// the container to exist (1) and run (2). A missing token-store entry
+// is reported by checkAnyGHToken already; this check covers the
+// container-side propagation of an existing token.
+func checkRepoTokenForwarding() []Problem {
+	if _, err := exec.LookPath("incus"); err != nil {
+		return nil
+	}
+	reg, err := registry.Load()
+	if err != nil || len(reg.Repos) == 0 {
+		return nil
+	}
+	var ps []Problem
+	for i := range reg.Repos {
+		repo := reg.Repos[i]
+		if repo.BaseContainerName == "" {
+			continue
+		}
+		// Only meaningful when the user actually configured a per-repo
+		// PAT — otherwise checkAnyGHToken's warning is the right surface.
+		if _, found, _ := tokenstore.GetAt(paths.SlugEnvPath(repo.Name), tokenstore.GHTokenEnv); !found {
+			continue
+		}
+		ps = append(ps, checkContainerEnvGHToken(repo))
+		ps = append(ps, checkContainerCredentialHelper(repo))
+	}
+	return ps
+}
+
+func checkContainerEnvGHToken(repo registry.Repo) Problem {
+	val, err := incus.ConfigGet(repo.BaseContainerName, "environment.GH_TOKEN")
+	if err != nil {
+		return Problem{
+			Severity: Warn,
+			Title:    fmt.Sprintf("could not read environment.GH_TOKEN on %s", repo.BaseContainerName),
+			Detail:   err.Error(),
+		}
+	}
+	if val == "" {
+		return Problem{
+			Severity: Warn,
+			Title:    fmt.Sprintf("environment.GH_TOKEN not set on %s", repo.BaseContainerName),
+			Detail:   "per-repo PAT exists but is not forwarded into the container",
+			Fix:      fmt.Sprintf("ahjo repo set-token %s  # re-applies environment.GH_TOKEN to every container", repo.Aliases[0]),
+		}
+	}
+	return Problem{Severity: OK, Title: fmt.Sprintf("environment.GH_TOKEN forwarded on %s", repo.BaseContainerName)}
+}
+
+func checkContainerCredentialHelper(repo registry.Repo) Problem {
+	status, err := incus.ContainerStatus(repo.BaseContainerName)
+	if err != nil || !strings.EqualFold(status, "Running") {
+		return Problem{
+			Severity: OK,
+			Title:    fmt.Sprintf("git credential helper check skipped on %s (not running)", repo.BaseContainerName),
+		}
+	}
+	out, err := exec.Command(
+		"incus", "exec", repo.BaseContainerName, "--user", "1000",
+		"--env", "HOME=/home/ubuntu",
+		"--", "git", "config", "--global", "--get", "credential.https://github.com.helper",
+	).Output()
+	if err != nil || strings.TrimSpace(string(out)) == "" {
+		return Problem{
+			Severity: Warn,
+			Title:    fmt.Sprintf("git credential helper not configured on %s", repo.BaseContainerName),
+			Detail:   "raw `git clone/fetch` over HTTPS will prompt for credentials in this container",
+			Fix:      fmt.Sprintf("ahjo ssh %s -- gh auth setup-git  # one-shot; or `ahjo repo rm %s && ahjo repo add` to rebuild", repo.Aliases[0], repo.Aliases[0]),
+		}
+	}
+	return Problem{Severity: OK, Title: fmt.Sprintf("git credential helper configured on %s", repo.BaseContainerName)}
 }
 
 // checkGitIdentity reports whether ahjo can resolve a host git identity to

@@ -21,7 +21,29 @@
   config.toml` users get it via a union-with-defaults migration on
   `Load()` — no manual edits required.
 - `ahjo doctor` gains a `checkAnyGHToken()` warn-level check surveying
-  per-repo PATs and the global fallback; lists slugs missing a PAT.
+  per-repo PATs and the global fallback; lists slugs missing a PAT. Two
+  follow-up checks per registered repo with a per-repo PAT: whether
+  `environment.GH_TOKEN` is actually set on the default-branch container
+  (probed via `incus config get`) and whether
+  `credential.https://github.com.helper` is configured in the in-container
+  `/home/ubuntu/.gitconfig` (probed via `incus exec git config --global
+  --get`). Both surface a warn with a one-shot fix when missing.
+- Raw `git clone/fetch/push/pull` over HTTPS inside containers now
+  authenticates via `gh auth setup-git`'s credential helper. `ahjo repo
+  add` runs it once on the default-branch container after the PAT prompt;
+  the resulting `credential.https://github.com.helper = !gh auth
+  git-credential` line in `/home/ubuntu/.gitconfig` rides into every COW
+  branch via `incus copy` (same property `seedGitIdentity` already relies
+  on). SSH remotes are unaffected — the helper is a no-op for them, and
+  ahjo never auto-rewrites SSH ↔ HTTPS.
+- `GH_TOKEN` (and `GITHUB_TOKEN` for legacy tooling) is now promoted from
+  attach-time-only env to container-level `environment.*` config keys, so
+  every `incus exec` against a repo's container picks the PAT up — not
+  just the helpers that built env maps via `branchEnv`. `ahjo repo
+  set-token` re-applies these to the default container plus every branch
+  container; already-running shells need a restart to see the new value,
+  but new `incus exec` invocations get it immediately. The success
+  message calls this out.
 
 ### Internal
 
