@@ -4,7 +4,7 @@ import "time"
 
 // BranchStatus captures the per-branch git working-tree state and any
 // associated GitHub PR. Built by Deps.LoadBranchStatus on a slug; rendered
-// by formatGitStatus/formatPRStatus in the right pane. The PR pointer
+// by FormatGitStatus/FormatPRStatus in the right pane. The PR pointer
 // being nil with PRChecked=true means "no PR for this head branch".
 //
 // Error fields are strings rather than `error` so the struct round-trips

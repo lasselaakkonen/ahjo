@@ -107,16 +107,16 @@ func renderBranchDetail(deps Deps, br registry.Branch, snap Snapshot, status *Br
 	row("created", br.CreatedAt.Format("2006-01-02 15:04"))
 
 	if snap.Containers[br.Slug] {
-		row("git", formatGitStatus(status))
-		row("pr", formatPRStatus(status))
+		row("git", FormatGitStatus(status))
+		row("pr", FormatPRStatus(status))
 	}
 	return b.String()
 }
 
-// formatGitStatus turns a cached BranchStatus into the one-line value shown
+// FormatGitStatus turns a cached BranchStatus into the one-line value shown
 // next to the "git" label. Returns "…" while the first fetch is outstanding
 // so the user gets immediate feedback that work is happening.
-func formatGitStatus(s *BranchStatus) string {
+func FormatGitStatus(s *BranchStatus) string {
 	if s == nil {
 		return "…"
 	}
@@ -141,7 +141,7 @@ func formatGitStatus(s *BranchStatus) string {
 	return strings.Join(parts, " · ")
 }
 
-func formatPRStatus(s *BranchStatus) string {
+func FormatPRStatus(s *BranchStatus) string {
 	if s == nil {
 		return "…"
 	}

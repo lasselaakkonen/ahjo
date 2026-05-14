@@ -565,8 +565,12 @@ func ExecAs(name string, uid int, env map[string]string, cwd string, argv ...str
 
 // ExecAttach replaces the current process with `incus exec --force-interactive`
 // against name, running argv as the given uid in cwd with optional env. Used
-// for `ahjo shell` / `ahjo claude` so signals + exit code passthrough are
-// automatic via execve.
+// for the journalctl-follow path where ahjo has nothing to do post-exit, so
+// signal + exit-code passthrough comes for free via execve.
+//
+// Callers that need to run code *after* the user exits (e.g. printing a
+// post-exit status block) should use ExecAttachWait instead — it spawns
+// `incus exec` as a child so control returns to Go on exit.
 //
 // User-session env (HOME/USER/LOGNAME/SHELL) lives on the container's
 // environment.* config — see ExecAs's note.
@@ -583,6 +587,37 @@ func ExecAttach(name string, uid int, env map[string]string, cwd string, argv ..
 	cliArgs = append(cliArgs, "--")
 	cliArgs = append(cliArgs, argv...)
 	return syscall.Exec(bin, cliArgs, os.Environ())
+}
+
+// ExecAttachWait spawns `incus exec --force-interactive` as a child process
+// with the same argv layout as ExecAttach, but waits for it to exit and
+// returns its exit code so the caller can run post-exit logic before
+// terminating. Stdin/stdout/stderr are wired straight through so the
+// inner shell keeps a normal TTY.
+//
+// Ctrl-C and other terminal signals are delivered to the foreground process
+// group (which `incus exec` joins), so Go-side signal handling is
+// unnecessary — the child receives them, and we just observe its exit.
+func ExecAttachWait(name string, uid int, env map[string]string, cwd string, argv ...string) (int, error) {
+	cliArgs := []string{"exec", name, "--force-interactive", "--user", strconv.Itoa(uid)}
+	if cwd != "" {
+		cliArgs = append(cliArgs, "--cwd", cwd)
+	}
+	cliArgs = append(cliArgs, envArgs(env)...)
+	cliArgs = append(cliArgs, "--")
+	cliArgs = append(cliArgs, argv...)
+	cmd := exec.Command("incus", cliArgs...)
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		var ee *exec.ExitError
+		if errors.As(err, &ee) {
+			return ee.ExitCode(), nil
+		}
+		return 0, fmt.Errorf("incus exec %s: %w", name, err)
+	}
+	return 0, nil
 }
 
 // FilePush copies hostPath into the container at containerPath via
