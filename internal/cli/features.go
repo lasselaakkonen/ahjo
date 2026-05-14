@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/lasselaakkonen/ahjo/internal/ahjocontainer"
 	"github.com/lasselaakkonen/ahjo/internal/devcontainer"
 )
 
@@ -37,7 +38,7 @@ import (
 func applyRepoFeatures(
 	ctx context.Context,
 	containerName string,
-	cfg *devcontainer.Config,
+	cfg *ahjocontainer.Config,
 	existingConsent map[string]bool,
 	in io.Reader,
 	out io.Writer,

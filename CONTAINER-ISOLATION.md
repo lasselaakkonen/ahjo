@@ -128,10 +128,10 @@ limactl stop ahjo && limactl start ahjo
 
 Verify end-to-end with `ahjo doctor` — the host-side block compares host and in-VM key counts and points at the fix when they diverge.
 
-## devcontainer.json lifecycle hooks
+## ahjocontainer.json lifecycle hooks
 
-ahjo reads `.devcontainer/devcontainer.json` from each repo and executes the
-honored subset of [the spec's lifecycle commands](https://containers.dev/implementors/json_reference/#lifecycle-scripts):
+ahjo reads `.ahjo/ahjocontainer.json` from each repo and executes the
+honored subset of [the devcontainer spec's lifecycle commands](https://containers.dev/implementors/json_reference/#lifecycle-scripts):
 `onCreateCommand`, `postCreateCommand`, `postStartCommand`, `postAttachCommand`.
 These run inside the container as the `ubuntu` user in `/repo` with the
 forwarded env vars available, so they have full network egress and full
@@ -148,8 +148,7 @@ any other source pattern triggers a one-time `[y/N]` prompt at
 `ahjo repo add`, recorded as a glob (e.g. `ghcr.io/foo/*`) on the Repo
 row in `~/.ahjo/registry.toml`. ahjo's own `ahjo-runtime` Feature is
 applied at image-build time inside the transient build container; that
-path's trust posture is unchanged. See
-`designdocs/adopt-devcontainer-spec.md` for the full picture.
+path's trust posture is unchanged.
 
 ## Out of scope
 

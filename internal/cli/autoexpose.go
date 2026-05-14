@@ -7,8 +7,8 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/lasselaakkonen/ahjo/internal/ahjocontainer"
 	"github.com/lasselaakkonen/ahjo/internal/config"
-	"github.com/lasselaakkonen/ahjo/internal/devcontainer"
 	"github.com/lasselaakkonen/ahjo/internal/incus"
 	"github.com/lasselaakkonen/ahjo/internal/ports"
 	"github.com/lasselaakkonen/ahjo/internal/registry"
@@ -115,14 +115,14 @@ func reconcileAutoExpose(out io.Writer, br *registry.Branch) error {
 
 // autoExposeSettings folds the global ~/.ahjo/config.toml [auto_expose]
 // section together with any per-repo `customizations.ahjo.auto_expose`
-// override declared in /repo/.devcontainer/devcontainer.json.
+// override declared in /repo/.ahjo/ahjocontainer.json.
 func autoExposeSettings(gcfg *config.Config, containerName string) (enabled bool, minPort int) {
 	enabled = gcfg.AutoExpose.Enabled == nil || *gcfg.AutoExpose.Enabled
 	minPort = gcfg.AutoExpose.MinPort
 	if minPort == 0 {
 		minPort = config.DefaultAutoExposeMinPort
 	}
-	dcConf, _, _ := devcontainer.LoadFromContainer(containerName)
+	dcConf, _, _ := ahjocontainer.LoadFromContainer(containerName)
 	if dcConf != nil {
 		ax := dcConf.Customizations.Ahjo.AutoExpose
 		if ax.Enabled != nil {

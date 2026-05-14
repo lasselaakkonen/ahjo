@@ -12,8 +12,8 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/lasselaakkonen/ahjo/internal/ahjocontainer"
 	"github.com/lasselaakkonen/ahjo/internal/config"
-	"github.com/lasselaakkonen/ahjo/internal/devcontainer"
 	"github.com/lasselaakkonen/ahjo/internal/git"
 	"github.com/lasselaakkonen/ahjo/internal/incus"
 	"github.com/lasselaakkonen/ahjo/internal/lima"
@@ -301,22 +301,32 @@ func repoAddSetup(slug, primary string, aliases []string, url, defaultBase strin
 		}
 	}
 
-	// Refuse to set up against a legacy .ahjoconfig — Phase 2 retires the
-	// schema entirely. Users self-migrate per ahjo's no-runtime-migration
-	// rule; the design doc explains the move.
-	if has, err := devcontainer.HasLegacyAhjoconfig(containerName); err != nil {
+	// Refuse to set up against a legacy .ahjoconfig — the schema is
+	// retired entirely. Users self-migrate per ahjo's
+	// no-runtime-migration rule.
+	if has, err := ahjocontainer.HasLegacyAhjoconfig(containerName); err != nil {
 		return fmt.Errorf("probe legacy .ahjoconfig: %w", err)
 	} else if has {
 		return fmt.Errorf("/repo/.ahjoconfig is no longer supported. " +
-			"Migrate it to .devcontainer/devcontainer.json: " +
-			"`run` → `postCreateCommand`, `forward_env` / `auto_expose` → `customizations.ahjo.*`. " +
-			"See designdocs/adopt-devcontainer-spec.md")
+			"Migrate it to .ahjo/ahjocontainer.json: " +
+			"`run` → `postCreateCommand`, `forward_env` / `auto_expose` → `customizations.ahjo.*`")
 	}
 
-	// Parse devcontainer.json (if present). Docker-flavored fields and
-	// `features:` (Phase 2b) are rejected by the parser itself, so by the
-	// time we have a *Config the schema is already valid for ahjo.
-	dcConf, _, err := devcontainer.LoadFromContainer(containerName)
+	// Refuse to set up against a legacy .devcontainer/devcontainer.json —
+	// ahjo's per-repo file moved off that path so IDE/Codespaces
+	// toolchains can't fight ahjo for the same file. Schema is unchanged.
+	if has, err := ahjocontainer.HasLegacyDevcontainerJSON(containerName); err != nil {
+		return fmt.Errorf("probe legacy devcontainer.json: %w", err)
+	} else if has {
+		return fmt.Errorf(".devcontainer/devcontainer.json is no longer ahjo's per-repo path; " +
+			"move it to .ahjo/ahjocontainer.json (schema unchanged). " +
+			"Reason: avoid IDE / Codespaces / JetBrains Gateway toolchains fighting ahjo for the same file")
+	}
+
+	// Parse ahjocontainer.json (if present). Docker-flavored fields are
+	// rejected by the parser itself, so by the time we have a *Config the
+	// schema is already valid for ahjo.
+	dcConf, _, err := ahjocontainer.LoadFromContainer(containerName)
 	if err != nil {
 		return err
 	}
@@ -375,14 +385,14 @@ func repoAddSetup(slug, primary string, aliases []string, url, defaultBase strin
 		// onCreate runs before postCreate per spec. Sequential; a failure
 		// aborts so the half-set-up container surfaces a clear error
 		// rather than getting registered in a broken state.
-		if err := devcontainer.RunLifecycle(
-			containerName, devcontainer.StageOnCreate, dcConf.OnCreateCommand,
+		if err := ahjocontainer.RunLifecycle(
+			containerName, ahjocontainer.StageOnCreate, dcConf.OnCreateCommand,
 			1000, hostEnv, paths.RepoMountPath, cobraOut(),
 		); err != nil {
 			return err
 		}
-		if err := devcontainer.RunLifecycle(
-			containerName, devcontainer.StagePostCreate, dcConf.PostCreateCommand,
+		if err := ahjocontainer.RunLifecycle(
+			containerName, ahjocontainer.StagePostCreate, dcConf.PostCreateCommand,
 			1000, hostEnv, paths.RepoMountPath, cobraOut(),
 		); err != nil {
 			return err
@@ -638,7 +648,7 @@ func runWarmInstall(containerName string, hostEnv map[string]string) error {
 // `ubuntu` is the canonical in-image account; ahjo never honors a different
 // remoteUser/containerUser declaration because git config / SSH keys are
 // pre-staged at /home/ubuntu.
-func remoteUserWarning(cfg *devcontainer.Config) string {
+func remoteUserWarning(cfg *ahjocontainer.Config) string {
 	if cfg == nil {
 		return ""
 	}

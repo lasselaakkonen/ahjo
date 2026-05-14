@@ -38,7 +38,7 @@ type Range struct {
 // and `ahjo expose --sync`.
 //
 // Enabled is a *bool so a per-repo `customizations.ahjo.auto_expose` block
-// in devcontainer.json can distinguish "unset" from "explicitly disabled"
+// in ahjocontainer.json can distinguish "unset" from "explicitly disabled"
 // when overriding the global default.
 type AutoExposeConfig struct {
 	Enabled *bool `toml:"enabled"`

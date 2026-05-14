@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/lasselaakkonen/ahjo/internal/devcontainer"
+	"github.com/lasselaakkonen/ahjo/internal/ahjocontainer"
 )
 
 func TestApplyRepoFeatures_Noop(t *testing.T) {
@@ -20,7 +20,7 @@ func TestApplyRepoFeatures_Noop(t *testing.T) {
 	}
 
 	// Empty Features → also no-op.
-	cfg := &devcontainer.Config{}
+	cfg := &ahjocontainer.Config{}
 	consent, err = applyRepoFeatures(context.Background(), "x", cfg, nil, strings.NewReader(""), &bytes.Buffer{})
 	if err != nil {
 		t.Fatalf("empty features should be no-op: %v", err)
@@ -34,7 +34,7 @@ func TestApplyRepoFeatures_DeclinedTrustAborts(t *testing.T) {
 	// User declines the trust prompt → returns an error citing the
 	// glob, before any network call. The non-curated source ensures
 	// we hit the prompt path rather than auto-trust.
-	cfg := &devcontainer.Config{
+	cfg := &ahjocontainer.Config{
 		Features: map[string]any{
 			"ghcr.io/acme/foo:1": map[string]any{},
 		},
@@ -58,7 +58,7 @@ func TestApplyRepoFeatures_CuratedAutoTrustNoPrompt(t *testing.T) {
 	// appear. We don't have real network here, so the function will
 	// fail at fetch time; what matters is the prompt text isn't shown
 	// and no consent is recorded for ghcr.io/devcontainers/features/*.
-	cfg := &devcontainer.Config{
+	cfg := &ahjocontainer.Config{
 		Features: map[string]any{
 			"ghcr.io/devcontainers/features/node:1": map[string]any{},
 		},
@@ -80,7 +80,7 @@ func TestApplyRepoFeatures_CuratedAutoTrustNoPrompt(t *testing.T) {
 }
 
 func TestApplyRepoFeatures_PriorConsentSkipsPrompt(t *testing.T) {
-	cfg := &devcontainer.Config{
+	cfg := &ahjocontainer.Config{
 		Features: map[string]any{
 			"ghcr.io/acme/foo:1": map[string]any{},
 		},

@@ -1,4 +1,4 @@
-package devcontainer
+package ahjocontainer
 
 import (
 	"path/filepath"
@@ -21,7 +21,7 @@ func TestParse_HonorsSubsetAndCustomizations(t *testing.T) {
 			}
 		},
 	}`)
-	cfg, err := Parse(src, ".devcontainer/devcontainer.json")
+	cfg, err := Parse(src, ConfigPath)
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
@@ -64,7 +64,7 @@ func TestParse_RejectsDockerFlavoredFields(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			_, err := Parse([]byte(c.body), ".devcontainer.json")
+			_, err := Parse([]byte(c.body), ConfigPath)
 			if err == nil {
 				t.Fatalf("expected error rejecting %q, got nil", c.name)
 			}
@@ -87,7 +87,7 @@ func TestParse_NullAndEmptyValuesAreNotRejected(t *testing.T) {
 	}
 	for _, body := range cases {
 		t.Run(body, func(t *testing.T) {
-			if _, err := Parse([]byte(body), ".devcontainer.json"); err != nil {
+			if _, err := Parse([]byte(body), ConfigPath); err != nil {
 				t.Fatalf("parse should accept %s; got %v", body, err)
 			}
 		})
@@ -99,7 +99,7 @@ func TestParse_AcceptsFeatures_Phase2b(t *testing.T) {
 		"ghcr.io/devcontainers/features/node:1": {"version": "20"},
 		"ghcr.io/devcontainers/features/common-utils:2": {}
 	}}`
-	cfg, err := Parse([]byte(body), ".devcontainer.json")
+	cfg, err := Parse([]byte(body), ConfigPath)
 	if err != nil {
 		t.Fatalf("Phase 2b should accept features: %v", err)
 	}
@@ -115,7 +115,7 @@ func TestParse_TrailingCommasAccepted(t *testing.T) {
 		"remoteUser": "ubuntu",
 		"forwardPorts": [3000,],
 	}`
-	cfg, err := Parse([]byte(body), ".devcontainer.json")
+	cfg, err := Parse([]byte(body), ConfigPath)
 	if err != nil {
 		t.Fatalf("trailing-comma parse: %v", err)
 	}
@@ -129,7 +129,7 @@ func TestParse_BlockComment(t *testing.T) {
 		/* block comment with "quoted" content */
 		"remoteUser": "ubuntu"
 	}`
-	cfg, err := Parse([]byte(body), ".devcontainer.json")
+	cfg, err := Parse([]byte(body), ConfigPath)
 	if err != nil {
 		t.Fatalf("block-comment parse: %v", err)
 	}
@@ -155,13 +155,13 @@ func TestCheckRemoteUser_WarnsOnMismatchOnly(t *testing.T) {
 		},
 		{
 			name:   "mismatch-remoteUser",
-			c:      Config{Source: ".devcontainer.json", RemoteUser: "vscode"},
+			c:      Config{Source: ConfigPath, RemoteUser: "vscode"},
 			want:   "remoteUser",
 			wantOK: true,
 		},
 		{
 			name:   "mismatch-containerUser",
-			c:      Config{Source: ".devcontainer.json", ContainerUser: "node"},
+			c:      Config{Source: ConfigPath, ContainerUser: "node"},
 			want:   "containerUser",
 			wantOK: true,
 		},
@@ -180,21 +180,15 @@ func TestCheckRemoteUser_WarnsOnMismatchOnly(t *testing.T) {
 	}
 }
 
-func TestLoadFromHost_PrefersDotDevcontainerPath(t *testing.T) {
+func TestLoadFromHost_ReadsCanonicalPath(t *testing.T) {
 	dir := t.TempDir()
-	mustWrite := func(rel, body string) {
-		t.Helper()
-		full := filepath.Join(dir, rel)
-		if err := mkdirAll(filepath.Dir(full)); err != nil {
-			t.Fatal(err)
-		}
-		if err := writeFile(full, body); err != nil {
-			t.Fatal(err)
-		}
+	full := filepath.Join(dir, ConfigPath)
+	if err := mkdirAll(filepath.Dir(full)); err != nil {
+		t.Fatal(err)
 	}
-
-	mustWrite(".devcontainer.json", `{"remoteUser": "from-flat"}`)
-	mustWrite(".devcontainer/devcontainer.json", `{"remoteUser": "from-dot-dir"}`)
+	if err := writeFile(full, `{"remoteUser": "ubuntu"}`); err != nil {
+		t.Fatal(err)
+	}
 
 	cfg, ok, err := LoadFromHost(dir)
 	if err != nil {
@@ -203,10 +197,10 @@ func TestLoadFromHost_PrefersDotDevcontainerPath(t *testing.T) {
 	if !ok {
 		t.Fatal("expected found")
 	}
-	if cfg.RemoteUser != "from-dot-dir" {
-		t.Fatalf("precedence wrong: %q (want from-dot-dir)", cfg.RemoteUser)
+	if cfg.RemoteUser != "ubuntu" {
+		t.Fatalf("RemoteUser = %q, want ubuntu", cfg.RemoteUser)
 	}
-	if !strings.HasSuffix(cfg.Source, "devcontainer/devcontainer.json") {
+	if !strings.HasSuffix(cfg.Source, ConfigPath) {
 		t.Fatalf("Source = %q", cfg.Source)
 	}
 }
@@ -219,5 +213,25 @@ func TestLoadFromHost_AbsentReturnsFalse(t *testing.T) {
 	}
 	if ok || cfg != nil {
 		t.Fatalf("want (nil, false, nil); got (%v, %v)", cfg, ok)
+	}
+}
+
+func TestLegacyDevcontainerPaths_CoverBothShapes(t *testing.T) {
+	// Mirrors the LegacyAhjoconfig posture: a guard list, not a fallback
+	// loader. Exposed so callers / future tests can iterate either form.
+	want := map[string]bool{
+		".devcontainer/devcontainer.json": false,
+		".devcontainer.json":              false,
+	}
+	for _, p := range LegacyDevcontainerPaths {
+		if _, ok := want[p]; !ok {
+			t.Fatalf("unexpected legacy path %q", p)
+		}
+		want[p] = true
+	}
+	for p, seen := range want {
+		if !seen {
+			t.Fatalf("missing legacy path %q", p)
+		}
 	}
 }

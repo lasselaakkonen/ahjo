@@ -1,8 +1,9 @@
-// Package devcontainer applies devcontainer Features to Incus system
-// containers. Phase 1 of adopt-devcontainer-spec.md scopes this package to
-// the apply path against an already-extracted Feature dir (the embedded
-// ahjo-runtime is the only Phase 1 caller). Phase 2 adds the OCI fetch path
-// for user-supplied Features under devcontainer.json's `features` field.
+// Package devcontainer applies devcontainer Features (the upstream
+// ecosystem) to ahjo's Incus system containers. It owns the OCI fetch,
+// trust, resolve, and Apply paths. Per-repo config parsing lives in
+// internal/ahjocontainer/ — Features are addressed by OCI URL and use a
+// spec-fixed devcontainer-feature.json filename, so this package stays
+// devcontainer-shaped; the per-repo file is what moved to a custom path.
 package devcontainer
 
 import (
