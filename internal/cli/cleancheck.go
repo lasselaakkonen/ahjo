@@ -62,7 +62,12 @@ func ensureRepoCleanOrForce(br *registry.Branch, action string, force bool) erro
 // running) and returns a short human-readable description of any
 // uncommitted/untracked/unmerged/unpushed state, or "" when clean.
 func repoDirtySummary(containerName string) (string, error) {
-	out, err := incus.Exec(containerName, "git", "-C", paths.RepoMountPath, "status", "--porcelain=v2", "--branch")
+	// -c safe.directory=<repo>: incus.Exec runs as root, but /repo is owned
+	// by the container's ubuntu user — without this override git refuses
+	// with "fatal: detected dubious ownership". Same workaround as
+	// branch_status.go's status call.
+	out, err := incus.Exec(containerName, "git", "-c", "safe.directory="+paths.RepoMountPath,
+		"-C", paths.RepoMountPath, "status", "--porcelain=v2", "--branch")
 	if err != nil {
 		return "", err
 	}
