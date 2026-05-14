@@ -897,7 +897,11 @@ func (m *model) renderFooter() string {
 		if h.Key == "" {
 			continue
 		}
-		hints = append(hints, fmt.Sprintf("%s %s", h.Key, h.Desc))
+		if h.Desc == "" {
+			hints = append(hints, h.Key)
+		} else {
+			hints = append(hints, fmt.Sprintf("%s %s", h.Key, h.Desc))
+		}
 	}
 	footer := strings.Join(hints, " · ")
 	if m.width > 0 {

@@ -25,10 +25,10 @@ type keymap struct {
 
 func newKeymap() keymap {
 	return keymap{
-		Left:    key.NewBinding(key.WithKeys("left", "h"), key.WithHelp("←/h", "focus left")),
-		Right:   key.NewBinding(key.WithKeys("right", "l"), key.WithHelp("→/l", "focus right")),
-		Up:      key.NewBinding(key.WithKeys("up", "k"), key.WithHelp("↑/k", "up")),
-		Down:    key.NewBinding(key.WithKeys("down", "j"), key.WithHelp("↓/j", "down")),
+		Left:    key.NewBinding(key.WithKeys("left", "h"), key.WithHelp("←↓↑→/hjkl", "")),
+		Right:   key.NewBinding(key.WithKeys("right", "l")),
+		Up:      key.NewBinding(key.WithKeys("up", "k")),
+		Down:    key.NewBinding(key.WithKeys("down", "j")),
 		Submit:  key.NewBinding(key.WithKeys("enter"), key.WithHelp("⏎", "submit")),
 		Cancel:  key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", "cancel")),
 		Help:    key.NewBinding(key.WithKeys("?"), key.WithHelp("?", "help")),
