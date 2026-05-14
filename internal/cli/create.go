@@ -9,6 +9,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/lasselaakkonen/ahjo/internal/config"
+	"github.com/lasselaakkonen/ahjo/internal/git"
 	"github.com/lasselaakkonen/ahjo/internal/incus"
 	"github.com/lasselaakkonen/ahjo/internal/lockfile"
 	"github.com/lasselaakkonen/ahjo/internal/paths"
@@ -27,6 +28,10 @@ func newCreateCmd() *cobra.Command {
 		Long: `Create a new branch container. The auto alias is "<repo-primary-alias>@<branch>".
 Pass --as <alias> to register an additional alias for the branch.
 
+<branch> accepts any string — spaces and shell-unfriendly characters are
+sanitized into a git+GitHub-safe name (e.g. "JIRA-123 ticket title" becomes
+"JIRA-123-ticket-title"). Quote the argument when it contains spaces.
+
 The new container is an ` + "`incus copy`" + ` of the repo's default-branch
 container — on btrfs that's a near-free reflink that inherits node_modules,
 the pnpm store, and any other warm dependencies. ` + "`git checkout -b <branch>`" + `
@@ -43,6 +48,15 @@ runs inside the clone after copy completes.`,
 }
 
 func runCreate(repoAlias, branch, base, asAlias string, noFetch bool) error {
+	raw := branch
+	branch = git.SanitizeBranchName(branch)
+	if branch == "" {
+		return fmt.Errorf("branch name %q has no characters usable in a git ref", raw)
+	}
+	if branch != raw {
+		fmt.Printf("branch %q → %q\n", raw, branch)
+	}
+
 	// EnsureRepo runs without holding the lockfile — runRepoAdd acquires
 	// the lock itself for the registration phase, then releases before
 	// recursing into the warm-install phase. Calling it here lets

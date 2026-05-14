@@ -16,6 +16,8 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
+
+	"github.com/lasselaakkonen/ahjo/internal/git"
 )
 
 // branchStatusStaleness bounds how often we'll re-run `git status` + `gh pr
@@ -476,8 +478,18 @@ func (m *model) submitInput() (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		alias := repo.Aliases[0]
-		m.flash = "creating " + alias + "@" + val + "…"
-		cmd := m.execNewContainer(alias, val)
+		branch := git.SanitizeBranchName(val)
+		if branch == "" {
+			m.flash = fmt.Sprintf("branch %q has no usable characters", val)
+			m.cancelInput()
+			return m, nil
+		}
+		if branch != val {
+			m.flash = fmt.Sprintf("creating %s@%s (sanitized from %q)…", alias, branch, val)
+		} else {
+			m.flash = "creating " + alias + "@" + branch + "…"
+		}
+		cmd := m.execNewContainer(alias, branch)
 		m.cancelInput()
 		return m, cmd
 	case inputMirrorTarget:
