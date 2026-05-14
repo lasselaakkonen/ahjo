@@ -1,6 +1,6 @@
 // Package tokenstore persists KEY=VALUE pairs in ~/.ahjo/.env (and per-repo
-// .env files under ~/.ahjo/repo-env/<slug>.env) so the in-VM ahjo can pick
-// secrets up automatically and forward them into containers via the
+// .env files under ~/.ahjo-shared/repo-env/<slug>.env) so the in-VM ahjo can
+// pick secrets up automatically and forward them into containers via the
 // forward_env mechanism, without requiring the user to edit shellrc.
 package tokenstore
 

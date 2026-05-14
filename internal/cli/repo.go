@@ -1073,8 +1073,9 @@ func newRepoSetTokenCmd() *cobra.Command {
 		Use:   "set-token <alias>",
 		Short: "Set or rotate the GitHub PAT forwarded into containers for one repo",
 		Long: `Prompts (with hidden input) for a GitHub token and stores it at
-~/.ahjo/repo-env/<slug>.env (mode 0600). The token is forwarded into every
-container for this repo via GH_TOKEN.
+~/.ahjo-shared/repo-env/<slug>.env (mode 0600). On macOS the file lives on the
+Mac host (virtiofs-shared into the VM), so PATs survive ` + "`limactl delete`" + `.
+The token is forwarded into every container for this repo via GH_TOKEN.
 
 ahjo also re-applies environment.GH_TOKEN/GITHUB_TOKEN on each existing
 container (default-branch + every branch). Already-running containers will

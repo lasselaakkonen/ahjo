@@ -75,7 +75,13 @@ func SlugHostKeysDir(slug string) string { return filepath.Join(HostKeysDir(), s
 // RepoEnvDir holds per-repo .env files (one per slug, mode 0600). Each file
 // is layered over ~/.ahjo/.env by branchEnv so PATs scoped to one repo never
 // leak into containers for another repo.
-func RepoEnvDir() string { return filepath.Join(AhjoDir(), "repo-env") }
+//
+// The dir lives under SharedDir() — i.e. on the user's actual host filesystem
+// (Mac home via virtiofs on macOS, the user's home on standalone Linux) —
+// rather than inside the Lima VM disk image. This keeps per-repo PATs with
+// the user across `limactl delete` / VM re-creation and matches the principle
+// that user-owned state belongs on the host the user is sitting at.
+func RepoEnvDir() string { return filepath.Join(SharedDir(), "repo-env") }
 
 // SlugEnvPath is the per-repo .env file for slug.
 func SlugEnvPath(slug string) string { return filepath.Join(RepoEnvDir(), slug+".env") }

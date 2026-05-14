@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 
 	"github.com/lasselaakkonen/ahjo/internal/git"
@@ -41,6 +42,9 @@ func Run() []Problem {
 	ps = append(ps, checkOAuthToken())
 	ps = append(ps, checkAnyGHToken())
 	ps = append(ps, checkRepoTokenForwarding()...)
+	if p, ok := checkLegacyRepoEnv(); ok {
+		ps = append(ps, p)
+	}
 	ps = append(ps, checkGitIdentity())
 	ps = append(ps, checkStoragePool())
 	ps = append(ps, checkAhjoBase())
@@ -91,11 +95,11 @@ func checkOAuthToken() Problem {
 	return Problem{Severity: OK, Title: "CLAUDE_CODE_OAUTH_TOKEN set"}
 }
 
-// checkAnyGHToken surveys per-repo PATs (~/.ahjo/repo-env/<slug>.env) and
-// the global GH_TOKEN. A warn fires when no registered repo has a per-repo
-// PAT *and* no global GH_TOKEN is set, since that means `gh` won't work in
-// any container. Repos without their own PAT are listed so the user can
-// decide which ones to set.
+// checkAnyGHToken surveys per-repo PATs (~/.ahjo-shared/repo-env/<slug>.env)
+// and the global GH_TOKEN. A warn fires when no registered repo has a
+// per-repo PAT *and* no global GH_TOKEN is set, since that means `gh` won't
+// work in any container. Repos without their own PAT are listed so the user
+// can decide which ones to set.
 func checkAnyGHToken() Problem {
 	reg, err := registry.Load()
 	if err != nil {
@@ -148,6 +152,41 @@ func checkAnyGHToken() Problem {
 		Detail:   fmt.Sprintf("registered repos: %s", strings.Join(withoutPAT, ", ")),
 		Fix:      "ahjo repo set-token <alias>  # or `ahjo env set GH_TOKEN \"$(gh auth token)\"` (broad)",
 	}
+}
+
+// checkLegacyRepoEnv warns when per-repo .env files still exist at the
+// previous location ~/.ahjo/repo-env/. The new location is
+// ~/.ahjo-shared/repo-env/ so PATs live on the user's host filesystem (Mac
+// home via virtiofs, Linux home on bare-metal) rather than inside the Lima
+// VM disk image. Per the project's no-runtime-migration rule, the user
+// recreates per-repo PATs (`ahjo repo set-token <alias>`) and then deletes
+// the old dir themselves. Returns (Problem, true) when leftover .env files
+// exist; (zero, false) otherwise so the caller can skip a noisy line.
+func checkLegacyRepoEnv() (Problem, bool) {
+	legacy := filepath.Join(paths.AhjoDir(), "repo-env")
+	entries, err := os.ReadDir(legacy)
+	if err != nil {
+		return Problem{}, false
+	}
+	var slugs []string
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".env") {
+			continue
+		}
+		slugs = append(slugs, strings.TrimSuffix(e.Name(), ".env"))
+	}
+	if len(slugs) == 0 {
+		return Problem{}, false
+	}
+	return Problem{
+		Severity: Warn,
+		Title:    fmt.Sprintf("%d per-repo PAT file(s) at the legacy path %s", len(slugs), legacy),
+		Detail: "ahjo no longer reads PATs from this directory. They moved to ~/.ahjo-shared/repo-env/ " +
+			"so they live on the user's actual host filesystem (Mac home via virtiofs, or the user's home " +
+			"on standalone Linux) instead of inside the Lima VM disk. Affected repos: " + strings.Join(slugs, ", "),
+		Fix: "for each: ahjo repo set-token <alias>  # re-populates at the new path\n" +
+			"       then: rm -rf " + legacy,
+	}, true
 }
 
 // checkRepoTokenForwarding probes each registered repo's default-branch

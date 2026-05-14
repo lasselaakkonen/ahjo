@@ -246,10 +246,13 @@ func applyRawIdmap(containerName string) error {
 // through silently. dcConf may be nil when the repo has no devcontainer.json;
 // the global default still applies.
 //
-// Per-repo overrides come from ~/.ahjo/repo-env/<slug>.env, populated by
-// `ahjo repo add` (PAT prompt) and `ahjo repo set-token`. The slug is
-// resolved from containerName via the registry; if no row exists (e.g. a
-// brand-new container during `repo add`) only the process env is consulted.
+// Per-repo overrides come from ~/.ahjo-shared/repo-env/<slug>.env, populated
+// by `ahjo repo add` (PAT prompt) and `ahjo repo set-token`. The file lives
+// under the shared dir so it sits on the user's actual host (Mac home via
+// virtiofs, or Linux home on bare-metal) rather than inside the Lima VM disk.
+// The slug is resolved from containerName via the registry; if no row exists
+// (e.g. a brand-new container during `repo add`) only the process env is
+// consulted.
 func branchEnv(containerName string, dcConf *devcontainer.Config) (map[string]string, error) {
 	gcfg, err := config.Load()
 	if err != nil {

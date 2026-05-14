@@ -26,8 +26,8 @@ config.forward_env (default: CLAUDE_CODE_OAUTH_TOKEN, GH_TOKEN) are forwarded
 into every container at ` + "`ahjo shell` / `ahjo claude`" + ` time.
 
 For per-repo overrides (typical for GH_TOKEN), use ` + "`ahjo repo set-token <slug>`" + `
-instead; that writes to ~/.ahjo/repo-env/<slug>.env and only forwards into
-containers for that repo.`,
+instead; that writes to ~/.ahjo-shared/repo-env/<slug>.env and only forwards
+into containers for that repo.`,
 	}
 	cmd.AddCommand(newEnvSetCmd(), newEnvGetCmd(), newEnvUnsetCmd(), newEnvListCmd())
 	return cmd
