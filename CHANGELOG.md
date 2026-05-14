@@ -1,5 +1,26 @@
 # Changelog
 
+## Unreleased — `.ahjo/ahjocontainer.json`
+
+### Changed
+
+- **Per-repo config path moved to `.ahjo/ahjocontainer.json`** (was
+  `.devcontainer/devcontainer.json` / `.devcontainer.json`). Schema is
+  identical — same honored/rejected fields, same `customizations.ahjo`
+  block, same lifecycle semantics. Reason: sharing the spec path with VS
+  Code Dev Containers / Codespaces / JetBrains Gateway meant those
+  toolchains saw an ahjo-managed repo and tried to launch their own
+  Docker-based flow against it. ahjo now owns its own path.
+- `ahjo repo add` aborts with a migration error when it finds a legacy
+  `.devcontainer/devcontainer.json` (or `.devcontainer.json`) in the repo,
+  mirroring the existing `.ahjoconfig` posture. No runtime migration; move
+  the file by hand. README documents the swap.
+- Internal: per-repo config parsing moves from `internal/devcontainer/` to
+  a new `internal/ahjocontainer/` package. Feature / OCI / trust /
+  resolver code stays under `internal/devcontainer/` — those operate on
+  the upstream Features ecosystem (OCI-addressed, spec-fixed
+  `devcontainer-feature.json` filename) and remain devcontainer-shaped.
+
 ## Unreleased — per-repo GH_TOKEN forwarding
 
 ### Added

@@ -161,7 +161,7 @@ enabled  = true   # default; set false to opt out globally
 min_port = 3000   # default; listeners below this are ignored
 ```
 
-A repo can override either field via its `.devcontainer/devcontainer.json`
+A repo can override either field via its `.ahjo/ahjocontainer.json`
 (per-repo, see "Per-repo config" below). When enabled, ahjo runs `ss -tlnH`
 inside the container at `ahjo shell` start and on `ahjo expose --sync`, then
 ensures one `ahjo-auto-<port>` Incus proxy device per qualifying listener
@@ -169,12 +169,14 @@ ensures one `ahjo-auto-<port>` Incus proxy device per qualifying listener
 Listeners that disappear get their proxy devices removed and their host
 ports freed; manual `ahjo expose` entries are never touched.
 
-## Per-repo config (devcontainer.json)
+## Per-repo config (ahjocontainer.json)
 
-ahjo reads `.devcontainer/devcontainer.json` (or `.devcontainer.json`) from
-each repo and honors a runtime-neutral subset of the [devcontainers.dev
-spec](https://containers.dev/implementors/json_reference/). Lax JSONC: `//`
-and `/* */` comments and trailing commas are accepted.
+ahjo reads `.ahjo/ahjocontainer.json` from each repo. The schema is the
+runtime-neutral subset of the [devcontainers.dev
+spec](https://containers.dev/implementors/json_reference/); ahjo owns its
+own file path so IDE / Codespaces / JetBrains Gateway toolchains don't try
+to launch their own Docker-based flow against an ahjo-managed repo. Lax
+JSONC: `//` and `/* */` comments and trailing commas are accepted.
 
 Minimal example:
 
@@ -223,22 +225,35 @@ surface a clear error.
 
 ### Migrating from `.ahjoconfig`
 
-The retired TOML schema maps to the devcontainer.json fields above:
+The retired TOML schema maps to the ahjocontainer.json fields above:
 
-| Old `.ahjoconfig` | New `.devcontainer/devcontainer.json` |
+| Old `.ahjoconfig` | New `.ahjo/ahjocontainer.json` |
 | --- | --- |
 | `run = ["..."]` | `"postCreateCommand": "..."` (or array form) |
 | `forward_env = [...]` | `"customizations": { "ahjo": { "forward_env": [...] } }` |
 | `auto_expose.enabled` / `auto_expose.min_port` | `"customizations": { "ahjo": { "auto_expose": { ... } } }` |
 
+### Migrating from `.devcontainer/devcontainer.json`
+
+If your repo still has the per-repo config under
+`.devcontainer/devcontainer.json` (or the flat `.devcontainer.json`),
+move it to `.ahjo/ahjocontainer.json` — the schema is identical, only the
+path moved.
+
+| Old path | New path |
+| --- | --- |
+| `.devcontainer/devcontainer.json` | `.ahjo/ahjocontainer.json` |
+| `.devcontainer.json` | `.ahjo/ahjocontainer.json` |
+
 Per ahjo's no-runtime-migration convention, ahjo does not parse legacy
-`.ahjoconfig` files. `ahjo repo add` fails fast when one is present, with a
-pointer to this section. Existing branch containers continue to work but
-silently lose their per-repo overrides until you migrate.
+`.ahjoconfig` or `.devcontainer/devcontainer.json` files. `ahjo repo add`
+fails fast when either is present, with a pointer to this section.
+Existing branch containers continue to work but silently lose their
+per-repo overrides until you migrate.
 
 ## Rebuilding after a change
 
-ahjo has three state layers: the host binary, the `ahjo-base` Incus image, and the live containers (each branch container holds its repo's `.devcontainer/devcontainer.json`). Three commands cover everything — pick the smallest one that covers your change.
+ahjo has three state layers: the host binary, the `ahjo-base` Incus image, and the live containers (each branch container holds its repo's `.ahjo/ahjocontainer.json`). Three commands cover everything — pick the smallest one that covers your change.
 
 | Scenario | Command |
 | --- | --- |
@@ -274,6 +289,6 @@ That points `core.hooksPath` at `.githooks/`. Idempotent; safe to re-run.
 `golangci-lint` is soft-skipped if it isn't on PATH so a fresh clone can still commit; install it for the full pre-commit pass:
 
 - **Host (macOS)**: `brew install golangci-lint`
-- **Inside an ahjo container**: nothing to do — `.devcontainer/devcontainer.json` installs Go and golangci-lint on container create via the upstream Feature and `postCreateCommand`.
+- **Inside an ahjo container**: nothing to do — `.ahjo/ahjocontainer.json` installs Go and golangci-lint on container create via the upstream Feature and `postCreateCommand`.
 
 Bypass when you need to: `SKIP_HOOKS=1 git commit ...` (graceful, prints a notice) or `git commit --no-verify` (hard skip).

@@ -7,8 +7,8 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/lasselaakkonen/ahjo/internal/ahjocontainer"
 	"github.com/lasselaakkonen/ahjo/internal/config"
-	"github.com/lasselaakkonen/ahjo/internal/devcontainer"
 	"github.com/lasselaakkonen/ahjo/internal/idmap"
 	"github.com/lasselaakkonen/ahjo/internal/incus"
 	"github.com/lasselaakkonen/ahjo/internal/lockfile"
@@ -153,15 +153,15 @@ func prepareBranchContainer(alias string, update, force bool) (*registry.Branch,
 		fmt.Fprintf(cobraOutErr(), "warn: could not start sshd: %v\n", err)
 	}
 
-	// devcontainer.json's postStartCommand fires every time the container
+	// ahjocontainer.json's postStartCommand fires every time the container
 	// starts (not just on first creation). Re-parse on each start — one
 	// extra `incus exec ... cat` and we never have a cache to invalidate.
 	if dcConf, err := loadDevcontainerSafe(containerName); err != nil {
 		return nil, "", err
 	} else if dcConf != nil {
 		env, _ := branchEnv(containerName, dcConf)
-		if err := devcontainer.RunLifecycle(
-			containerName, devcontainer.StagePostStart, dcConf.PostStartCommand,
+		if err := ahjocontainer.RunLifecycle(
+			containerName, ahjocontainer.StagePostStart, dcConf.PostStartCommand,
 			1000, env, paths.RepoMountPath, cobraOut(),
 		); err != nil {
 			return nil, "", err
@@ -184,19 +184,19 @@ func prepareBranchContainer(alias string, update, force bool) (*registry.Branch,
 	return br, containerName, nil
 }
 
-// loadDevcontainerSafe wraps devcontainer.LoadFromContainer with a warning
+// loadDevcontainerSafe wraps ahjocontainer.LoadFromContainer with a warning
 // path: a parse / read failure is logged but not fatal at attach time. The
 // only attach-blocking case is a present-but-unsupported config; that's
 // reported as an error so the user knows to fix it.
-func loadDevcontainerSafe(container string) (*devcontainer.Config, error) {
-	cfg, found, err := devcontainer.LoadFromContainer(container)
+func loadDevcontainerSafe(container string) (*ahjocontainer.Config, error) {
+	cfg, found, err := ahjocontainer.LoadFromContainer(container)
 	if err != nil {
 		if found {
 			// parsed-but-rejected (e.g. `image:` declared) — surface so
 			// the user fixes the file before next start.
 			return nil, err
 		}
-		fmt.Fprintf(cobraOutErr(), "warn: read devcontainer.json: %v\n", err)
+		fmt.Fprintf(cobraOutErr(), "warn: read ahjocontainer.json: %v\n", err)
 		return nil, nil
 	}
 	if cfg != nil {
@@ -211,12 +211,12 @@ func loadDevcontainerSafe(container string) (*devcontainer.Config, error) {
 // the user's shell. Sequential with the rest of the prep flow; failure
 // aborts the attach so the user sees the error rather than a silent
 // half-launch.
-func runPostAttach(container string, cfg *devcontainer.Config, env map[string]string) error {
+func runPostAttach(container string, cfg *ahjocontainer.Config, env map[string]string) error {
 	if cfg == nil {
 		return nil
 	}
-	return devcontainer.RunLifecycle(
-		container, devcontainer.StagePostAttach, cfg.PostAttachCommand,
+	return ahjocontainer.RunLifecycle(
+		container, ahjocontainer.StagePostAttach, cfg.PostAttachCommand,
 		1000, env, paths.RepoMountPath, cobraOut(),
 	)
 }
@@ -241,10 +241,10 @@ func applyRawIdmap(containerName string) error {
 
 // branchEnv builds the env map propagated into the container at attach time:
 // global cfg.ForwardEnv ∪ customizations.ahjo.forward_env from the parsed
-// devcontainer.json, resolved against the per-repo .env (highest precedence)
+// ahjocontainer.json, resolved against the per-repo .env (highest precedence)
 // then the host's current environment. Keys that aren't set anywhere fall
-// through silently. dcConf may be nil when the repo has no devcontainer.json;
-// the global default still applies.
+// through silently. dcConf may be nil when the repo has no
+// ahjocontainer.json; the global default still applies.
 //
 // Per-repo overrides come from ~/.ahjo-shared/repo-env/<slug>.env, populated
 // by `ahjo repo add` (PAT prompt) and `ahjo repo set-token`. The file lives
@@ -253,7 +253,7 @@ func applyRawIdmap(containerName string) error {
 // The slug is resolved from containerName via the registry; if no row exists
 // (e.g. a brand-new container during `repo add`) only the process env is
 // consulted.
-func branchEnv(containerName string, dcConf *devcontainer.Config) (map[string]string, error) {
+func branchEnv(containerName string, dcConf *ahjocontainer.Config) (map[string]string, error) {
 	gcfg, err := config.Load()
 	if err != nil {
 		return nil, err

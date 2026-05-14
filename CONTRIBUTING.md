@@ -5,7 +5,7 @@ Two ways to set up a development environment. Pick one.
 ## Option 1 — develop inside an ahjo container (recommended)
 
 If you already use ahjo, this is hands-off: the repo ships a
-`.devcontainer/devcontainer.json` that installs Go, `golangci-lint`,
+`.ahjo/ahjocontainer.json` that installs Go, `golangci-lint`,
 and activates the git hooks the first time the container is created.
 Nothing to install on the host beyond ahjo itself.
 
