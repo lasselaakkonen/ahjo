@@ -21,6 +21,7 @@ import (
 	"github.com/lasselaakkonen/ahjo/internal/paths"
 	"github.com/lasselaakkonen/ahjo/internal/ports"
 	"github.com/lasselaakkonen/ahjo/internal/registry"
+	"github.com/lasselaakkonen/ahjo/internal/repoauth"
 	sshpkg "github.com/lasselaakkonen/ahjo/internal/ssh"
 	"github.com/lasselaakkonen/ahjo/internal/tokenstore"
 )
@@ -1057,40 +1058,20 @@ func promptRepoGHToken(slug, primary string, yes bool) error {
 	}
 
 	owner, name, ok := splitRepoAlias(primary)
-	scopeURL := "https://github.com/settings/personal-access-tokens/new"
-	scopeNote := ""
+	ownerRepo := ""
 	if ok {
-		scopeNote = fmt.Sprintf("        Repository access:  Only select repositories → %s/%s\n", owner, name)
+		ownerRepo = owner + "/" + name
 	}
 
 	out := cobraOut()
-	fmt.Fprintln(out)
-	fmt.Fprintln(out, "Set a GitHub token for this repo? gh inside containers will use it.")
-	fmt.Fprintln(out)
-	fmt.Fprintln(out, "  Fine-grained PAT (recommended) — scope it to JUST this repo:")
-	fmt.Fprintln(out, "    → "+scopeURL)
-	if scopeNote != "" {
-		fmt.Fprint(out, scopeNote)
-	}
-	fmt.Fprintln(out, "        Permissions:")
-	fmt.Fprintln(out, "          - Contents       (RW — needed to push commits and merge PRs)")
-	fmt.Fprintln(out, "          - Pull requests  (RW)")
-	fmt.Fprintln(out, "          - Issues         (RW)")
-	fmt.Fprintln(out, "          - Metadata       (read — required)")
-	fmt.Fprintln(out, "        Expiration:         your call")
-	fmt.Fprintln(out)
-	fmt.Fprintln(out, "  Classic PAT — broader, easier, less safe.")
-	fmt.Fprintln(out)
+	repoauth.PrintInstructions(out, ownerRepo)
 
-	tok, err := readSecret(os.Stdin, out, cobraOutErr(), "Paste a token now, or press Enter to skip: ")
+	tok, err := readSecret(os.Stdin, out, cobraOutErr(), repoauth.PromptText)
 	if err != nil {
 		return err
 	}
 	if tok == "" {
-		fmt.Fprintln(out, "  → skipped. `gh` inside containers for this repo will require manual auth.")
-		fmt.Fprintln(out, "     Add later:  ahjo repo set-token "+primary)
-		fmt.Fprintln(out, "     Or globally (warning: exposes all your repos):")
-		fmt.Fprintln(out, "       ahjo env set GH_TOKEN \"$(gh auth token)\"")
+		repoauth.PrintSkipHint(out, primary)
 		return nil
 	}
 	return saveRepoGHToken(slug, tok)

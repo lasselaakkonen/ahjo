@@ -15,6 +15,7 @@ import (
 	"github.com/lasselaakkonen/ahjo/internal/macsecret"
 	"github.com/lasselaakkonen/ahjo/internal/paths"
 	"github.com/lasselaakkonen/ahjo/internal/registry"
+	"github.com/lasselaakkonen/ahjo/internal/repoauth"
 )
 
 // ghTokenKey is the canonical key for per-repo GitHub PATs in the Keychain.
@@ -73,9 +74,18 @@ func interceptRepoAdd(args []string) ([]string, []string, error) {
 		// No URL on the line; let the in-VM ahjo emit the usage error.
 		return args, nil, nil
 	}
-	slug, err := slugFromRepoURL(url)
+	ownerRepo, err := registry.DeriveRepoAlias(url)
 	if err != nil {
 		// Bad URL: defer to in-VM for the canonical error.
+		return args, nil, nil
+	}
+	// On collision the in-VM ahjo allocates a -2/-3 suffix, which the shim
+	// can't see pre-relay. The first-run Keychain row keys off the URL-derived
+	// slug; the in-VM read falls through to the public-clone path and the
+	// user can rotate with `ahjo repo set-token <alias>` once they see the
+	// allocated alias.
+	slug := registry.AliasToSlug(ownerRepo)
+	if slug == "" {
 		return args, nil, nil
 	}
 	tok, found, err := macsecret.Get(slug, ghTokenKey)
@@ -88,11 +98,13 @@ func interceptRepoAdd(args []string) ([]string, []string, error) {
 	if yes || !isTerminal(os.Stdin) {
 		return args, nil, nil
 	}
-	tok, err = promptStorePAT(slug, fmt.Sprintf("Paste a GitHub token for %s, or press Enter to skip: ", slug))
+	repoauth.PrintInstructions(os.Stdout, ownerRepo)
+	tok, err = promptStorePAT(slug, repoauth.PromptText)
 	if err != nil {
 		return nil, nil, err
 	}
 	if tok == "" {
+		repoauth.PrintSkipHint(os.Stdout, ownerRepo)
 		return args, nil, nil
 	}
 	return args, []string{"GH_TOKEN=" + tok}, nil
@@ -270,29 +282,6 @@ func firstNonFlag(rest []string) string {
 		return a
 	}
 	return ""
-}
-
-// slugFromRepoURL mirrors the in-VM allocation: derive owner/repo from a git
-// URL, normalize via AliasToSlug (lowercase + [a-z0-9-]). Returns an error
-// when the URL doesn't yield a usable owner/repo pair so the caller can
-// defer to the in-VM ahjo for the canonical error message.
-//
-// Collisions (registry already has the base slug, so the in-VM ahjo allocates
-// -2/-3) aren't visible from here. Documented limitation: on collision the
-// user's first-run Keychain row will key off the URL-derived slug while the
-// in-VM ahjo allocates a suffix, and the in-VM read falls through to the
-// public-clone path. The user can rotate with `ahjo repo set-token <alias>`
-// once they see the correct alias post-add.
-func slugFromRepoURL(url string) (string, error) {
-	alias, err := registry.DeriveRepoAlias(url)
-	if err != nil {
-		return "", err
-	}
-	slug := registry.AliasToSlug(alias)
-	if slug == "" {
-		return "", fmt.Errorf("empty slug for %q", url)
-	}
-	return slug, nil
 }
 
 // lookupRepoSlug resolves a user-typed alias (repo or branch) to the parent
