@@ -5,9 +5,25 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/lasselaakkonen/ahjo/internal/paths"
 )
 
+// neutralizeAncestorRelay points paths.AncestorPubkeysMount at a
+// guaranteed-empty tempdir for the duration of the test. Without this,
+// tests run inside an ahjo-nested layer pick up the host's real relay
+// (mounted at the fixed /etc/ssh/ahjo-ancestor-pubkeys path), which
+// silently adds 5+ unrelated keys to every WriteAuthorizedKeys() call
+// and breaks the "exactly N keys" assertions.
+func neutralizeAncestorRelay(t *testing.T) {
+	t.Helper()
+	orig := paths.AncestorPubkeysMount
+	paths.AncestorPubkeysMount = filepath.Join(t.TempDir(), "no-such-mount")
+	t.Cleanup(func() { paths.AncestorPubkeysMount = orig })
+}
+
 func TestWriteAuthorizedKeys_StagesRelayDir(t *testing.T) {
+	neutralizeAncestorRelay(t)
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("SSH_AUTH_SOCK", "") // disable agent source for deterministic test
@@ -67,6 +83,7 @@ func TestWriteAuthorizedKeys_StagesRelayDir(t *testing.T) {
 }
 
 func TestWriteAuthorizedKeys_DedupesAcrossSources(t *testing.T) {
+	neutralizeAncestorRelay(t)
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("SSH_AUTH_SOCK", "")
@@ -107,6 +124,7 @@ func TestWriteAuthorizedKeys_DedupesAcrossSources(t *testing.T) {
 }
 
 func TestWriteAuthorizedKeys_FailsWhenNoSources(t *testing.T) {
+	neutralizeAncestorRelay(t)
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("SSH_AUTH_SOCK", "")
