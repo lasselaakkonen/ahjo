@@ -46,6 +46,12 @@ The Mac binaries do not embed the Linux binary. At `ahjo init` time the Mac shim
    - runs `make dist VERSION=$tag`,
    - creates a GitHub release with auto-generated notes,
    - uploads all four binaries plus `SHA256SUMS`.
+4. Smoke-test the installer against the fresh release on a clean machine (or container):
+   ```sh
+   curl -fsSL https://raw.githubusercontent.com/lasselaakkonen/ahjo/master/install.sh | sh
+   ahjo --version          # should print the tag you just pushed
+   ```
+   `install.sh` follows the `releases/latest/download/SHA256SUMS` redirect to pin the tag, then downloads the matching `ahjo-<platform>` and verifies it against `SHA256SUMS` before installing.
 
 If the workflow fails after the tag is pushed, fix forward: delete the tag (`git tag -d v0.1.0 && git push --delete origin v0.1.0`), commit the fix, re-tag.
 
