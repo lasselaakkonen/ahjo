@@ -42,6 +42,12 @@ func PickGatewayCIDR() (cidr, reason string, err error) {
 	if err != nil {
 		return "", "", err
 	}
+	return pickFromRoutes(routes)
+}
+
+// pickFromRoutes is the pure selection step, split out so tests can feed in
+// synthetic on-link routes without mocking exec.
+func pickFromRoutes(routes []onLinkRoute) (cidr, reason string, err error) {
 	for _, cand := range candidateSubnets {
 		_, candNet, perr := net.ParseCIDR(cand)
 		if perr != nil {
