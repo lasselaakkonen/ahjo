@@ -5,6 +5,7 @@ import "charm.land/bubbles/v2/key"
 type keymap struct {
 	Left, Right, Up, Down key.Binding
 	Submit, Cancel        key.Binding
+	SubmitWindow          key.Binding
 	Help, Quit            key.Binding
 	Refresh               key.Binding
 
@@ -25,15 +26,16 @@ type keymap struct {
 
 func newKeymap() keymap {
 	return keymap{
-		Left:    key.NewBinding(key.WithKeys("left", "h"), key.WithHelp("←↓↑→/hjkl", "")),
-		Right:   key.NewBinding(key.WithKeys("right", "l")),
-		Up:      key.NewBinding(key.WithKeys("up", "k")),
-		Down:    key.NewBinding(key.WithKeys("down", "j")),
-		Submit:  key.NewBinding(key.WithKeys("enter"), key.WithHelp("⏎", "submit")),
-		Cancel:  key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", "cancel")),
-		Help:    key.NewBinding(key.WithKeys("?"), key.WithHelp("?", "help")),
-		Quit:    key.NewBinding(key.WithKeys("q", "ctrl+c"), key.WithHelp("q", "quit")),
-		Refresh: key.NewBinding(key.WithKeys("f5"), key.WithHelp("F5", "refresh")),
+		Left:         key.NewBinding(key.WithKeys("left", "h"), key.WithHelp("←↓↑→/hjkl", "")),
+		Right:        key.NewBinding(key.WithKeys("right", "l")),
+		Up:           key.NewBinding(key.WithKeys("up", "k")),
+		Down:         key.NewBinding(key.WithKeys("down", "j")),
+		Submit:       key.NewBinding(key.WithKeys("enter"), key.WithHelp("⏎", "submit")),
+		SubmitWindow: key.NewBinding(key.WithKeys("w"), key.WithHelp("w", "new window")),
+		Cancel:       key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", "cancel")),
+		Help:         key.NewBinding(key.WithKeys("?"), key.WithHelp("?", "help")),
+		Quit:         key.NewBinding(key.WithKeys("q", "ctrl+c"), key.WithHelp("q", "quit")),
+		Refresh:      key.NewBinding(key.WithKeys("f5"), key.WithHelp("F5", "refresh")),
 
 		AddRepo:    key.NewBinding(key.WithKeys("a"), key.WithHelp("a", "add repo")),
 		RemoveRepo: key.NewBinding(key.WithKeys("r"), key.WithHelp("r", "remove repo")),
@@ -44,8 +46,8 @@ func newKeymap() keymap {
 		ToggleExpose: key.NewBinding(key.WithKeys("e"), key.WithHelp("e", "toggle expose")),
 		ToggleMirror: key.NewBinding(key.WithKeys("m"), key.WithHelp("m", "toggle mirror")),
 
-		CopyClaudeCmd: key.NewBinding(key.WithKeys("a"), key.WithHelp("a", "copy `ahjo claude` cmd")),
-		CopyShellCmd:  key.NewBinding(key.WithKeys("s"), key.WithHelp("s", "copy `ahjo shell` cmd")),
+		CopyClaudeCmd: key.NewBinding(key.WithKeys("a"), key.WithHelp("a", "run `ahjo claude`")),
+		CopyShellCmd:  key.NewBinding(key.WithKeys("s"), key.WithHelp("s", "run `ahjo shell`")),
 		OpenIDE:       key.NewBinding(key.WithKeys("i"), key.WithHelp("i", "ide")),
 	}
 }

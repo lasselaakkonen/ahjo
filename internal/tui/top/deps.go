@@ -30,6 +30,14 @@ type Deps struct {
 	// nothing was detected — the picker surfaces a flash in that case.
 	IDEs func() []IDE
 
+	// Terminals enumerates terminal emulators the host has installed, in
+	// preferred display order with the user's current terminal first.
+	// Each entry knows how to spawn itself running a given argv (in a
+	// new tab when its IsCurrent is true, otherwise a new window). The
+	// run-target picker always renders a "copy to clipboard" entry as
+	// well, so returning nil/empty is fine.
+	Terminals func() []Terminal
+
 	// LoadSnapshot fetches the per-tick registry/container/ports/mirror
 	// state used to render the three columns. Linux-native: builds it
 	// in-process. Mac: shells `ahjo top-state --json` into the VM and
@@ -49,6 +57,17 @@ type Deps struct {
 type IDE struct {
 	Name string
 	Open func(host, path string) error
+}
+
+// Terminal is one row in the run-target picker (presented when `s`/`a` is
+// pressed on a selected container). Run spawns the terminal pointed at
+// argv as its initial command; asTab requests a new tab in the running
+// emulator (only meaningful when IsCurrent is true). Launchers fall back
+// to a new window when the underlying emulator can't do tabs.
+type Terminal struct {
+	Name      string
+	IsCurrent bool
+	Run       func(argv []string, asTab bool) error
 }
 
 // HostStatus is the right-pane content shown when no repo/branch is selected.
