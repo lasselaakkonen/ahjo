@@ -42,6 +42,7 @@ const (
 	inputNewContainer
 	inputMirrorTarget
 	inputIDE
+	inputRunTarget
 )
 
 const (
@@ -157,6 +158,17 @@ type model struct {
 	idePickerIdx  int
 	idePickerHost string
 	idePickerPath string
+
+	// runTargetTerms / runTargetIdx back the inputRunTarget picker
+	// (presented when `s`/`a` is pressed on a selected container).
+	// runTargetSub is "claude" or "shell"; runTargetAlias is the
+	// branch alias the picker was opened against, captured at entry so
+	// the launcher doesn't rely on selection state holding still. Reset
+	// on cancel/submit.
+	runTargetTerms []Terminal
+	runTargetIdx   int
+	runTargetSub   string
+	runTargetAlias string
 }
 
 func (m *model) Init() tea.Cmd {
@@ -238,6 +250,9 @@ func (m *model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if m.inputMode == inputIDE {
 		return m.handleIDEPickerKey(msg)
 	}
+	if m.inputMode == inputRunTarget {
+		return m.handleRunTargetPickerKey(msg)
+	}
 	if m.inputMode != inputNone {
 		switch {
 		case key.Matches(msg, m.keys.Submit):
@@ -296,9 +311,11 @@ func (m *model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		case key.Matches(msg, m.keys.ToggleMirror):
 			return m.handleToggleMirror()
 		case key.Matches(msg, m.keys.CopyClaudeCmd):
-			return m, m.copyAhjoCmdForBranch("claude")
+			m.startRunTargetPicker("claude")
+			return m, nil
 		case key.Matches(msg, m.keys.CopyShellCmd):
-			return m, m.copyAhjoCmdForBranch("shell")
+			m.startRunTargetPicker("shell")
+			return m, nil
 		case key.Matches(msg, m.keys.OpenIDE):
 			m.startIDEPicker()
 			return m, nil
@@ -383,6 +400,10 @@ func (m *model) cancelInput() {
 	m.idePickerIdx = 0
 	m.idePickerHost = ""
 	m.idePickerPath = ""
+	m.runTargetTerms = nil
+	m.runTargetIdx = 0
+	m.runTargetSub = ""
+	m.runTargetAlias = ""
 }
 
 // startIDEPicker enters inputIDE mode for the currently selected branch.
@@ -639,19 +660,93 @@ func (m *model) execWorktreeRm() tea.Cmd {
 	return execAhjo("removed", alias, "rm", alias)
 }
 
-// copyAhjoCmdForBranch yanks `ahjo <sub> <alias>` for the currently selected
-// branch into the system clipboard via OSC 52 (tea.SetClipboard). Returns nil
-// when no real container is selected (e.g. focus is on the "+ create
-// container" sentinel, or focusDetails with no branch chosen) — silent in
-// that case rather than misleading.
-func (m *model) copyAhjoCmdForBranch(sub string) tea.Cmd {
+// startRunTargetPicker enters inputRunTarget mode for the currently selected
+// branch and the given subcommand ("claude" or "shell"). Captures the
+// branch alias at entry so the picker isn't affected by later list moves.
+// When no branch is selected, flashes without switching modes — mirrors
+// startIDEPicker's behaviour. The picker always renders a "copy to
+// clipboard" entry, so an empty Terminals() result is fine.
+func (m *model) startRunTargetPicker(sub string) {
 	w := selectedBranch(m.containers)
 	if w == nil {
-		return nil
+		m.flash = "select a container first"
+		return
 	}
-	cmdStr := "ahjo " + sub + " " + w.Aliases[0]
-	m.flash = "copied to clipboard: " + cmdStr
-	return tea.SetClipboard(cmdStr)
+	var terms []Terminal
+	if m.deps.Terminals != nil {
+		terms = m.deps.Terminals()
+	}
+	m.runTargetTerms = terms
+	m.runTargetIdx = 0
+	m.runTargetSub = sub
+	m.runTargetAlias = w.Aliases[0]
+	m.inputMode = inputRunTarget
+	m.flash = ""
+}
+
+// handleRunTargetPickerKey owns the keypress loop while inputRunTarget is
+// active. Up/down navigate the combined list (detected terminals followed
+// by the clipboard sentinel); enter dispatches; esc cancels. All other
+// keys are dropped so an in-flight picker can't leak keys into the
+// underlying list/viewport.
+func (m *model) handleRunTargetPickerKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	rows := len(m.runTargetTerms) + 1 // +1 for the clipboard sentinel
+	switch {
+	case key.Matches(msg, m.keys.Cancel):
+		m.cancelInput()
+		return m, nil
+	case key.Matches(msg, m.keys.Up):
+		if m.runTargetIdx > 0 {
+			m.runTargetIdx--
+		}
+		return m, nil
+	case key.Matches(msg, m.keys.Down):
+		if m.runTargetIdx < rows-1 {
+			m.runTargetIdx++
+		}
+		return m, nil
+	case key.Matches(msg, m.keys.Submit):
+		return m.dispatchRunTarget(true)
+	case key.Matches(msg, m.keys.SubmitWindow):
+		return m.dispatchRunTarget(false)
+	}
+	return m, nil
+}
+
+// dispatchRunTarget acts on the selected row: clipboard sentinel copies,
+// terminal rows spawn. honorTab is true for plain Enter (use the term's
+// own preference — tab for the current terminal, window for the rest) and
+// false for Shift+Enter (force a new window regardless). Shift+Enter on
+// the clipboard sentinel behaves the same as Enter — there's no "shift to
+// copy differently" semantic.
+func (m *model) dispatchRunTarget(honorTab bool) (tea.Model, tea.Cmd) {
+	sub := m.runTargetSub
+	alias := m.runTargetAlias
+	idx := m.runTargetIdx
+	terms := m.runTargetTerms
+	m.cancelInput()
+	cmdStr := "ahjo " + sub + " " + alias
+	if idx >= len(terms) {
+		m.flash = "copied to clipboard: " + cmdStr
+		return m, tea.SetClipboard(cmdStr)
+	}
+	term := terms[idx]
+	if term.Run == nil {
+		m.flash = "run target " + term.Name + ": no launcher"
+		return m, nil
+	}
+	self, err := os.Executable()
+	if err != nil || self == "" {
+		self = "ahjo"
+	}
+	argv := []string{self, sub, alias}
+	asTab := honorTab && term.IsCurrent
+	if err := term.Run(argv, asTab); err != nil {
+		m.flash = "open " + term.Name + " failed: " + err.Error()
+		return m, nil
+	}
+	m.flash = "opening " + term.Name + " → " + cmdStr
+	return m, nil
 }
 
 func (m *model) execToggleExpose() tea.Cmd {
@@ -786,6 +881,8 @@ func (m *model) View() tea.View {
 		// no overlay
 	case inputIDE:
 		rightContent = m.idePickerBlock()
+	case inputRunTarget:
+		rightContent = m.runTargetPickerBlock()
 	default:
 		rightContent = m.inputBlock()
 	}
@@ -854,6 +951,64 @@ func (m *model) inputBlock() string {
 		hint = detailLabel.Render("enter to submit · esc to cancel")
 	}
 	return strings.Join([]string{title, "", m.input.View(), "", hint}, "\n")
+}
+
+// runTargetPickerBlock renders the inputRunTarget overlay: a ▸-marked list
+// of detected terminal emulators (the current one tagged "(current)" and
+// noted as opening a new tab) followed by a sentinel "copy to clipboard"
+// row. Mirrors idePickerBlock's title/hint chrome so the two modals look
+// consistent.
+func (m *model) runTargetPickerBlock() string {
+	title := detailTitle.Render("run ahjo " + m.runTargetSub + " · " + m.runTargetAlias)
+	rows := len(m.runTargetTerms) + 1
+	lines := make([]string, 0, rows)
+	for i, term := range m.runTargetTerms {
+		caret := "  "
+		style := detailValue
+		if i == m.runTargetIdx {
+			caret = "▸ "
+			style = detailTitle
+		}
+		label := term.Name
+		switch {
+		case term.IsCurrent:
+			label += "  (current, new tab)"
+		default:
+			label += "  (new window)"
+		}
+		lines = append(lines, style.Render(caret+label))
+	}
+	caret := "  "
+	style := detailValue
+	if m.runTargetIdx == len(m.runTargetTerms) {
+		caret = "▸ "
+		style = detailTitle
+	}
+	lines = append(lines, style.Render(caret+"copy to clipboard"))
+	hint := detailLabel.Render(m.runTargetHint())
+	parts := []string{title, ""}
+	parts = append(parts, lines...)
+	parts = append(parts, "", hint)
+	return strings.Join(parts, "\n")
+}
+
+// runTargetHint returns the footer text for the picker, mirroring the
+// actions available for the currently highlighted row so the hint never
+// promises something the row can't deliver (e.g. "w for new window" on a
+// non-current terminal whose Enter already opens a window, or on the
+// clipboard sentinel where there's no window/tab choice at all).
+func (m *model) runTargetHint() string {
+	parts := []string{"↑/↓ pick"}
+	switch {
+	case m.runTargetIdx >= len(m.runTargetTerms):
+		parts = append(parts, "enter to copy")
+	case m.runTargetTerms[m.runTargetIdx].IsCurrent:
+		parts = append(parts, "enter for new tab", "w for new window")
+	default:
+		parts = append(parts, "enter for new window")
+	}
+	parts = append(parts, "esc to cancel")
+	return strings.Join(parts, " · ")
 }
 
 // idePickerBlock renders the inputIDE overlay: a ▸-marked list of the
