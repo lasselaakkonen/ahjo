@@ -93,7 +93,13 @@ func SlugAncestorPubkeysDir(slug string) string {
 // AncestorPubkeysMount is the fixed in-container path where each ahjo
 // layer mounts the parent's pubkey relay. Same on every layer, so the
 // child's pubKeyHomes() lookup is identical regardless of depth.
-const AncestorPubkeysMount = "/etc/ssh/ahjo-ancestor-pubkeys"
+//
+// Declared as a var (not const) only to give tests a seam: in production
+// it's set once at process start and never written. Tests in the ssh
+// package override it to a tempdir so the host's real relay (present
+// when those tests run inside an ahjo-nested layer) doesn't leak into
+// fixtures that expect a clean slate.
+var AncestorPubkeysMount = "/etc/ssh/ahjo-ancestor-pubkeys"
 
 // RepoEnvDir holds per-repo .env files (one per slug, mode 0600). Each file
 // is layered over ~/.ahjo/.env by branchEnv so PATs scoped to one repo never
