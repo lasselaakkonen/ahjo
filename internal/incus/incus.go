@@ -54,6 +54,31 @@ func ContainerExists(name string) (bool, error) {
 	return false, nil
 }
 
+// ContainersWithPrefix returns names of containers that equal prefix or start
+// with prefix+"-". The "-" boundary keeps unrelated names that merely share a
+// fragment (e.g. "ahjo-foobar" when prefix is "ahjo-foo") out of the result.
+func ContainersWithPrefix(prefix string) ([]string, error) {
+	cmd := exec.Command("incus", "list", "--format=json")
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("incus list: %w", err)
+	}
+	var rows []struct {
+		Name string `json:"name"`
+	}
+	if err := json.Unmarshal(out, &rows); err != nil {
+		return nil, fmt.Errorf("parse incus list: %w", err)
+	}
+	var matches []string
+	for _, r := range rows {
+		if r.Name == prefix || strings.HasPrefix(r.Name, prefix+"-") {
+			matches = append(matches, r.Name)
+		}
+	}
+	sort.Strings(matches)
+	return matches, nil
+}
+
 // AddProxyDevice adds a proxy device, tolerating "already exists" errors.
 func AddProxyDevice(container, device, listen, connect string) error {
 	args := []string{

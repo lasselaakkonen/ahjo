@@ -865,7 +865,7 @@ func runRepoRm(alias string, force bool) error {
 	}
 	repo := reg.FindRepoByAlias(alias)
 	if repo == nil {
-		return fmt.Errorf("no repo with alias %q", alias)
+		return sweepUnmanagedContainers(reg, alias, force)
 	}
 
 	var defaultBranchKey string
@@ -924,6 +924,60 @@ func runRepoRm(alias string, force bool) error {
 		return err
 	}
 	fmt.Printf("removed repo %s\n", repo.Aliases[0])
+	return nil
+}
+
+// sweepUnmanagedContainers handles the case where `repo rm <alias>` finds no
+// registry entry but Incus still has a container that matches the slug — the
+// signature of a `repo add` that crashed mid-flow after creating the container
+// but before writing the registry row. Without --force we list the orphans and
+// prompt; with --force we delete unconditionally. Caller holds the lockfile.
+func sweepUnmanagedContainers(reg *registry.Registry, alias string, force bool) error {
+	slug := registry.AliasToSlug(alias)
+	if slug == "" {
+		return fmt.Errorf("no repo with alias %q", alias)
+	}
+	prefix := "ahjo-" + slug
+	candidates, err := incus.ContainersWithPrefix(prefix)
+	if err != nil {
+		return err
+	}
+	// Defensive: drop any name that's still owned by a registered branch.
+	// FindRepoByAlias missed our alias, but a different repo's branch could
+	// in principle share the prefix — never delete something we know is live.
+	registered := map[string]bool{}
+	for _, b := range reg.Branches {
+		if b.IncusName != "" {
+			registered[b.IncusName] = true
+		}
+	}
+	var orphans []string
+	for _, name := range candidates {
+		if !registered[name] {
+			orphans = append(orphans, name)
+		}
+	}
+	if len(orphans) == 0 {
+		return fmt.Errorf("no repo with alias %q", alias)
+	}
+	if !force {
+		fmt.Printf("no managed repo with alias %q, but found unmanaged container(s):\n", alias)
+		for _, name := range orphans {
+			fmt.Printf("  %s\n", name)
+		}
+		if !promptYesNo("Delete them?") {
+			return nil
+		}
+	}
+	for _, name := range orphans {
+		fmt.Printf("→ incus delete --force %s\n", name)
+		if err := incus.ContainerDeleteForce(name); err != nil {
+			fmt.Fprintf(cobraOutErr(), "warn: incus delete %s: %v\n", name, err)
+		}
+	}
+	// Host keys for the base slug are deterministic from the alias. Branch
+	// host-keys live under their own (unknown-to-us) slugs, so they stay.
+	_ = os.RemoveAll(paths.SlugHostKeysDir(slug))
 	return nil
 }
 
