@@ -210,6 +210,17 @@ func repoAddSetup(slug, primary string, aliases []string, url, defaultBase strin
 		return err
 	}
 
+	// Make sure this layer has at least one client SSH key on disk before
+	// WriteAuthorizedKeys runs. On Mac/Lima this is a no-op; from layer 2
+	// down (ahjo-in-ahjo), this is the floor that keeps the recursion
+	// self-sustaining when no Mac virtiofs window is reachable. See
+	// internal/ssh/keygen.go for the trigger conditions.
+	if _, created, err := sshpkg.EnsureLocalKey(); err != nil {
+		return fmt.Errorf("ensure local ssh key: %w", err)
+	} else if created {
+		fmt.Println("  → generated ~/.ssh/id_ed25519 (no prior client key found)")
+	}
+
 	hostKeysDir := paths.SlugHostKeysDir(slug)
 	if err := sshpkg.EnsureHostKeys(hostKeysDir); err != nil {
 		return err
@@ -522,6 +533,19 @@ func wireBranchContainer(containerName, hostKeysDir string) error {
 	if err := incus.AddDiskDevice(
 		containerName, "ahjo-authorized-keys",
 		hostKeysDir+"/authorized_keys", "/home/ubuntu/.ssh/authorized_keys",
+		true,
+	); err != nil {
+		return err
+	}
+	// Forward this layer's cumulative pubkey set into the new container at
+	// paths.AncestorPubkeysMount. The child's pubKeyHomes() reads from
+	// there as a third source when authoring ITS authorized_keys, so the
+	// recursion (ahjo-in-ahjo-in-ahjo-…) propagates pubkeys at every hop
+	// without relying on a Mac virtiofs window. The staged dir was
+	// populated by WriteAuthorizedKeys (it lives at hostKeysDir/ancestor-pubkeys).
+	if err := incus.AddDiskDevice(
+		containerName, "ahjo-ancestor-pubkeys",
+		hostKeysDir+"/ancestor-pubkeys", paths.AncestorPubkeysMount,
 		true,
 	); err != nil {
 		return err

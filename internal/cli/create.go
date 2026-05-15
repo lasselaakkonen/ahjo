@@ -187,6 +187,15 @@ func createReserveBranch(cfg *config.Config, repoAlias, branch, asAlias string) 
 	slug := reg.MakeSlug(repo.Name, branch)
 	hostKeysDir := paths.SlugHostKeysDir(slug)
 
+	// See internal/ssh/keygen.go: no-op on Mac/Lima, mints a layer-local
+	// key when running inside an Incus container (ahjo-in-ahjo) so
+	// WriteAuthorizedKeys always has a pubkey source.
+	if _, created, err := sshpkg.EnsureLocalKey(); err != nil {
+		return nil, nil, fmt.Errorf("ensure local ssh key: %w", err)
+	} else if created {
+		fmt.Println("  → generated ~/.ssh/id_ed25519 (no prior client key found)")
+	}
+
 	if err := sshpkg.EnsureHostKeys(hostKeysDir); err != nil {
 		return nil, nil, err
 	}
@@ -259,6 +268,9 @@ func cloneFromBase(repo *registry.Repo, br *registry.Branch) error {
 	}
 	if err := incus.ConfigDeviceSet(containerName, "ahjo-authorized-keys", "source", hostKeysDir+"/authorized_keys"); err != nil {
 		return fmt.Errorf("rewire ahjo-authorized-keys mount: %w", err)
+	}
+	if err := incus.ConfigDeviceSet(containerName, "ahjo-ancestor-pubkeys", "source", hostKeysDir+"/ancestor-pubkeys"); err != nil {
+		return fmt.Errorf("rewire ahjo-ancestor-pubkeys mount: %w", err)
 	}
 	// The base's ahjo-ssh proxy listens on the base's port; remove so shell
 	// can re-add with this branch's port. Likewise drop the inherited
