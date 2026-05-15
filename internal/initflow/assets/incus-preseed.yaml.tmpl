@@ -4,7 +4,7 @@ networks:
   type: bridge
   project: default
   config:
-    ipv4.address: 10.20.30.1/24
+    ipv4.address: {{.GatewayCIDR}}
     ipv4.nat: "true"
     ipv6.address: none
 storage_pools:

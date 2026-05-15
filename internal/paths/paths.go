@@ -79,6 +79,22 @@ func HostKeysDir() string     { return filepath.Join(AhjoDir(), "host-keys") }
 
 func SlugHostKeysDir(slug string) string { return filepath.Join(HostKeysDir(), slug) }
 
+// SlugAncestorPubkeysDir holds one .pub file per pubkey trusted by this
+// layer, staged for read-only bind-mount into the new container at
+// /etc/ssh/ahjo-ancestor-pubkeys/. The child's ahjo reads from that path
+// as a third source for its own authorized_keys, so the pubkey set
+// propagates across arbitrarily-nested ahjo layers without depending on a
+// Mac-specific virtiofs window. See designdocs/ahjo-in-ahjo (or the
+// comments in internal/ssh/authkeys.go) for the recursion details.
+func SlugAncestorPubkeysDir(slug string) string {
+	return filepath.Join(SlugHostKeysDir(slug), "ancestor-pubkeys")
+}
+
+// AncestorPubkeysMount is the fixed in-container path where each ahjo
+// layer mounts the parent's pubkey relay. Same on every layer, so the
+// child's pubKeyHomes() lookup is identical regardless of depth.
+const AncestorPubkeysMount = "/etc/ssh/ahjo-ancestor-pubkeys"
+
 // RepoEnvDir holds per-repo .env files (one per slug, mode 0600). Each file
 // is layered over ~/.ahjo/.env by branchEnv so PATs scoped to one repo never
 // leak into containers for another repo.

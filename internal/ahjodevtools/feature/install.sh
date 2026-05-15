@@ -16,8 +16,12 @@
 # package provides. The two are very different tools; ahjo's "for YAML"
 # preference means Mike Farah's.
 #
-# ast-grep ships a static binary in app-<target>.zip; we extract `sg` and
-# `ast-grep` and install both names to match upstream's docs.
+# ast-grep ships a static binary in app-<target>.zip under the names `sg`
+# and `ast-grep`; we install only `ast-grep` because the `sg` shortcut
+# collides with util-linux's `sg` (an alias for `newgrp`). Debian/Ubuntu's
+# ast-grep package and Homebrew's formula skip the `sg` name for the same
+# reason; ahjo follows that convention so `sg incus-admin -c …` (and any
+# other newgrp use) keeps working in nested ahjo-in-ahjo containers.
 #
 # Versions are intentionally unpinned (`/releases/latest/download/...`) per
 # ahjo's rolling-current-toolchains convention: each `ahjo update` rebuilds
@@ -57,12 +61,11 @@ curl -fsSL "https://github.com/mikefarah/yq/releases/latest/download/yq_${yq_arc
 chmod 0755 /usr/local/bin/yq
 
 # ast-grep — distributed as app-${target}.zip with `sg` and `ast-grep`
-# binaries at the zip's top level. Install both names to match upstream's
-# documented invocations.
+# binaries at the zip's top level. Install only `ast-grep`; skipping `sg`
+# preserves util-linux's `sg` (newgrp alias) which ahjo init relies on.
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 curl -fsSL "https://github.com/ast-grep/ast-grep/releases/latest/download/app-${astgrep_target}.zip" \
     -o "$tmp/ast-grep.zip"
 unzip -q -o "$tmp/ast-grep.zip" -d "$tmp/ast-grep"
 install -m 0755 "$tmp/ast-grep/ast-grep" /usr/local/bin/ast-grep
-install -m 0755 "$tmp/ast-grep/sg" /usr/local/bin/sg

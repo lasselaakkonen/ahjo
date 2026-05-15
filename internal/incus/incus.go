@@ -54,6 +54,31 @@ func ContainerExists(name string) (bool, error) {
 	return false, nil
 }
 
+// ContainersWithPrefix returns names of containers that equal prefix or start
+// with prefix+"-". The "-" boundary keeps unrelated names that merely share a
+// fragment (e.g. "ahjo-foobar" when prefix is "ahjo-foo") out of the result.
+func ContainersWithPrefix(prefix string) ([]string, error) {
+	cmd := exec.Command("incus", "list", "--format=json")
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("incus list: %w", err)
+	}
+	var rows []struct {
+		Name string `json:"name"`
+	}
+	if err := json.Unmarshal(out, &rows); err != nil {
+		return nil, fmt.Errorf("parse incus list: %w", err)
+	}
+	var matches []string
+	for _, r := range rows {
+		if r.Name == prefix || strings.HasPrefix(r.Name, prefix+"-") {
+			matches = append(matches, r.Name)
+		}
+	}
+	sort.Strings(matches)
+	return matches, nil
+}
+
 // AddProxyDevice adds a proxy device, tolerating "already exists" errors.
 func AddProxyDevice(container, device, listen, connect string) error {
 	args := []string{
@@ -87,6 +112,36 @@ func AddDiskDevice(container, device, source, path string, readonly bool) error 
 	}
 	if readonly {
 		args = append(args, "readonly=true")
+	}
+	cmd := exec.Command("incus", args...)
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		os.Stdout.Write(out)
+		return nil
+	}
+	if strings.Contains(strings.ToLower(string(out)), "already exists") {
+		return nil
+	}
+	os.Stderr.Write(out)
+	var ee *exec.ExitError
+	if errors.As(err, &ee) {
+		return fmt.Errorf("incus %s: exit %d", strings.Join(args, " "), ee.ExitCode())
+	}
+	return fmt.Errorf("incus %s: %w", strings.Join(args, " "), err)
+}
+
+// AddUnixDevice attaches a host /dev node to the container as a unix-char
+// or unix-block device (Incus device types). devType must be "unix-char"
+// or "unix-block". Tolerant of "already exists" so callers can use it as
+// an idempotent wire step (matches AddDiskDevice).
+//
+// Used by the nested_incus capability to expose /dev/loop-control +
+// /dev/loop0..7 into a container so nested Incus can back its storage
+// pool with a loop-mounted .img. See internal/cli/repo.go::wireLoopDevices.
+func AddUnixDevice(container, device, devType, source string) error {
+	args := []string{
+		"config", "device", "add", container, device, devType,
+		"source=" + source,
 	}
 	cmd := exec.Command("incus", args...)
 	out, err := cmd.CombinedOutput()
