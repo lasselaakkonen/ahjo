@@ -3,11 +3,13 @@ package cli
 import (
 	"fmt"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
 	"charm.land/lipgloss/v2"
 
+	"github.com/lasselaakkonen/ahjo/internal/incus"
 	"github.com/lasselaakkonen/ahjo/internal/registry"
 	"github.com/lasselaakkonen/ahjo/internal/tui/top"
 )
@@ -54,6 +56,73 @@ func showPostAttachStatus(br *registry.Branch, containerName string) {
 	if wantPR {
 		printPostAttachRow("pr", top.FormatPRStatus(&bs))
 	}
+
+	if shouldOfferCleanup(&bs) {
+		offerCleanupAfterMerge(br, containerName, &bs)
+	}
+}
+
+// shouldOfferCleanup gates the post-exit cleanup prompts on /repo being
+// fully clean (no working-tree changes, no unpushed commits) AND the PR
+// having reached MERGED. Both halves must have been fetched successfully —
+// a timeout or error on either side suppresses the offer so we never
+// prompt off a half-known state.
+func shouldOfferCleanup(bs *top.BranchStatus) bool {
+	if !bs.GitChecked || bs.GitErr != "" {
+		return false
+	}
+	if bs.Dirty || bs.Ahead > 0 {
+		return false
+	}
+	if !bs.PRChecked || bs.PRErr != "" || bs.PR == nil {
+		return false
+	}
+	return strings.EqualFold(bs.PR.State, "MERGED")
+}
+
+// offerCleanupAfterMerge asks the two follow-up questions in the order
+// the user expects to see them (container first, then remote branch),
+// then executes in the order they have to run: the remote-branch delete
+// goes through `git push` inside the container, so it must happen
+// before the container is torn down.
+func offerCleanupAfterMerge(br *registry.Branch, containerName string, bs *top.BranchStatus) {
+	fmt.Fprintln(os.Stdout)
+
+	removeContainer := promptYesNo(fmt.Sprintf("PR is merged and /repo is clean — remove container %s?", containerName))
+
+	removeRemote := false
+	if br.Branch != "" {
+		removeRemote = promptYesNo(fmt.Sprintf("Delete remote branch origin/%s?", br.Branch))
+	}
+
+	if removeRemote {
+		if err := deleteRemoteBranch(containerName, br.Branch); err != nil {
+			fmt.Fprintf(os.Stderr, "warn: delete remote branch: %v\n", err)
+		} else {
+			fmt.Fprintf(os.Stdout, "deleted origin/%s\n", br.Branch)
+		}
+	}
+
+	if removeContainer {
+		alias := br.Slug
+		if len(br.Aliases) > 0 {
+			alias = br.Aliases[0]
+		}
+		if err := runRm(alias, false, false); err != nil {
+			fmt.Fprintf(os.Stderr, "warn: remove container: %v\n", err)
+		}
+	}
+}
+
+// deleteRemoteBranch runs `git push origin --delete <branch>` inside the
+// container so it picks up the in-container credential helper (gh's
+// stored PAT) rather than needing host-side auth. safe.directory mirrors
+// what applyGitStatus uses — incus exec runs as root over a /repo owned
+// by ubuntu.
+func deleteRemoteBranch(container, branch string) error {
+	_, err := incus.Exec(container, "git", "-c", "safe.directory=/repo",
+		"-C", "/repo", "push", "origin", "--delete", branch)
+	return err
 }
 
 // fetchPostAttachStatus runs the git-status and (optionally) PR-status
