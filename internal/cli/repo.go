@@ -323,17 +323,6 @@ func repoAddSetup(slug, primary string, aliases []string, url, defaultBase strin
 			"`run` → `postCreateCommand`, `forward_env` / `auto_expose` → `customizations.ahjo.*`")
 	}
 
-	// Refuse to set up against a legacy .devcontainer/devcontainer.json —
-	// ahjo's per-repo file moved off that path so IDE/Codespaces
-	// toolchains can't fight ahjo for the same file. Schema is unchanged.
-	if has, err := ahjocontainer.HasLegacyDevcontainerJSON(containerName); err != nil {
-		return fmt.Errorf("probe legacy devcontainer.json: %w", err)
-	} else if has {
-		return fmt.Errorf(".devcontainer/devcontainer.json is no longer ahjo's per-repo path; " +
-			"move it to .ahjo/ahjocontainer.json (schema unchanged). " +
-			"Reason: avoid IDE / Codespaces / JetBrains Gateway toolchains fighting ahjo for the same file")
-	}
-
 	// Parse ahjocontainer.json (if present). Docker-flavored fields are
 	// rejected by the parser itself, so by the time we have a *Config the
 	// schema is already valid for ahjo.

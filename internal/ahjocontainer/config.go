@@ -37,15 +37,6 @@ const ConfigPath = ".ahjo/ahjocontainer.json"
 // /repo aborts repo-add with a migration error; the parser is gone entirely.
 const LegacyAhjoconfigName = ".ahjoconfig"
 
-// LegacyDevcontainerPaths are the paths ahjo used to read while the per-repo
-// config still shared a filename with the devcontainer.json spec. Their
-// presence in /repo aborts repo-add with a migration error pointing at the
-// new path — schema unchanged, just move the file.
-var LegacyDevcontainerPaths = []string{
-	".devcontainer/devcontainer.json",
-	".devcontainer.json",
-}
-
 // Config is the parsed honored subset of an ahjocontainer.json (the
 // runtime-neutral subset of the devcontainer.json schema). Docker-flavored
 // fields surface here only so we can detect and reject them — they're
@@ -158,24 +149,6 @@ func LoadFromContainer(container string) (*Config, bool, error) {
 // silently ignoring a file the user thinks is being honored.
 func HasLegacyAhjoconfig(container string) (bool, error) {
 	return probeContainerFile(container, "/repo/"+LegacyAhjoconfigName)
-}
-
-// HasLegacyDevcontainerJSON reports whether the container's /repo contains
-// a per-repo config under one of the old shared-with-devcontainer-spec
-// paths. Used by repo-add to abort with a migration error rather than
-// silently ignoring a file the user thinks is being honored — the schema
-// is unchanged but the canonical path moved to ConfigPath.
-func HasLegacyDevcontainerJSON(container string) (bool, error) {
-	for _, rel := range LegacyDevcontainerPaths {
-		ok, err := probeContainerFile(container, "/repo/"+rel)
-		if err != nil {
-			return false, err
-		}
-		if ok {
-			return true, nil
-		}
-	}
-	return false, nil
 }
 
 // probeContainerFile returns whether `test -f path` succeeds in container.

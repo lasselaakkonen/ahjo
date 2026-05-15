@@ -215,23 +215,3 @@ func TestLoadFromHost_AbsentReturnsFalse(t *testing.T) {
 		t.Fatalf("want (nil, false, nil); got (%v, %v)", cfg, ok)
 	}
 }
-
-func TestLegacyDevcontainerPaths_CoverBothShapes(t *testing.T) {
-	// Mirrors the LegacyAhjoconfig posture: a guard list, not a fallback
-	// loader. Exposed so callers / future tests can iterate either form.
-	want := map[string]bool{
-		".devcontainer/devcontainer.json": false,
-		".devcontainer.json":              false,
-	}
-	for _, p := range LegacyDevcontainerPaths {
-		if _, ok := want[p]; !ok {
-			t.Fatalf("unexpected legacy path %q", p)
-		}
-		want[p] = true
-	}
-	for p, seen := range want {
-		if !seen {
-			t.Fatalf("missing legacy path %q", p)
-		}
-	}
-}
