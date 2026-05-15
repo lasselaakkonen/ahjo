@@ -10,16 +10,13 @@ Repos and worktrees are addressed by aliases. A repo gets an auto alias of `<own
 
 ### Install
 
-Download the binary for your platform from the [latest release](https://github.com/lasselaakkonen/ahjo/releases/latest):
+One line, any supported platform — detects your OS/arch, pulls the matching binary from the [latest release](https://github.com/lasselaakkonen/ahjo/releases/latest), verifies it against the release's `SHA256SUMS`:
 
 ```sh
-# macOS (Apple Silicon)
-curl -fsSL -o /usr/local/bin/ahjo \
-  https://github.com/lasselaakkonen/ahjo/releases/latest/download/ahjo-darwin-arm64
-chmod +x /usr/local/bin/ahjo
+curl -fsSL https://raw.githubusercontent.com/lasselaakkonen/ahjo/master/install.sh | sh
 ```
 
-Pick `darwin-amd64`, `linux-arm64`, or `linux-amd64` to match your host. Or build from source:
+Pin a specific tag with `AHJO_VERSION=v0.0.1`, or install somewhere other than `/usr/local/bin` with `INSTALL_DIR="$HOME/.local/bin"`. Or build from source:
 
 ```sh
 git clone https://github.com/lasselaakkonen/ahjo
