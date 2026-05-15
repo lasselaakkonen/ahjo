@@ -17,7 +17,8 @@ func TestParse_HonorsSubsetAndCustomizations(t *testing.T) {
 			"vscode": { "settings": {} },
 			"ahjo": {
 				"forward_env": ["MY_TOKEN"],
-				"auto_expose": { "enabled": false, "min_port": 4000 }
+				"auto_expose": { "enabled": false, "min_port": 4000 },
+				"nested_incus": true
 			}
 		},
 	}`)
@@ -46,6 +47,22 @@ func TestParse_HonorsSubsetAndCustomizations(t *testing.T) {
 	}
 	if ahjo.AutoExpose.MinPort == nil || *ahjo.AutoExpose.MinPort != 4000 {
 		t.Errorf("Customizations.Ahjo.AutoExpose.MinPort = %v, want 4000", ahjo.AutoExpose.MinPort)
+	}
+	if !ahjo.NestedIncus {
+		t.Errorf("Customizations.Ahjo.NestedIncus = false, want true")
+	}
+}
+
+func TestParse_NestedIncusDefaultsOff(t *testing.T) {
+	src := []byte(`{
+		"customizations": { "ahjo": { "forward_env": [] } }
+	}`)
+	cfg, err := Parse(src, ConfigPath)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if cfg.Customizations.Ahjo.NestedIncus {
+		t.Errorf("NestedIncus default = true, want false")
 	}
 }
 
@@ -213,25 +230,5 @@ func TestLoadFromHost_AbsentReturnsFalse(t *testing.T) {
 	}
 	if ok || cfg != nil {
 		t.Fatalf("want (nil, false, nil); got (%v, %v)", cfg, ok)
-	}
-}
-
-func TestLegacyDevcontainerPaths_CoverBothShapes(t *testing.T) {
-	// Mirrors the LegacyAhjoconfig posture: a guard list, not a fallback
-	// loader. Exposed so callers / future tests can iterate either form.
-	want := map[string]bool{
-		".devcontainer/devcontainer.json": false,
-		".devcontainer.json":              false,
-	}
-	for _, p := range LegacyDevcontainerPaths {
-		if _, ok := want[p]; !ok {
-			t.Fatalf("unexpected legacy path %q", p)
-		}
-		want[p] = true
-	}
-	for p, seen := range want {
-		if !seen {
-			t.Fatalf("missing legacy path %q", p)
-		}
 	}
 }

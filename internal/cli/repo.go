@@ -210,6 +210,17 @@ func repoAddSetup(slug, primary string, aliases []string, url, defaultBase strin
 		return err
 	}
 
+	// Make sure this layer has at least one client SSH key on disk before
+	// WriteAuthorizedKeys runs. On Mac/Lima this is a no-op; from layer 2
+	// down (ahjo-in-ahjo), this is the floor that keeps the recursion
+	// self-sustaining when no Mac virtiofs window is reachable. See
+	// internal/ssh/keygen.go for the trigger conditions.
+	if _, created, err := sshpkg.EnsureLocalKey(); err != nil {
+		return fmt.Errorf("ensure local ssh key: %w", err)
+	} else if created {
+		fmt.Println("  → generated ~/.ssh/id_ed25519 (no prior client key found)")
+	}
+
 	hostKeysDir := paths.SlugHostKeysDir(slug)
 	if err := sshpkg.EnsureHostKeys(hostKeysDir); err != nil {
 		return err
@@ -312,17 +323,6 @@ func repoAddSetup(slug, primary string, aliases []string, url, defaultBase strin
 			"`run` → `postCreateCommand`, `forward_env` / `auto_expose` → `customizations.ahjo.*`")
 	}
 
-	// Refuse to set up against a legacy .devcontainer/devcontainer.json —
-	// ahjo's per-repo file moved off that path so IDE/Codespaces
-	// toolchains can't fight ahjo for the same file. Schema is unchanged.
-	if has, err := ahjocontainer.HasLegacyDevcontainerJSON(containerName); err != nil {
-		return fmt.Errorf("probe legacy devcontainer.json: %w", err)
-	} else if has {
-		return fmt.Errorf(".devcontainer/devcontainer.json is no longer ahjo's per-repo path; " +
-			"move it to .ahjo/ahjocontainer.json (schema unchanged). " +
-			"Reason: avoid IDE / Codespaces / JetBrains Gateway toolchains fighting ahjo for the same file")
-	}
-
 	// Parse ahjocontainer.json (if present). Docker-flavored fields are
 	// rejected by the parser itself, so by the time we have a *Config the
 	// schema is already valid for ahjo.
@@ -342,6 +342,14 @@ func repoAddSetup(slug, primary string, aliases []string, url, defaultBase strin
 		return incus.ConfigSet(containerName, k, v)
 	}); err != nil {
 		return err
+	}
+
+	if dcConf != nil && dcConf.Customizations.Ahjo.NestedIncus {
+		if err := wireLoopDevices(containerName); err != nil {
+			return fmt.Errorf("wire loop devices: %w", err)
+		}
+		fmt.Fprintln(cobraOutErr(),
+			"warn: customizations.ahjo.nested_incus=true — kernel attack surface widened; see CONTAINER-ISOLATION.md")
 	}
 
 	// Resolve the host-env keys to forward into warm-install and lifecycle
@@ -526,6 +534,19 @@ func wireBranchContainer(containerName, hostKeysDir string) error {
 	); err != nil {
 		return err
 	}
+	// Forward this layer's cumulative pubkey set into the new container at
+	// paths.AncestorPubkeysMount. The child's pubKeyHomes() reads from
+	// there as a third source when authoring ITS authorized_keys, so the
+	// recursion (ahjo-in-ahjo-in-ahjo-…) propagates pubkeys at every hop
+	// without relying on a Mac virtiofs window. The staged dir was
+	// populated by WriteAuthorizedKeys (it lives at hostKeysDir/ancestor-pubkeys).
+	if err := incus.AddDiskDevice(
+		containerName, "ahjo-ancestor-pubkeys",
+		hostKeysDir+"/ancestor-pubkeys", paths.AncestorPubkeysMount,
+		true,
+	); err != nil {
+		return err
+	}
 	// SSH_AUTH_SOCK env can be set on a stopped container; the listen
 	// socket itself can only be created post-start (see attachSSHAgent).
 	if os.Getenv("SSH_AUTH_SOCK") != "" {
@@ -534,6 +555,35 @@ func wireBranchContainer(containerName, hostKeysDir string) error {
 		}
 	}
 	return applyRawIdmap(containerName)
+}
+
+// wireLoopDevices attaches /dev/loop-control + /dev/loop0..7 to the
+// container as unix-char/unix-block devices. Each /dev/loopN source is
+// probed; missing nodes (some kernels expose fewer at boot) are skipped.
+// Idempotent — incus.AddUnixDevice tolerates "already exists".
+//
+// Gated by customizations.ahjo.nested_incus. Enables nested Incus (or any
+// tool needing loop-mounted block images) to operate inside the container.
+// Capability bump — widens kernel filesystem-driver attack surface; see
+// CONTAINER-ISOLATION.md for the trade-off.
+//
+// `incus copy` carries the device list, so wire-up on the default
+// container propagates to every COW branch container automatically.
+func wireLoopDevices(container string) error {
+	if err := incus.AddUnixDevice(container, "ahjo-loop-control", "unix-char", "/dev/loop-control"); err != nil {
+		return err
+	}
+	for i := 0; i < 8; i++ {
+		src := fmt.Sprintf("/dev/loop%d", i)
+		if _, err := os.Stat(src); errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		name := fmt.Sprintf("ahjo-loop-%d", i)
+		if err := incus.AddUnixDevice(container, name, "unix-block", src); err != nil {
+			return fmt.Errorf("%s: %w", name, err)
+		}
+	}
+	return nil
 }
 
 // attachSSHAgent (re)wires the ssh-agent proxy device pointing at the
@@ -852,7 +902,7 @@ func runRepoRm(alias string, force bool) error {
 	}
 	repo := reg.FindRepoByAlias(alias)
 	if repo == nil {
-		return fmt.Errorf("no repo with alias %q", alias)
+		return sweepUnmanagedContainers(reg, alias, force)
 	}
 
 	var defaultBranchKey string
@@ -911,6 +961,60 @@ func runRepoRm(alias string, force bool) error {
 		return err
 	}
 	fmt.Printf("removed repo %s\n", repo.Aliases[0])
+	return nil
+}
+
+// sweepUnmanagedContainers handles the case where `repo rm <alias>` finds no
+// registry entry but Incus still has a container that matches the slug — the
+// signature of a `repo add` that crashed mid-flow after creating the container
+// but before writing the registry row. Without --force we list the orphans and
+// prompt; with --force we delete unconditionally. Caller holds the lockfile.
+func sweepUnmanagedContainers(reg *registry.Registry, alias string, force bool) error {
+	slug := registry.AliasToSlug(alias)
+	if slug == "" {
+		return fmt.Errorf("no repo with alias %q", alias)
+	}
+	prefix := "ahjo-" + slug
+	candidates, err := incus.ContainersWithPrefix(prefix)
+	if err != nil {
+		return err
+	}
+	// Defensive: drop any name that's still owned by a registered branch.
+	// FindRepoByAlias missed our alias, but a different repo's branch could
+	// in principle share the prefix — never delete something we know is live.
+	registered := map[string]bool{}
+	for _, b := range reg.Branches {
+		if b.IncusName != "" {
+			registered[b.IncusName] = true
+		}
+	}
+	var orphans []string
+	for _, name := range candidates {
+		if !registered[name] {
+			orphans = append(orphans, name)
+		}
+	}
+	if len(orphans) == 0 {
+		return fmt.Errorf("no repo with alias %q", alias)
+	}
+	if !force {
+		fmt.Printf("no managed repo with alias %q, but found unmanaged container(s):\n", alias)
+		for _, name := range orphans {
+			fmt.Printf("  %s\n", name)
+		}
+		if !promptYesNo("Delete them?") {
+			return nil
+		}
+	}
+	for _, name := range orphans {
+		fmt.Printf("→ incus delete --force %s\n", name)
+		if err := incus.ContainerDeleteForce(name); err != nil {
+			fmt.Fprintf(cobraOutErr(), "warn: incus delete %s: %v\n", name, err)
+		}
+	}
+	// Host keys for the base slug are deterministic from the alias. Branch
+	// host-keys live under their own (unknown-to-us) slugs, so they stay.
+	_ = os.RemoveAll(paths.SlugHostKeysDir(slug))
 	return nil
 }
 

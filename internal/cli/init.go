@@ -53,7 +53,20 @@ the init pipeline.`,
 				return fmt.Errorf("the in-VM phase of `ahjo init` only runs on Linux; on macOS the same `ahjo init` first brings up the Lima VM and tells you to enter it before re-running")
 			}
 			r := initflow.Runner{Yes: yes, In: os.Stdin, Out: os.Stdout, Err: os.Stderr}
-			return r.Execute(vmInitSteps(yes))
+			if err := r.Execute(vmInitSteps(yes)); err != nil {
+				return err
+			}
+			// If reExecUnderSg fired during this run, the invoking shell is
+			// still missing `incus-admin` in its supplementary groups —
+			// usermod updated /etc/group but Unix only grants supplementary
+			// groups at login. Tell the user to reshell before the next
+			// ahjo subcommand, otherwise it will fail on incusd.sock.
+			if os.Getenv("AHJO_REEXEC_SG") == "1" {
+				fmt.Fprintln(os.Stdout, "\nNote: your invoking shell still lacks `incus-admin` membership.")
+				fmt.Fprintln(os.Stdout, "Before running other ahjo subcommands in this shell, either re-login or run:")
+				fmt.Fprintln(os.Stdout, "  exec sg incus-admin -c $SHELL")
+			}
+			return nil
 		},
 	}
 	cmd.Flags().BoolVarP(&yes, "yes", "y", false, "skip per-step confirmation prompts")
@@ -140,10 +153,15 @@ Signed-By: /etc/apt/keyrings/zabbly.asc
 				}
 				return false, "", nil
 			},
-			Note: "auto-init fails inside Lima because vzNAT/Rosetta routes collide; we use a fixed 10.20.30.1/24 subnet",
-			Show: "echo '<preseed>' | sudo incus admin init --preseed",
+			Note: "auto-init fails inside Lima because vzNAT/Rosetta routes collide; we pick the first /24 from a fixed candidate list that isn't already on-link (avoids gateway hijack when ahjo runs inside an ahjo container, where the outer bridge already owns 10.20.30.0/24)",
+			Show: "echo '<preseed with picked /24>' | sudo incus admin init --preseed",
 			Action: func(out io.Writer) error {
-				return initflow.RunShell(out, initflow.IncusPreseed(),
+				cidr, reason, err := initflow.PickGatewayCIDR()
+				if err != nil {
+					return err
+				}
+				fmt.Fprintf(out, "  → using %s (%s)\n", cidr, reason)
+				return initflow.RunShell(out, initflow.IncusPreseed(cidr),
 					"sudo", "incus", "admin", "init", "--preseed")
 			},
 		},
@@ -464,6 +482,10 @@ func mergeClaudeOnboardingMarker(path string) error {
 // reExecUnderSg replaces the current process with `sg incus-admin -c "<self> init [-y]"`
 // so the new group membership granted by usermod takes effect without a
 // re-shell. On success this never returns.
+//
+// Sets AHJO_REEXEC_SG=1 in the re-exec'd env so the post-init hint at the
+// end of RunE can detect "the invoking shell still lacks incus-admin" and
+// tell the user to reshell. See the hint block in newInitCmd's RunE.
 func reExecUnderSg(out io.Writer, yes bool) error {
 	fmt.Fprintln(out, "  → re-exec under `sg incus-admin` so the rest of init runs with the new group")
 	sg, err := exec.LookPath("sg")
@@ -479,7 +501,8 @@ func reExecUnderSg(out io.Writer, yes bool) error {
 		cmd += " -y"
 	}
 	argv := []string{"sg", "incus-admin", "-c", cmd}
-	return syscall.Exec(sg, argv, os.Environ())
+	env := append(os.Environ(), "AHJO_REEXEC_SG=1")
+	return syscall.Exec(sg, argv, env)
 }
 
 func currentUsername() string {

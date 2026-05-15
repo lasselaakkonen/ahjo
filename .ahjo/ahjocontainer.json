@@ -3,5 +3,10 @@
   "features": {
     "ghcr.io/devcontainers/features/go:1": {}
   },
-  "postCreateCommand": "make generate-mirror && make hooks"
+  "postCreateCommand": "make generate-mirror && make hooks",
+  "customizations": {
+    "ahjo": {
+      "nested_incus": true
+    }
+  }
 }
