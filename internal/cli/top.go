@@ -27,6 +27,7 @@ func newTopCmd() *cobra.Command {
 				HostStatus:           hostStatusForTop,
 				ToggleExpose:         toggleExposeForTop,
 				IDEs:                 idesForTop,
+				Terminals:            terminalsForTop,
 				LoadSnapshot:         loadSnapshotInVM,
 				LoadBranchStatus:     fetchBranchStatusInVM,
 			}
