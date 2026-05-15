@@ -140,10 +140,15 @@ Signed-By: /etc/apt/keyrings/zabbly.asc
 				}
 				return false, "", nil
 			},
-			Note: "auto-init fails inside Lima because vzNAT/Rosetta routes collide; we use a fixed 10.20.30.1/24 subnet",
-			Show: "echo '<preseed>' | sudo incus admin init --preseed",
+			Note: "auto-init fails inside Lima because vzNAT/Rosetta routes collide; we pick the first /24 from a fixed candidate list that isn't already on-link (avoids gateway hijack when ahjo runs inside an ahjo container, where the outer bridge already owns 10.20.30.0/24)",
+			Show: "echo '<preseed with picked /24>' | sudo incus admin init --preseed",
 			Action: func(out io.Writer) error {
-				return initflow.RunShell(out, initflow.IncusPreseed(),
+				cidr, reason, err := initflow.PickGatewayCIDR()
+				if err != nil {
+					return err
+				}
+				fmt.Fprintf(out, "  → using %s (%s)\n", cidr, reason)
+				return initflow.RunShell(out, initflow.IncusPreseed(cidr),
 					"sudo", "incus", "admin", "init", "--preseed")
 			},
 		},
