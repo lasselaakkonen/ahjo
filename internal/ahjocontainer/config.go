@@ -89,6 +89,13 @@ type Customizations struct {
 type AhjoCustomizations struct {
 	ForwardEnv []string             `json:"forward_env"`
 	AutoExpose AhjoAutoExposeConfig `json:"auto_expose"`
+
+	// NestedIncus opts the container into running nested Incus / LXC /
+	// any tool that needs loop-mounted block-backed filesystems. When
+	// true, ahjo wires /dev/loop-control + /dev/loop0..7 into the
+	// container at repo-add time. Capability bump — see
+	// CONTAINER-ISOLATION.md for the kernel-attack-surface trade-off.
+	NestedIncus bool `json:"nested_incus"`
 }
 
 // AhjoAutoExposeConfig overrides the global auto-expose settings. Pointer

@@ -47,6 +47,7 @@ These are the *intentional* leaks — every other path is closed.
 | Host keys dir | VM → container, read-only | per-branch sshd keys + `authorized_keys` (single-file bind mount at `/home/ubuntu/.ssh/authorized_keys`) |
 | SSH agent socket | Mac → VM → container | **see "GitHub credentials" below** |
 | Per-repo GH PAT | Mac Keychain (or Linux disk) → VM → container | one `GH_TOKEN` per repo, injected on each relay; **see below** |
+| `/dev/loop-control` + `/dev/loop0..7` | host → container, read-write | opt-in per repo via `customizations.ahjo.nested_incus`; off by default. See **Elevated runtime: `nested_incus`** below. |
 
 Nothing else crosses — no `~/.ssh/`, no `~/.gitconfig`, no shell history, no `~/Library`.
 
@@ -150,6 +151,27 @@ row in `~/.ahjo/registry.toml`. ahjo's own `ahjo-runtime` Feature is
 applied at image-build time inside the transient build container; that
 path's trust posture is unchanged.
 
+## Elevated runtime: `nested_incus`
+
+A repo can declare `customizations.ahjo.nested_incus: true` in `.ahjo/ahjocontainer.json` to enable nested Incus storage pools, nested LXC, or any other workload that needs loop-mounted block devices. When set, ahjo wires `/dev/loop-control` and `/dev/loop0..7` into the container at `ahjo repo add` time. The setting is per-repo, checked into git (auditable in PR review), and surfaces a `warn:` line every time it takes effect — there is no global override and no CLI flag.
+
+**What this enables.** `losetup` against an image inside the container, combined with `mount` (already permitted by `security.nesting=true`'s in-userns `CAP_SYS_ADMIN`), means container code can mount *any* block-backed filesystem the host kernel supports — ext4, btrfs, xfs, f2fs, ntfs3, exfat, iso9660, etc. ahjo-in-ahjo is the canonical case: the nested `ahjo init` provisions a btrfs storage pool backed by a `.img` over a loop device.
+
+**What this costs.** Without `nested_incus`, the kernel filesystem drivers reachable from inside a container are limited to `FS_USERNS_MOUNT` types (tmpfs, fuse, overlayfs, ramfs, cgroup, …) — a small, well-fuzzed set. With it, the broader block-FS driver surface becomes reachable via a crafted image. Historical kernel CVEs against ext4/btrfs/xfs/f2fs mounts are not rare; this widens that exposure for any code running in the container, including untrusted dependencies and LLM-driven actions.
+
+The exposure matters per host:
+
+- **Linux bare-metal.** The container kernel *is* the workstation kernel. A container → host kernel escape compromises the workstation.
+- **macOS via Lima.** The container kernel is the Lima VM kernel. The VM holds the forwarded SSH agent socket, the in-VM ahjo state, and per-repo GH tokens. The Mac itself is shielded by the `vz` boundary, but the VM is not "throwaway" — an escape there reads agent traffic and tokens for the lifetime of the running VM.
+
+The `/dev/loopN` pool is also host-shared: all containers compete for the same finite slot range, and `LOOP_CTL_ADD` is uncapped — a buggy or hostile workload can starve sibling containers (and the host's own loop-mounted storage pool) until the host is rebooted.
+
+**When to enable.** Only when the repo legitimately runs nested container runtimes or loop-mounted image tooling, and only if you accept the kernel attack surface bump. ahjo's own repo enables it so ahjo-in-ahjo dogfooding works out of the box. The default is off.
+
 ## Out of scope
 
-ahjo isolates *workloads*, not the host CLI. Anything you `ahjo repo add` is code you've decided to bring in; ahjo doesn't sandbox `git clone` against a hostile remote. Treat container contents as you would any local checkout — review before running, and rely on the boundaries above to limit blast radius if you don't.
+ahjo's boundaries assume in-container code can be hostile — that's the whole point of the per-container isolation. LLM-pulled dependencies, transitively-trusted packages, and prompt-injected agent actions are all in scope, and the boundaries above are sized for them.
+
+What's *not* in scope: hostile code running on the **host**, hostile code on the **other side of an SSH-agent forward** (a hostile remote you connected to, signing requests during the connection window), and kernel-level exploits chained through `security.nesting`'s userns surface or the elevated `nested_incus` surface — those are kernel-bug-class problems, not policy ones. ahjo also doesn't sandbox `git clone` against a hostile remote; the network the container reaches is the network you let it reach.
+
+Review the code you `ahjo repo add` like you'd review any checkout — that's the floor, not the ceiling. The per-container boundary is the ceiling, and it's there *because* in-container code may turn hostile.
