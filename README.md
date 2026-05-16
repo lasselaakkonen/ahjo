@@ -1,22 +1,218 @@
 # ahjo
 
-Sandboxed Claude Code branches on Incus, one container per `(repo, branch)`. On macOS, ahjo runs inside a Lima VM and a thin host-side shim relays every command into it, so the CLI feels native on either side.
+Isolated local containers with git tooling for **safe and easy yoloing** with Claude Code on macOS and Linux.
 
-Each worktree gets its own container, its own SSH port on `127.0.0.1`, and its own host keys. Open a Mac terminal, `ahjo ssh acme/api@my-branch`, and you are in an isolated Linux box with the branch checked out and Claude Code's OAuth token forwarded in.
+Blazing fast firing up of containers per feature branch.
 
-Repos and worktrees are addressed by aliases. A repo gets an auto alias of `<owner>/<repo>` derived from its git URL; a worktree gets `<owner>/<repo>@<branch>`. Pass `--as <alias>` to either `repo add` or `new` to add a second, friendlier alias — every command resolves all aliases uniformly.
+- **Local Incus containers** running Ubuntu on both macOS and Linux hosts
+- **Safely let Claude run Docker and any other tooling** inside the container without risking Claude escaping the container
+- **Near-instant start up of new containers** for a 'container per feature branch with multiple features in development at once' workflow
+- **SSH/AWS/etc secrets completely isolated** from the containers, minimally only a repo scoped GitHub PAT is exposed to whatever is running in the container
 
 ## Quick start
 
-### Install
+#### 1. Installation
 
-One line, any supported platform — detects your OS/arch, pulls the matching binary from the [latest release](https://github.com/lasselaakkonen/ahjo/releases/latest), verifies it against the release's `SHA256SUMS`:
+Mac and Linux x86_64/arm64 possibly supported, only Mac arm64 tested :)
+
+```sh
+# Installs `ahjo` binary
+curl -fsSL https://raw.githubusercontent.com/lasselaakkonen/ahjo/master/install.sh | sh
+
+# Checks prerequisites are installed
+# On macOS: Sets up Lima and creates 'ahjo' VM
+ahjo init
+
+# Validate installation
+ahjo doctor
+```
+
+#### 2. Run Claude Code
+
+##### In a container through CLI
+
+This relies on automagicism in `ahjo claude`, which assumes you are using GitHub and is triggered when `ahjo repo add <repo>` and `ahjo create <repo> <branch>` have not yet been run:
+
+```
+# e.g. ahjo claude lasselaakkonen/ahjo@readme-quick-start
+ahjo claude <account>/<repo>@<branch>
+```
+
+- **Creates base container for repo** without any specific tech stack support -- one time step, takes a few minutes. ⚠️  Copies `CLAUDE.md`, `settings.json`, `.claude.json`, `agents/`, `commands/`, `skills/`, `rules/` from `~/.claude` to the container, which moves them over the isolation boundary.
+
+- **Asks for you to create a fine grained PAT for GitHub** -- the containers for that repo will have access ONLY to that repo
+
+- **Creates a feature container** -- takes only seconds, won't have your project tech stack or tooling in it
+
+##### In a container through TUI
+
+```
+ahjo
+```
+
+1. Add repo
+2. Add container
+3. Press `a` to open Claude Code
+
+#### 3. Configure repo specific tech stack
+
+Ahjo reads `.ahjo/ahjocontainer.json` from the default branch from remote and uses it to configure your repo base container.
+
+`ahjocontainer.json` schema is a subset of devcontainers schema, for a Go project like ahjo, you might define it as:
+
+```
+{
+  "name": "ahjo",
+  "features": {
+    "ghcr.io/devcontainers/features/go:1": {}
+  },
+  "postCreateCommand": "make hooks"
+}
+```
+
+#### 4. Domain concepts
+
+**Ahjo base image** is
+
+- Created by `ahjo init`
+- Updated with `ahjo update`
+- Configured to include:
+  - ]common-utils](https://github.com/devcontainers/features/tree/main/src/common-utils) devcontainer Feature
+  - `git`, `gh`
+  - `rg`, `fd`, `httpie`, `make`, `unzip`, `curl`, `yq`, `ast-grep` from [install.sh](internal/ahjodevtools/feature/install.sh)
+  - `jq`, `node`, `claude`, `rtk` from [install.sh](internal/ahjoruntime/feature/install.sh)
+
+
+**Repo base container** is
+
+- Intended as a long lived container, as a golden image for **feature containers**
+- Not intended as a development environment in most workflows
+- Created by `ahjo repo add <repo>`  
+- Configured with `.ahjo/ahjocontainer.json` from your `origin/<default branch>`, this is where you install tooling needed for developing, running and testing your app, by default no additional configuration is done.
+- All **feature containers** are created as copies of this container, so **feature containers** do not need to spend time installing tooling -or- fetching the repo -or- installing dependencies. 
+
+**Feature container** is
+
+- Intended as a short lived container, for the lifetime of a feature branch
+- Intended as a development environment
+- Created by `ahjo create <repo> <branch>`
+- Configured already in the **repo base container**, since a new **feature container** is just a copy of the **repo base container**
+
+## Workflow examples
+
+Examples use the CLI for easier presentation of the steps, but TUI might be easier to use in practice, open TUI with plain `ahjo` command.
+
+### Work on two PRs in a repo
+
+Add repo once, which creates the repo base container:
+
+```
+ahjo repo add myacc/myrepo
+```
+
+Start work on first feature:
+
+```
+# `ahjo create` is optional
+# `ahjo claude` creates the container if it does not exist already
+# `ahjo create` sanitizes feature container names
+ahjo create myacc/repo "JIRA-123 Add thingamajig"
+
+ahjo claude myacc/repo@JIRA-123-Add-thingamajig
+
+# ... let Claude loose in the container ...
+```
+
+Start work on the second feature:
+
+```
+ahjo claude myacc/repo feat/twiddle-with-ui
+
+# ... let Claude loose in the container ...
+```
+
+After you exit the Claude sessions, if the git dir is clean and PR is merged, ahjo will ask you if you want to remove the containers. Otherwise you can remove them later yourself:
+
+```
+# Find the container you want to remove
+ahjo ls
+
+# Remove it
+ahjo rm myacc/repo@JIRA-123-Add-thingamajig
+ahjo rm myacc/repo@feat/twiddle-with-ui
+```
+
+### Modify code in container, mirror code changes to host
+
+You haven't yet configured ahjo containers to run your app -or- setting up the dev env is complex -or- you need some services/data from your host machine for properly running the app -or- you need to build iOS apps and can't do it in the Linux container -or- whatever else.
+
+You can mirror the changes from inside the repo to a dir on the host machine. You likely want to mirror the changes to a dir, which has the same git repo in it already.
+
+Mirroring replicates ONLY created and changed files, it DOES NOT replicate deletions.
+
+```
+ahjo create myacc/myrepo@newfangled-thing
+ahjo mirror myacc/myrepo@newfangled-thing --target /Users/lasse/github/myrepo
+```
+
+Now any changed files in `myacc/myrepo@newfangled-thing` will show up in `/Users/lasse/github/myrepo`.
+
+To turn off mirroring, run:
+
+```
+ahjo mirror off
+```
+
+⚠️ For now ahjo DOES NOT do any clean up in `/Users/lasse/github/myrepo`, you need to do it yourself, perhaps with just `git checkout .`.
+
+### Refresh dependencies in repo base container
+
+⚠️ For now ahjo DOES NOT manage updating the repo base container for you.
+
+You create the repo base container earlier, but now the dependencies for the project have changed. Creating new containers works, but each container has to always itself fetch and install the new dependencies.
+
+Log in to the repo base container:
+
+```
+ahjo shell myacc/myrepo@main
+```
+
+Inside the container do whatever you need, eg `pnpm i`.
+
+Now every feature container created for the repo will have the updated node modules ready in them immediately after creation.
+
+
+
+## Git / GitHub auth
+
+ahjo supports two GitHub auth paths:
+
+- **Fine-grained PAT**: repo-scoped, forwarded as `GH_TOKEN`, used by `gh` and by HTTPS git through `gh auth setup-git`. This is the recommended least-privilege path.
+- **SSH agent forwarding**: used only for `git@...` remotes. ahjo forwards the host agent socket; it does not copy keys or scope keys per container.
+
+Scenarios:
+
+- **HTTPS remote + fine-grained PAT**: best default. `git fetch/push` and `gh` both work with repo-scoped access.
+- **HTTPS remote + no PAT**: public read may work; private repos, push, and `gh` auth fail.
+- **SSH remote + fine-grained PAT + working SSH agent**: raw `git` uses SSH agent; `gh` uses PAT. Both work, but git access follows SSH key scope.
+- **SSH remote + no PAT + working SSH agent**: raw `git` works; `gh` does not. Access follows whatever keys the forwarded agent exposes.
+- **SSH remote + broken/missing SSH agent**: `ahjo repo add git@...` and later git operations fail, even if a PAT exists, because ahjo does not rewrite SSH remotes to HTTPS. The "working SSH agent" prerequisite is set up automatically by `ahjo init` (see [First run](#first-run)).
+
+Unsupported auth methods:
+
+- **GitHub Deploy Key** support is not built in. Deploy Keys would work only with `git`, Fine-grained PATs can be scoped to repos and they work with `git` and `gh`.
+
+## Installing
+
+One line, any supported platform (macOS x86_64/arm64, Linux x86_64/arm64) — detects your OS/arch, pulls the matching binary from the [latest release](https://github.com/lasselaakkonen/ahjo/releases/latest), verifies it against the release's `SHA256SUMS`:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/lasselaakkonen/ahjo/master/install.sh | sh
 ```
 
-Pin a specific tag with `AHJO_VERSION=v0.0.1`, or install somewhere other than `/usr/local/bin` with `INSTALL_DIR="$HOME/.local/bin"`. Or build from source:
+Pin a specific tag with `AHJO_VERSION=v0.0.1`, or install somewhere other than `/usr/local/bin` with `INSTALL_DIR="$HOME/.local/bin"`.
+
+Or build from source:
 
 ```sh
 git clone https://github.com/lasselaakkonen/ahjo
@@ -34,13 +230,7 @@ ahjo init
 
 That's it. Step-by-step prompts walk you through every install. The flow is resumable: re-running `ahjo init` skips anything already done.
 
-If you use 1Password (or any agent that requires `IdentityAgent` in `~/.ssh/config`), add the following to your shellrc *before* running `ahjo init`, otherwise the agent inside the VM will be empty and `ahjo repo add git@…` will fail:
-
-```sh
-export SSH_AUTH_SOCK="$HOME/Library/Group Containers/2BUA8C4S2C.com.1password/t/agent.sock"
-```
-
-`ahjo doctor` verifies this end-to-end. See [CONTAINER-ISOLATION.md](CONTAINER-ISOLATION.md#the-ssh-agent-hole) for why.
+On macOS, `ahjo init` auto-detects the host ssh-agent (1Password, Secretive, gpg-agent, or whatever `IdentityAgent` in `~/.ssh/config` points at), persists the chosen socket to `~/.ahjo/config.toml`, and overrides `SSH_AUTH_SOCK` on every `limactl` invocation — no shellrc edits required. If no agent with keys is reachable, the init step errors out: load a key into your agent and re-run `ahjo init`. `ahjo doctor` verifies this end-to-end. See [CONTAINER-ISOLATION.md](CONTAINER-ISOLATION.md#the-ssh-agent-hole) for why agent forwarding (not key copying) is the model.
 
 On macOS the same command does both the host setup (Homebrew check → `brew install lima` → `limactl start`) and the in-VM bring-up (Zabbly + Incus, `incus admin init`, build the `ahjo-base` image by applying the embedded `ahjo-runtime` devcontainer Feature on top of `images:ubuntu/24.04`, `claude setup-token`). It pulls the matching `ahjo-linux-<arch>` from the GitHub release that built your host binary, verifies it against `SHA256SUMS`, drops it into the VM at `/usr/local/bin/ahjo`, and drives the rest by relaying through `limactl shell`. No second invocation, no shelling into the VM.
 
@@ -48,11 +238,7 @@ On Linux there's no VM — `ahjo init` runs the bring-up directly. After `usermo
 
 `claude setup-token` requires the `claude` CLI on PATH inside the VM. ahjo will not auto-install it — if it's missing the step fails with install instructions. The resulting `sk-ant-oat01-…` token is saved to `~/.ahjo/.env` (mode 0600) and loaded automatically on every ahjo invocation, so containers receive it via the `forward_env` mechanism (applied with `incus exec --env`) without any shellrc edits.
 
-### Verify
-
-```sh
-ahjo doctor             # green check on everything
-```
+## 
 
 ## Use case example
 
@@ -289,3 +475,4 @@ That points `core.hooksPath` at `.githooks/`. Idempotent; safe to re-run.
 - **Inside an ahjo container**: nothing to do — `.ahjo/ahjocontainer.json` installs Go and golangci-lint on container create via the upstream Feature and `postCreateCommand`.
 
 Bypass when you need to: `SKIP_HOOKS=1 git commit ...` (graceful, prints a notice) or `git commit --no-verify` (hard skip).
+

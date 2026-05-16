@@ -100,32 +100,14 @@ If that's not acceptable for a given session, two mitigations:
 
 ### Setup
 
-Lima forwards exactly one socket: whatever `$SSH_AUTH_SOCK` resolves to in the shell that ran `limactl start`. That sounds simple but trips most macOS users on first run, because:
+Lima forwards exactly one socket: whatever `$SSH_AUTH_SOCK` resolves to when `limactl` is invoked. That sounds simple but trips most macOS users on first run, because:
 
 - macOS pre-sets `$SSH_AUTH_SOCK` to a launchd-provided agent (`/private/tmp/com.apple.launchd.*/Listeners`) that is empty unless you explicitly opted into Keychain integration.
 - 1Password (and Secretive, KeePassXC, gpg-agent, …) provide their own socket and tell `ssh` about it via `IdentityAgent` in `~/.ssh/config`. That works for host `git`, because host `ssh` reads `~/.ssh/config`. **Lima's ssh transport does not.** It only honors the env var.
 
-Net effect: host `git clone` works, in-VM `git clone` fails with `Permission denied (publickey)`, and the VM's forwarded agent reports zero keys.
+ahjo handles this automatically. `ahjo init` runs `pickAgentStep` (`cmd/ahjo/agent_step_darwin.go`), which probes the well-known sockets (1Password, Secretive, gpg-agent) and reads `IdentityAgent` from `ssh -G github.com`, then persists the chosen socket to `~/.ahjo/config.toml [mac].ssh_auth_sock`. Every subsequent `limactl` invocation overrides `SSH_AUTH_SOCK` in its subprocess env via `lima.Env` — no shellrc edits, no VM bounce (the existing ssh ControlMaster is closed via `lima.CloseSSHControlMaster` so the next session picks up the new socket).
 
-**For 1Password users**, add this to your shell rc:
-
-```sh
-export SSH_AUTH_SOCK="$HOME/Library/Group Containers/2BUA8C4S2C.com.1password/t/agent.sock"
-```
-
-**For other agents**, find your socket the way `ssh` does:
-
-```sh
-ssh -G github.com | awk '/^identityagent / {sub(/^identityagent /, ""); print}'
-```
-
-If that prints a path (not the literal `SSH_AUTH_SOCK` or `none`), export it. If it prints `SSH_AUTH_SOCK`, your existing env var is already what `ssh` uses — confirm it's not the launchd default with `echo $SSH_AUTH_SOCK`.
-
-After exporting, bounce the VM so its hostagent rebuilds the forwarding with the new socket:
-
-```sh
-limactl stop ahjo && limactl start ahjo
-```
+If detection finds no reachable agent with keys, the init step errors out — load a key into your agent and re-run `ahjo init`. The only case where you'd still set `SSH_AUTH_SOCK` manually is if you bypass ahjo and call `limactl` directly.
 
 Verify end-to-end with `ahjo doctor` — the host-side block compares host and in-VM key counts and points at the fix when they diverge.
 
