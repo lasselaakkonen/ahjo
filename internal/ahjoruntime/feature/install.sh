@@ -27,13 +27,12 @@ if [ "$remote_uid" != "1000" ]; then
 fi
 
 apt-get update -qq
-# git is provided by the upstream `ghcr.io/devcontainers/features/git:1`
-# Feature applied earlier in the base-bake chain — no need to apt-install
-# it again here. jq is kept because ahjo-claude-prepare (defined below)
-# uses it on every container's first shell, so it's an ahjo runtime
-# dependency, not opinionated dev tooling.
-DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
-    openssh-server jq curl ca-certificates gnupg
+# Only `openssh-server` is unique to this Feature. `jq` (used by
+# ahjo-claude-prepare below), `curl`, `ca-certificates`, and `gnupg` are
+# all provided by `ghcr.io/devcontainers/features/common-utils:2`, and
+# `git` by `ghcr.io/devcontainers/features/git:1` — both applied earlier
+# in the base-bake chain (see internal/devcontainer/build.go).
+DEBIAN_FRONTEND=noninteractive apt-get install -y -qq openssh-server
 
 mkdir -p /etc/ssh/ahjo-host-keys
 chmod 755 /etc/ssh/ahjo-host-keys
@@ -98,27 +97,6 @@ chmod 644 /etc/profile.d/corepack.sh
 # auto-updates that rewrite ~/.local/bin/claude transparently apply.
 runuser -u "$_REMOTE_USER" -- bash -lc 'curl -fsSL https://claude.ai/install.sh | bash'
 ln -sf "$_REMOTE_USER_HOME/.local/bin/claude" /usr/local/bin/claude
-
-# rtk (https://github.com/rtk-ai/rtk): token-saving CLI proxy that
-# intercepts heavy command output before it reaches the model. Installed
-# AFTER claude so the immediately-following `rtk init -g --auto-patch`
-# can register its PreToolUse hook against the freshly-created
-# ~/.claude/ tree. Upstream installer drops the binary at
-# $HOME/.local/bin/rtk (user-scoped, no root needed); we symlink into
-# /usr/local/bin so `incus exec` (non-login shell, no PATH adjustment)
-# resolves it — same pattern as claude above.
-#
-# `rtk init -g --auto-patch` lays down ~/.claude/hooks/rtk-rewrite.sh
-# and ~/.claude/RTK.md and patches ~/.claude/settings.json + CLAUDE.md
-# with a hook registration. The hook script and RTK.md survive
-# `ahjo repo add`'s host→container push (which intentionally excludes
-# ~/.claude/hooks/ — see internal/cli/repo.go). settings.json and
-# CLAUDE.md *are* overwritten from host on first repo add, so whether
-# the hook is actually wired up at runtime is governed by the user's
-# host-side `rtk init -g` state — which is the right authority order.
-runuser -u "$_REMOTE_USER" -- bash -lc 'curl -fsSL https://raw.githubusercontent.com/rtk-ai/rtk/refs/heads/master/install.sh | sh'
-ln -sf "$_REMOTE_USER_HOME/.local/bin/rtk" /usr/local/bin/rtk
-runuser -u "$_REMOTE_USER" -- bash -lc 'rtk init -g --auto-patch'
 
 # ahjo-mirror: in-container daemon that watches /repo and pushes per-event
 # copies into /mirror (a writable virtiofs-backed bind-mount of a Mac path).
