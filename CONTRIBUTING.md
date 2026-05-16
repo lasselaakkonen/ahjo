@@ -28,7 +28,8 @@ What's provisioned automatically:
 | Go            | `ghcr.io/devcontainers/features/go:1`              |
 | golangci-lint | `postCreateCommand` (upstream installer)           |
 | git hooks     | `postCreateCommand` (runs `make hooks`)            |
-| make, rg, fd, jq, yq, ast-grep, eza, httpie | `ahjo-default-dev-tools` Feature |
+| make, rg, fd, yq, ast-grep, eza, httpie, rtk | `ahjo-default-dev-tools` Feature |
+| jq, curl, unzip, gnupg, ca-certificates | `ghcr.io/devcontainers/features/common-utils:2` |
 | git, gh       | `ghcr.io/devcontainers/features/{git,github-cli}`  |
 
 ## Option 2 — develop on the host

@@ -55,14 +55,20 @@ type embeddedFeature struct {
 }
 
 // embeddedBaseFeatures is the fixed apply order for ahjo's own embedded
-// Features. ahjo-default-dev-tools first (ahjo-runtime doesn't depend on
-// it but it's the natural "developer surface" layer); ahjo-runtime last
-// because its install.sh wires the systemd unit, sshd, claude-prepare,
-// and Node + corepack — the ahjo-shaped layer that should sit on top of
-// everything else.
+// Features. ahjo-runtime first because it wires the runtime contract
+// ahjo's Go code depends on (sshd-as-a-service, ahjo-mirror, Node +
+// corepack, claude, ahjo-claude-prepare). ahjo-default-dev-tools after
+// because rtk's `rtk init -g --auto-patch` patches the ~/.claude/ tree
+// laid down by ahjo-runtime's claude installer.
+//
+// Each Feature also declares `dependsOn` in its devcontainer-feature.json
+// (ahjo-runtime → common-utils:2; ahjo-default-dev-tools → ahjo-runtime).
+// The embedded apply path bypasses `Resolve`, so those declarations are
+// documentation of intent rather than runtime enforcement — see the
+// tracking issue on lasselaakkonen/ahjo for the gap.
 var embeddedBaseFeatures = []embeddedFeature{
-	{id: ahjodevtools.FeatureID, materialize: ahjodevtools.Materialize},
 	{id: ahjoruntime.FeatureID, materialize: ahjoruntime.Materialize},
+	{id: ahjodevtools.FeatureID, materialize: ahjodevtools.Materialize},
 }
 
 // BuildAhjoBase pulls upstream Ubuntu (idempotently), launches a transient

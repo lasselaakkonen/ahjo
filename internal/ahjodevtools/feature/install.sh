@@ -1,12 +1,20 @@
 #!/bin/bash
 # ahjo-default-dev-tools devcontainer Feature: small CLI utilities ahjo's
-# preferred workflows assume. Applied at base-bake time after common-utils,
-# git, and github-cli; before ahjo-runtime. Tools that already have a
-# curated upstream Feature live there, not here.
+# preferred workflows assume, plus rtk (a Claude-side token-saving proxy).
+# Applied at base-bake time AFTER ahjo-runtime, so rtk's `rtk init -g
+# --auto-patch` finds the freshly-installed `claude` binary and the
+# ~/.claude/ tree it laid down. Tools that already have a curated upstream
+# Feature (common-utils, git, github-cli) live there, not here; we don't
+# duplicate their apt installs.
 #
 # Install methods, by tool:
-#   apt:             ripgrep, fd-find, eza, httpie, make, unzip, ca-certificates
+#   apt:             ripgrep, fd-find, eza, httpie, make
 #   GitHub release:  yq (Mike Farah), ast-grep
+#   user-installer:  rtk (curl|sh into ~/.local/bin)
+#
+# `curl`, `unzip`, and `ca-certificates` are needed by this script (rtk
+# fetch, ast-grep zip extraction) but supplied by common-utils:2 applied
+# earlier in the chain, so we don't apt them again here.
 #
 # fd-find on Debian/Ubuntu installs the binary as `fdfind` (name conflict
 # with another package); we symlink /usr/local/bin/fd → /usr/bin/fdfind so
@@ -28,9 +36,12 @@
 # ahjo-base with whatever's current upstream.
 set -euo pipefail
 
+: "${_REMOTE_USER:?ahjo-default-dev-tools: _REMOTE_USER must be set by the runner}"
+: "${_REMOTE_USER_HOME:?ahjo-default-dev-tools: _REMOTE_USER_HOME must be set by the runner}"
+
 apt-get update -qq
 DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
-    ripgrep fd-find eza httpie make unzip ca-certificates curl
+    ripgrep fd-find eza httpie make
 
 # fd-find ships its binary as /usr/bin/fdfind on Debian/Ubuntu. Symlink to
 # the upstream name so ahjo and users typing `fd` get what they expect.
@@ -69,3 +80,27 @@ curl -fsSL "https://github.com/ast-grep/ast-grep/releases/latest/download/app-${
     -o "$tmp/ast-grep.zip"
 unzip -q -o "$tmp/ast-grep.zip" -d "$tmp/ast-grep"
 install -m 0755 "$tmp/ast-grep/ast-grep" /usr/local/bin/ast-grep
+
+# rtk (https://github.com/rtk-ai/rtk): token-saving CLI proxy that
+# intercepts heavy command output before it reaches the model. Installed
+# in this Feature (and not ahjo-runtime) because ahjo's own Go code never
+# touches rtk — it's a Claude-side ergonomic, same category as ripgrep
+# and eza. The base-bake apply order (ahjo-runtime first, then this
+# Feature — see internal/devcontainer/build.go) guarantees `claude` and
+# its ~/.claude/ tree exist by the time `rtk init -g --auto-patch` runs.
+#
+# Upstream installer drops the binary at $HOME/.local/bin/rtk (user-scoped,
+# no root needed); we symlink into /usr/local/bin so `incus exec` (non-login
+# shell, no PATH adjustment) resolves it — same pattern as claude.
+#
+# `rtk init -g --auto-patch` lays down ~/.claude/hooks/rtk-rewrite.sh
+# and ~/.claude/RTK.md and patches ~/.claude/settings.json + CLAUDE.md
+# with a hook registration. The hook script and RTK.md survive
+# `ahjo repo add`'s host→container push (which intentionally excludes
+# ~/.claude/hooks/ — see internal/cli/repo.go). settings.json and
+# CLAUDE.md *are* overwritten from host on first repo add, so whether
+# the hook is actually wired up at runtime is governed by the user's
+# host-side `rtk init -g` state — which is the right authority order.
+runuser -u "$_REMOTE_USER" -- bash -lc 'curl -fsSL https://raw.githubusercontent.com/rtk-ai/rtk/refs/heads/master/install.sh | sh'
+ln -sf "$_REMOTE_USER_HOME/.local/bin/rtk" /usr/local/bin/rtk
+runuser -u "$_REMOTE_USER" -- bash -lc 'rtk init -g --auto-patch'

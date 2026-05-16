@@ -1,5 +1,35 @@
 # Changelog
 
+## Unreleased — embedded Feature reshuffle
+
+### Changed
+
+- **`rtk` relocated** from `ahjo-runtime` to `ahjo-default-dev-tools`. ahjo's
+  Go code never invokes rtk — it's a Claude-side ergonomic, same category as
+  `ripgrep`/`eza`. The reshuffle aligns with the criterion that `ahjo-runtime`
+  contains only what ahjo's own runtime depends on.
+- **Embedded Feature apply order flipped**: `ahjo-runtime` now applies before
+  `ahjo-default-dev-tools` (was the other way around). `rtk init -g --auto-patch`
+  in the dev-tools Feature needs the `claude` binary and `~/.claude/` tree that
+  `ahjo-runtime` installs.
+- **Apt duplicates removed**. `ahjo-runtime` no longer apt-installs `jq`, `curl`,
+  `ca-certificates`, `gnupg` (all in `common-utils:2`); `ahjo-default-dev-tools`
+  no longer apt-installs `unzip`, `ca-certificates`, `curl` (same reason).
+  Apt's idempotent so this was always cosmetic, but the duplicates implied
+  these Features were standalone-applicable when in practice the base-bake
+  chain hardcodes their position after `common-utils:2`.
+- **`dependsOn` declared** in both embedded Features' `devcontainer-feature.json`
+  (`ahjo-runtime` → `common-utils:2`; `ahjo-default-dev-tools` → `ahjo-runtime`).
+  Inert at runtime today — the embedded apply path bypasses `Resolve` — but
+  documents intent at the right level for future tooling. Tracking the
+  enforcement gap as a GitHub issue.
+
+### Migration
+
+Run `ahjo update` to rebuild `ahjo-base` with the new layering. Existing
+branch containers continue to work on the old image until you recreate them
+with `ahjo shell <alias> --update`.
+
 ## Unreleased — `.ahjo/ahjocontainer.json`
 
 ### Changed
