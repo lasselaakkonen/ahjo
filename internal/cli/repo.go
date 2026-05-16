@@ -172,7 +172,17 @@ func repoAddPlan(url, asAlias string) (slug, primary string, aliases []string, e
 			aliases = append(aliases, asAlias)
 		}
 	}
-	slug = reg.AllocateRepoSlug(primary)
+	slug = reg.AllocateRepoSlug(primary, func(s string) bool {
+		// Reject slugs whose `ahjo-<slug>` container already exists in incus
+		// but is unknown to the registry — the signature of a prior `repo add`
+		// that crashed between `incus init` and the registry write. Suffix
+		// past the orphan instead of failing inside the upcoming `incus init`.
+		// Probe errors (incus unreachable, etc.) degrade to "not taken": the
+		// same error will surface seconds later from `incus init` with full
+		// context, which is more useful than aborting allocation here.
+		exists, _ := incus.ContainerExists("ahjo-" + s)
+		return exists
+	})
 	return slug, primary, aliases, nil
 }
 
