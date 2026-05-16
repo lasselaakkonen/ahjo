@@ -18,11 +18,6 @@
   Apt's idempotent so this was always cosmetic, but the duplicates implied
   these Features were standalone-applicable when in practice the base-bake
   chain hardcodes their position after `common-utils:2`.
-- **`dependsOn` declared** in both embedded Features' `devcontainer-feature.json`
-  (`ahjo-runtime` → `common-utils:2`; `ahjo-default-dev-tools` → `ahjo-runtime`).
-  Inert at runtime today — the embedded apply path bypasses `Resolve` — but
-  documents intent at the right level for future tooling. Tracking the
-  enforcement gap as a GitHub issue.
 
 ### Migration
 
