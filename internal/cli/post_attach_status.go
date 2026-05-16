@@ -22,7 +22,6 @@ const postAttachDeadline = 6 * time.Second
 var (
 	postExitTitle = lipgloss.NewStyle().Foreground(lipgloss.Color("#238FF9")).Bold(true)
 	postExitLabel = lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
-	postExitValue = lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
 	postExitDim   = lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
 )
 
@@ -227,10 +226,14 @@ func runSpinner(stop <-chan struct{}, done chan<- struct{}) {
 	}
 }
 
+// printPostAttachRow writes a "label: value" line. value is expected to
+// already carry its own ANSI styling (FormatGitStatus / FormatPRStatus
+// embed state-colored icon+label segments), so we don't wrap it in
+// postExitValue — doing so would clobber those colors at SGR resets.
 func printPostAttachRow(label, value string) {
 	fmt.Fprintln(os.Stdout,
 		postExitLabel.Render(fmt.Sprintf("%-6s", label+":"))+
-			" "+postExitValue.Render(value))
+			" "+value)
 }
 
 // lookupRepoRemote returns the configured git remote URL for the repo

@@ -15,6 +15,7 @@ type BranchStatus struct {
 	DirtyFiles int    `json:"dirty_files,omitempty"`
 	Ahead      int    `json:"ahead,omitempty"`
 	Behind     int    `json:"behind,omitempty"`
+	Stashed    int    `json:"stashed,omitempty"`
 	HeadBranch string `json:"head_branch,omitempty"`
 	GitErr     string `json:"git_err,omitempty"`
 
@@ -34,4 +35,5 @@ type PRStatus struct {
 	State  string `json:"state"`
 	Title  string `json:"title"`
 	Checks string `json:"checks,omitempty"`
+	Draft  bool   `json:"draft,omitempty"`
 }

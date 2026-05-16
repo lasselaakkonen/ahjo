@@ -203,6 +203,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.branchStatus[msg.slug] = msg.status
 		delete(m.inFlightStatus, msg.slug)
+		m.refreshContainers()
 		m.refreshDetails()
 		return m, nil
 
@@ -540,7 +541,7 @@ func (m *model) refreshContainers() {
 		m.containers.SetItems(nil)
 		return
 	}
-	m.containers.SetItems(containerItemsFor(m.snap, repo.Name))
+	m.containers.SetItems(containerItemsFor(m.snap, repo.Name, m.branchStatus))
 }
 
 func (m *model) refreshDetails() {
@@ -789,41 +790,53 @@ type branchStatusMsg struct {
 	status BranchStatus
 }
 
-// maybeRefreshBranchStatus returns a tea.Cmd that fetches a fresh
-// BranchStatus for the currently selected branch via Deps.LoadBranchStatus,
-// or nil when there's nothing to do (no branch selected, container missing,
-// fetch already in flight, cached result still fresh, or no fetcher wired).
+// maybeRefreshBranchStatus returns a tea.Cmd that fetches BranchStatus
+// for every present container in the focused repo via
+// Deps.LoadBranchStatus. The single-flight + staleness guards are
+// applied per slug, so this is safe to call on every tick: each branch
+// gets at most one in-flight fetch and is re-fetched only after the
+// cache goes stale. Returns nil when there's nothing to do (no repo
+// focused, no eligible containers, or no fetcher wired).
 func (m *model) maybeRefreshBranchStatus() tea.Cmd {
-	br := selectedBranch(m.containers)
-	if br == nil {
-		return nil
-	}
-	if !m.snap.Containers[br.Slug] {
-		return nil
-	}
-	if m.inFlightStatus[br.Slug] {
-		return nil
-	}
-	if cur, ok := m.branchStatus[br.Slug]; ok && time.Since(cur.FetchedAt) < branchStatusStaleness {
-		return nil
-	}
 	if m.deps.LoadBranchStatus == nil {
 		return nil
 	}
-	slug := br.Slug
-
+	repo := selectedRepo(m.repos)
+	if repo == nil {
+		return nil
+	}
 	if m.inFlightStatus == nil {
 		m.inFlightStatus = make(map[string]bool)
 	}
-	m.inFlightStatus[slug] = true
-	return func() tea.Msg {
-		bs, err := m.deps.LoadBranchStatus(slug)
-		if err != nil {
-			bs.FetchedAt = time.Now()
-			bs.GitErr = err.Error()
+	var cmds []tea.Cmd
+	for _, br := range m.snap.Branches {
+		if br.Repo != repo.Name {
+			continue
 		}
-		return branchStatusMsg{slug: slug, status: bs}
+		if !m.snap.ContainersRunning[br.Slug] {
+			continue
+		}
+		if m.inFlightStatus[br.Slug] {
+			continue
+		}
+		if cur, ok := m.branchStatus[br.Slug]; ok && time.Since(cur.FetchedAt) < branchStatusStaleness {
+			continue
+		}
+		slug := br.Slug
+		m.inFlightStatus[slug] = true
+		cmds = append(cmds, func() tea.Msg {
+			bs, err := m.deps.LoadBranchStatus(slug)
+			if err != nil {
+				bs.FetchedAt = time.Now()
+				bs.GitErr = err.Error()
+			}
+			return branchStatusMsg{slug: slug, status: bs}
+		})
 	}
+	if len(cmds) == 0 {
+		return nil
+	}
+	return tea.Batch(cmds...)
 }
 
 type actionDoneMsg struct {
@@ -1100,11 +1113,13 @@ func (m *model) logHeight() int {
 	return lipgloss.Height(s)
 }
 
-// paneStyle pins the pane to a fixed (width × height) box: Width sets the
-// content width inside the rounded border; Height pads short content out;
-// MaxHeight clips long content (e.g. a viewport line that lipgloss wrapped
-// because it exceeded the content width) so the row never grows past `height`
-// and pushes the footer off-screen.
+// paneStyle pins the pane to a fixed (width × height) box. In lipgloss v2
+// Width/Height set the *exterior* block size (borders included), so we pass
+// width/height directly — the content area inside the rounded border is
+// width-2 × height-2, which is what SetSize() on the embedded list/viewport
+// is given in applySizes. MaxHeight clips long content (e.g. a viewport
+// line that lipgloss wrapped) so the row never grows past `height` and
+// pushes the footer off-screen.
 func paneStyle(focused bool, width, height int) lipgloss.Style {
 	color := lipgloss.Color("240")
 	if focused {
@@ -1113,8 +1128,8 @@ func paneStyle(focused bool, width, height int) lipgloss.Style {
 	return lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(color).
-		Width(width - 2).
-		Height(height - 2).
+		Width(width).
+		Height(height).
 		MaxHeight(height)
 }
 
