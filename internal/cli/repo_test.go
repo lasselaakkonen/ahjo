@@ -2,6 +2,9 @@ package cli
 
 import (
 	"errors"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -98,6 +101,89 @@ func TestInstallRepoToken_PropagatesSetterError(t *testing.T) {
 	}
 	if calls != 1 {
 		t.Fatalf("setter called %d times, want 1 (early return on error)", calls)
+	}
+}
+
+func TestIsPathLike(t *testing.T) {
+	cases := []struct {
+		input string
+		want  bool
+	}{
+		{"node", false},
+		{"my-stack", false},
+		{"ci_2", false},
+		{"./foo.json", true},
+		{"../shared/dev.json", true},
+		{"/abs/path/cfg.json", true},
+		{"~/cfg.json", true},
+		{"some/relative.json", true},
+		{"bare.json", true}, // .json suffix flags it as a path even without separator
+		{"", false},         // empty isn't path-like; resolver short-circuits before isPathLike anyway
+		{"node:v1", false},  // colon — not a separator on POSIX; treated as identifier (rejected by identifier regex later)
+	}
+	for _, c := range cases {
+		t.Run(c.input, func(t *testing.T) {
+			if got := isPathLike(c.input); got != c.want {
+				t.Fatalf("isPathLike(%q) = %v, want %v", c.input, got, c.want)
+			}
+		})
+	}
+}
+
+func TestResolveContainerConfig_NameInputs(t *testing.T) {
+	// The container-touching branches (repo-local lookup) need a real
+	// container, so we exercise the parts that don't: empty input, the
+	// "bare" reserved name, and the path-error / invalid-identifier paths.
+	// Real container-backed integration is covered manually per the plan's
+	// verification section.
+	t.Run("empty returns (nil, false, nil)", func(t *testing.T) {
+		cfg, ok, err := resolveContainerConfig("unused", "")
+		if cfg != nil || ok || err != nil {
+			t.Fatalf("got (%v, %v, %v), want (nil, false, nil)", cfg, ok, err)
+		}
+	})
+	t.Run("bare returns (nil, true, nil)", func(t *testing.T) {
+		cfg, ok, err := resolveContainerConfig("unused", "bare")
+		if cfg != nil || !ok || err != nil {
+			t.Fatalf("got (%v, %v, %v), want (nil, true, nil)", cfg, ok, err)
+		}
+	})
+	t.Run("nonexistent path errors with the path in the message", func(t *testing.T) {
+		_, _, err := resolveContainerConfig("unused", "./does-not-exist.json")
+		if err == nil {
+			t.Fatal("expected error")
+		}
+		if !strings.Contains(err.Error(), "does-not-exist.json") {
+			t.Fatalf("error %q lacks the path", err)
+		}
+	})
+	t.Run("invalid identifier errors", func(t *testing.T) {
+		_, _, err := resolveContainerConfig("unused", "node!!")
+		if err == nil {
+			t.Fatal("expected error")
+		}
+	})
+}
+
+func TestResolveContainerConfig_HostPath(t *testing.T) {
+	// Write a tiny valid ahjocontainer.json to a temp dir and resolve
+	// against the absolute path — exercises the host-path branch end to
+	// end without needing a container.
+	dir := t.TempDir()
+	p := filepath.Join(dir, "cfg.json")
+	body := []byte(`{"features": {"ghcr.io/devcontainers/features/go:1": {}}}`)
+	if err := os.WriteFile(p, body, 0o644); err != nil {
+		t.Fatalf("write temp config: %v", err)
+	}
+	cfg, ok, err := resolveContainerConfig("unused", p)
+	if err != nil {
+		t.Fatalf("resolveContainerConfig: %v", err)
+	}
+	if !ok || cfg == nil {
+		t.Fatalf("got (%v, %v), want (non-nil, true)", cfg, ok)
+	}
+	if _, hasGo := cfg.Features["ghcr.io/devcontainers/features/go:1"]; !hasGo {
+		t.Fatalf("parsed cfg missing the go Feature: %#v", cfg.Features)
 	}
 }
 

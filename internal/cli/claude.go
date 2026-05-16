@@ -16,6 +16,7 @@ import (
 func newClaudeCmd() *cobra.Command {
 	var update bool
 	var force bool
+	var containerConfig string
 	cmd := &cobra.Command{
 		Use:   "claude <alias>",
 		Short: "Start (if needed) and launch `claude` inside the branch's container",
@@ -30,19 +31,22 @@ it, deletes it, and recreates it from the repo's default-branch container.
 Before recreating with --update, ahjo inspects /repo for uncommitted/unpushed
 work (starting a stopped container for the check, after prompting). If /repo
 is dirty — or the user declines the start prompt — the command refuses to
-proceed; pass --force to skip the check and recreate anyway.`,
+proceed; pass --force to skip the check and recreate anyway.
+
+` + containerConfigHelpBlock,
 		Args: cobra.ExactArgs(1),
 		RunE: func(_ *cobra.Command, args []string) error {
-			return runClaude(args[0], update, force)
+			return runClaude(args[0], update, force, containerConfig)
 		},
 	}
 	cmd.Flags().BoolVar(&update, "update", false, "destroy the existing container before attaching so it picks up the current ahjo-base image")
 	cmd.Flags().BoolVar(&force, "force", false, "with --update, skip the /repo cleanliness check and recreate even when uncommitted/unpushed work is present")
+	cmd.Flags().StringVar(&containerConfig, "container-config", "", containerConfigFlagShort)
 	return cmd
 }
 
-func runClaude(alias string, update, force bool) error {
-	br, containerName, err := prepareBranchContainer(alias, update, force)
+func runClaude(alias string, update, force bool, containerConfig string) error {
+	br, containerName, err := prepareBranchContainer(alias, update, force, containerConfig)
 	if err != nil {
 		return err
 	}

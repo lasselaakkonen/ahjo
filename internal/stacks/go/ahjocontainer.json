@@ -1,0 +1,14 @@
+{
+  // ahjo built-in "go" stack. Loaded when ahjo is invoked with
+  // --stack=go against a repo that has no .ahjo/ahjocontainer.json.
+  //
+  // Go toolchain via the upstream Feature plus golangci-lint, the
+  // de-facto linter aggregator most Go projects use.
+  "name": "ahjo-stack-go",
+  "features": {
+    "ghcr.io/devcontainers/features/go:1": {
+      "version": "latest"
+    }
+  },
+  "postCreateCommand": "set -e; go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest"
+}

@@ -23,9 +23,10 @@ import (
 )
 
 // applyTimeout caps how long a single Feature's install.sh may run. The
-// devcontainer Features spec recommends a generous window; ahjo-runtime's
-// apt + nodejs install runs about 1m on a warm cache, 3m on a cold pull —
-// 10m gives a comfortable margin while still bounding pathological hangs.
+// devcontainer Features spec recommends a generous window; ahjo-base's
+// heaviest Feature (the upstream node Feature when --stack=node is used)
+// can run 1–3m on a cold pull. 10m gives a comfortable margin while
+// still bounding pathological hangs.
 const applyTimeout = 10 * time.Minute
 
 // Feature is one Feature ready to apply: a directory containing

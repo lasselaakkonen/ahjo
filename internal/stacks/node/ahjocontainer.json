@@ -1,0 +1,20 @@
+{
+  // ahjo built-in "node" stack. Loaded when ahjo is invoked with
+  // --stack=node against a repo that has no .ahjo/ahjocontainer.json.
+  //
+  // Pins Node LTS via the upstream Feature, which also installs pnpm so
+  // ahjo's lockfile-detected warm-install (pnpm install --frozen-lockfile)
+  // works before postCreateCommand runs. The postCreateCommand then picks
+  // up .nvmrc if the repo carries one — purely a convenience for the user's
+  // future shells; warm-install already ran against the LTS the Feature
+  // installed.
+  "name": "ahjo-stack-node",
+  "features": {
+    "ghcr.io/devcontainers/features/node:1": {
+      "version": "lts",
+      "nodeGypDependencies": true,
+      "pnpmVersion": "latest"
+    }
+  },
+  "postCreateCommand": "set -e; export NVM_DIR=${NVM_DIR:-/usr/local/share/nvm}; if [ -f /repo/.nvmrc ] && [ -s \"$NVM_DIR/nvm.sh\" ]; then . \"$NVM_DIR/nvm.sh\"; nvm install && nvm alias default \"$(nvm current)\"; fi"
+}

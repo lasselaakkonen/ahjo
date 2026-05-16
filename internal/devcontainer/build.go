@@ -56,10 +56,10 @@ type embeddedFeature struct {
 
 // embeddedBaseFeatures is the fixed apply order for ahjo's own embedded
 // Features. ahjo-runtime first because it wires the runtime contract
-// ahjo's Go code depends on (sshd-as-a-service, ahjo-mirror, Node +
-// corepack, claude, ahjo-claude-prepare). ahjo-default-dev-tools after
-// because rtk's `rtk init -g --auto-patch` patches the ~/.claude/ tree
-// laid down by ahjo-runtime's claude installer.
+// ahjo's Go code depends on (sshd-as-a-service, ahjo-mirror, claude,
+// ahjo-claude-prepare). ahjo-default-dev-tools after because rtk's
+// `rtk init -g --auto-patch` patches the ~/.claude/ tree laid down by
+// ahjo-runtime's claude installer.
 var embeddedBaseFeatures = []embeddedFeature{
 	{id: ahjoruntime.FeatureID, materialize: ahjoruntime.Materialize},
 	{id: ahjodevtools.FeatureID, materialize: ahjodevtools.Materialize},

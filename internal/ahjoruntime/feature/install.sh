@@ -70,20 +70,13 @@ else
     rm -f /etc/ssh/ssh_known_hosts.tmp
 fi
 
-# Node + corepack from NodeSource. images:ubuntu/24.04 ships no node, so we
-# install the LTS line here. Corepack reads `packageManager: pnpm@x.y.z` from
-# each project's package.json and activates the pinned version on demand —
-# matches what production Docker / CI sees. Suppress the corepack download
-# prompt so non-interactive contexts don't hang on first use of a new pnpm.
-curl -fsSL https://deb.nodesource.com/setup_lts.x | bash -
-DEBIAN_FRONTEND=noninteractive apt-get install -y -qq nodejs
-corepack enable
-grep -q '^COREPACK_ENABLE_DOWNLOAD_PROMPT=' /etc/environment \
-    || echo 'COREPACK_ENABLE_DOWNLOAD_PROMPT=0' >> /etc/environment
-cat > /etc/profile.d/corepack.sh <<'EOF'
-export COREPACK_ENABLE_DOWNLOAD_PROMPT=0
-EOF
-chmod 644 /etc/profile.d/corepack.sh
+# Node intentionally NOT installed here. Claude Code's native installer
+# (below) ships a self-contained binary that bundles its own runtime, and
+# nothing else in this Feature uses node (mirror, sshd, claude-prepare,
+# ssh-keyscan are all bash/jq). Repos that want a Node toolchain pick the
+# bundled "node" stack (--stack=node on `ahjo repo add` / `ahjo claude`)
+# or declare ghcr.io/devcontainers/features/node in their own
+# .ahjo/ahjocontainer.json.
 
 # Claude Code: install via Anthropic's native installer per the project's
 # memorised convention (`curl -fsSL https://claude.ai/install.sh | bash` —
