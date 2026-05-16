@@ -77,10 +77,11 @@ Ahjo reads `.ahjo/ahjocontainer.json` from the default branch from remote and us
 - Created by `ahjo init`
 - Updated with `ahjo update`
 - Configured to include:
-  - ]common-utils](https://github.com/devcontainers/features/tree/main/src/common-utils) devcontainer Feature
-  - `git`, `gh`
-  - `rg`, `fd`, `httpie`, `make`, `unzip`, `curl`, `yq`, `ast-grep` from [install.sh](internal/ahjodevtools/feature/install.sh)
-  - `jq`, `node`, `claude`, `rtk` from [install.sh](internal/ahjoruntime/feature/install.sh)
+  - [common-utils](https://github.com/devcontainers/features/tree/main/src/common-utils) devcontainer Feature (provides `jq`, `curl`, `unzip`, `gnupg`, `ca-certificates`, UID-1000 `ubuntu` user with sudo, en_US locale, and a bunch of other base CLI utilities)
+  - [git](https://github.com/devcontainers/features/tree/main/src/git) devcontainer Feature (provides `git`)
+  - [github-cli](https://github.com/devcontainers/features/tree/main/src/github-cli) devcontainer Feature (provides `gh`)
+  - `node`, `claude`, plus sshd-as-a-service and the `ahjo-mirror` daemon from [install.sh](internal/ahjoruntime/feature/install.sh)
+  - `rg`, `fd`, `eza`, `httpie`, `make`, `yq`, `ast-grep`, `rtk` from [install.sh](internal/ahjodevtools/feature/install.sh)
 
 
 **Repo base container** is

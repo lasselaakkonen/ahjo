@@ -200,12 +200,12 @@ Signed-By: /etc/apt/keyrings/zabbly.asc
 				}
 				return false, "", nil
 			},
-			Note: "pulls images:ubuntu/24.04 once into the local image store (alias " + devcontainer.OSBaseAlias + "), launches a transient container, applies the curated upstream Features (common-utils, git, github-cli) followed by ahjo's own embedded Features (ahjo-default-dev-tools, ahjo-runtime), publishes the result as ahjo-base, and deletes the transient container.",
+			Note: "pulls images:ubuntu/24.04 once into the local image store (alias " + devcontainer.OSBaseAlias + "), launches a transient container, applies the curated upstream Features (common-utils, git, github-cli) followed by ahjo's own embedded Features (ahjo-runtime, ahjo-default-dev-tools), publishes the result as ahjo-base, and deletes the transient container.",
 			Show: "incus image copy " + devcontainer.UpstreamRemote + " local: --alias " + devcontainer.OSBaseAlias + "\n" +
 				"incus launch " + devcontainer.OSBaseAlias + " ahjo-build-<rand>\n" +
 				"apply ghcr.io/devcontainers/features/{common-utils,git,github-cli}\n" +
-				"apply embedded ahjo-default-dev-tools (rg, fd, eza, yq, ast-grep, httpie, make)\n" +
-				"apply embedded ahjo-runtime (sshd + ahjo-claude-prepare + Node + corepack)\n" +
+				"apply embedded ahjo-runtime (sshd + ahjo-claude-prepare + Node + corepack + claude)\n" +
+				"apply embedded ahjo-default-dev-tools (rg, fd, eza, yq, ast-grep, httpie, make, rtk)\n" +
 				"incus publish ahjo-build-<rand> --alias " + devcontainer.AhjoBaseAlias + "\n" +
 				"incus delete ahjo-build-<rand>",
 			Action: func(out io.Writer) error {
