@@ -61,6 +61,28 @@ func TestMakeSlugCollisionAtCap(t *testing.T) {
 	}
 }
 
+func TestAllocateRepoSlugExternalTaken(t *testing.T) {
+	r := &Registry{}
+	taken := map[string]bool{"acme-foo": true}
+	got := r.AllocateRepoSlug("acme/foo", func(s string) bool { return taken[s] })
+	if got != "acme-foo-2" {
+		t.Fatalf("first call: got %q, want %q", got, "acme-foo-2")
+	}
+	taken["acme-foo-2"] = true
+	got = r.AllocateRepoSlug("acme/foo", func(s string) bool { return taken[s] })
+	if got != "acme-foo-3" {
+		t.Fatalf("second call: got %q, want %q", got, "acme-foo-3")
+	}
+}
+
+func TestAllocateRepoSlugNilPredicate(t *testing.T) {
+	r := &Registry{Repos: []Repo{{Name: "acme-foo"}}}
+	got := r.AllocateRepoSlug("acme/foo", nil)
+	if got != "acme-foo-2" {
+		t.Fatalf("got %q, want %q", got, "acme-foo-2")
+	}
+}
+
 func TestBranchHostKeysSlug(t *testing.T) {
 	tests := []struct {
 		name string
