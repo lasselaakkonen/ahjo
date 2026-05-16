@@ -315,17 +315,30 @@ func (r *Registry) AllocateRepoAlias(gitURL string) (string, error) {
 
 // AllocateRepoSlug returns an unused on-disk slug for a repo, derived from
 // its primary alias. Suffixes -2/-3/... on collision.
-func (r *Registry) AllocateRepoSlug(primaryAlias string) string {
+//
+// externalTaken (optional, may be nil) lets callers reject slugs that are free
+// in the registry but collide with state the registry doesn't track — most
+// notably an orphan `ahjo-<slug>` incus container left behind by a previous
+// `repo add` that crashed before the registry write. When externalTaken
+// returns true for a candidate the suffix loop walks past it, the same way it
+// walks past a registry-resident slug.
+func (r *Registry) AllocateRepoSlug(primaryAlias string, externalTaken func(slug string) bool) string {
 	base := AliasToSlug(primaryAlias)
 	if base == "" {
 		base = "repo"
 	}
-	if !r.repoSlugTaken(base) {
+	taken := func(s string) bool {
+		if r.repoSlugTaken(s) {
+			return true
+		}
+		return externalTaken != nil && externalTaken(s)
+	}
+	if !taken(base) {
 		return base
 	}
 	for i := 2; i < 1000; i++ {
 		cand := withSlugSuffix(base, i)
-		if !r.repoSlugTaken(cand) {
+		if !taken(cand) {
 			return cand
 		}
 	}
