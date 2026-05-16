@@ -47,7 +47,7 @@ proceed; pass --force to skip the check and recreate anyway.`,
 }
 
 func runShell(alias string, update, force bool) error {
-	br, containerName, err := prepareBranchContainer(alias, update, force)
+	br, containerName, err := prepareBranchContainer(alias, update, force, "")
 	if err != nil {
 		return err
 	}
@@ -77,8 +77,14 @@ func runShell(alias string, update, force bool) error {
 // exists (recreating from the default-branch base when missing or --update),
 // starts it, wires the ssh proxy + sshd, and reconciles auto-expose. Returns
 // the branch row and the resolved container name ready for an attach call.
-func prepareBranchContainer(alias string, update, force bool) (*registry.Branch, string, error) {
-	if _, err := EnsureBranch(alias); err != nil {
+//
+// containerConfig is forwarded to EnsureBranch's auto-add path
+// (--container-config: built-in stack name / repo-local .ahjo/<name>.json /
+// host path / "bare"). Pass "" to fall back to the standard resolution
+// (in-repo ahjocontainer.json or interactive picker on a TTY). Ignored
+// when the repo or branch is already registered.
+func prepareBranchContainer(alias string, update, force bool, containerConfig string) (*registry.Branch, string, error) {
+	if _, err := EnsureBranch(alias, containerConfig); err != nil {
 		return nil, "", err
 	}
 	reg, err := registry.Load()

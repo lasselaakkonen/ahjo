@@ -1,5 +1,48 @@
 # Changelog
 
+## Unreleased — `--container-config` and built-in stacks
+
+### Added
+
+- **`--container-config=<value>` flag on `ahjo repo add` and `ahjo claude`**.
+  Picks the container configuration for a repo at repo-add time. Resolution
+  order: explicit flag wins, otherwise `.ahjo/ahjocontainer.json` in the
+  repo, otherwise an interactive picker on a TTY (bare + any repo
+  `.ahjo/*.json` variants + bundled stacks), otherwise bare. Value accepts:
+  - A **bundled stack name**: `node`, `python`, `go`, `rust`. Each is a
+    curated `ahjocontainer.json` shipped inside the ahjo binary (see
+    [internal/stacks/](internal/stacks/)).
+  - A **repo-local basename**, resolved against `.ahjo/<value>.json` in
+    the repo — so a repo can ship multiple variants alongside the
+    canonical `ahjocontainer.json`.
+  - An **absolute or relative path** to a `.json` file on the host. On
+    macOS the shim transparently stages paths outside the Lima VM's
+    reverse-mount (e.g. `/tmp/foo.json`) through the shared dir, so any
+    Mac path works — not just paths under `~/`.
+  - The literal `bare` for no toolchain.
+- Nothing is written to the repo; the choice is applied to the repo base
+  container only and persists until `ahjo repo rm`.
+- The `node` stack honors `.nvmrc` if the repo carries one (via nvm in
+  `postCreateCommand`, on top of the LTS the upstream Feature installed).
+
+### Changed
+
+- **Node + corepack removed from `ahjo-runtime`.** The base image no longer
+  ships Node — Claude Code's native installer bundles its own runtime, and
+  nothing else in `ahjo-runtime` used node. Repos that need a Node toolchain
+  either declare `ghcr.io/devcontainers/features/node` in their own
+  `.ahjo/ahjocontainer.json` or pass `--stack=node`. Behavior change for
+  repos that implicitly relied on `node`/`npm`/`pnpm` being present without
+  declaring it; this aligns with how every other language already worked.
+
+### Migration
+
+Run `ahjo update` to rebuild `ahjo-base` without Node. If a repo's
+warm-install (`pnpm install`, `npm ci`, etc.) starts failing after the
+update, either add `ghcr.io/devcontainers/features/node:1` to its
+`.ahjo/ahjocontainer.json` or re-add the repo with `--stack=node`
+(`ahjo repo rm <alias> && ahjo repo add <url> --stack=node`).
+
 ## Unreleased — embedded Feature reshuffle
 
 ### Changed

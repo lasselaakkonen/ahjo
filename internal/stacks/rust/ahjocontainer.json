@@ -1,0 +1,15 @@
+{
+  // ahjo built-in "rust" stack. Loaded when ahjo is invoked with
+  // --stack=rust against a repo that has no .ahjo/ahjocontainer.json.
+  //
+  // Rust toolchain via the upstream Feature. The Feature installs rustup
+  // with the default profile, which already gives `cargo`, `rustfmt`,
+  // and `clippy` — so no extras needed in postCreateCommand.
+  "name": "ahjo-stack-rust",
+  "features": {
+    "ghcr.io/devcontainers/features/rust:1": {
+      "version": "latest",
+      "profile": "default"
+    }
+  }
+}

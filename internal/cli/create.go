@@ -61,8 +61,10 @@ func runCreate(repoAlias, branch, base, asAlias string, noFetch bool) error {
 	// the lock itself for the registration phase, then releases before
 	// recursing into the warm-install phase. Calling it here lets
 	// `ahjo create <new-repo> <branch>` auto-register from GitHub before we
-	// proceed.
-	if _, err := EnsureRepo(repoAlias); err != nil {
+	// proceed. No --container-config on `ahjo create`: the primary
+	// onboarding paths are `ahjo repo add --container-config=...` and
+	// `ahjo claude --container-config=...`.
+	if _, err := EnsureRepo(repoAlias, ""); err != nil {
 		return err
 	}
 
@@ -292,7 +294,11 @@ func cloneFromBase(repo *registry.Repo, br *registry.Branch) error {
 // "<repo-alias>@<branch>" shape, it auto-adds the parent repo (via
 // EnsureRepo) and runs runCreate to create the branch container. Idempotent
 // for already-registered branches.
-func EnsureBranch(branchAlias string) (*registry.Branch, error) {
+//
+// containerConfig is forwarded to EnsureRepo for the auto-add path.
+// Pass "" to skip; ignored when the parent repo is already registered
+// (the base container is not rebuilt by this function).
+func EnsureBranch(branchAlias, containerConfig string) (*registry.Branch, error) {
 	reg, err := registry.Load()
 	if err != nil {
 		return nil, err
@@ -306,7 +312,7 @@ func EnsureBranch(branchAlias string) (*registry.Branch, error) {
 		return nil, fmt.Errorf("no branch with alias %q; create with `ahjo create`", branchAlias)
 	}
 
-	if _, err := EnsureRepo(repoAlias); err != nil {
+	if _, err := EnsureRepo(repoAlias, containerConfig); err != nil {
 		return nil, err
 	}
 

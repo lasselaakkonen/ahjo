@@ -204,7 +204,7 @@ Signed-By: /etc/apt/keyrings/zabbly.asc
 			Show: "incus image copy " + devcontainer.UpstreamRemote + " local: --alias " + devcontainer.OSBaseAlias + "\n" +
 				"incus launch " + devcontainer.OSBaseAlias + " ahjo-build-<rand>\n" +
 				"apply ghcr.io/devcontainers/features/{common-utils,git,github-cli}\n" +
-				"apply embedded ahjo-runtime (sshd + ahjo-claude-prepare + Node + corepack + claude)\n" +
+				"apply embedded ahjo-runtime (sshd + ahjo-claude-prepare + claude)\n" +
 				"apply embedded ahjo-default-dev-tools (rg, fd, eza, yq, ast-grep, httpie, make, rtk)\n" +
 				"incus publish ahjo-build-<rand> --alias " + devcontainer.AhjoBaseAlias + "\n" +
 				"incus delete ahjo-build-<rand>",

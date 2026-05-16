@@ -85,6 +85,7 @@ func newRepoAddCmd() *cobra.Command {
 	var defaultBase string
 	var asAlias string
 	var yes bool
+	var containerConfig string
 	cmd := &cobra.Command{
 		Use:   "add <git-url>",
 		Short: "Register a repo: clone it inside a fresh ahjo-base container at /repo and warm-install dependencies",
@@ -101,25 +102,28 @@ URL handling: pass the URL you actually want to use. SSH remotes
 (git@github.com:…) keep using the host's ssh-agent (forwarded into the
 container). HTTPS remotes (https://github.com/…) authenticate via the
 per-repo PAT prompted for after clone — ` + "`gh auth setup-git`" + ` wires git's
-HTTPS credential helper to read it. ahjo does not auto-rewrite SSH ↔ HTTPS.`,
+HTTPS credential helper to read it. ahjo does not auto-rewrite SSH ↔ HTTPS.
+
+` + containerConfigHelpBlock,
 		Args: cobra.ExactArgs(1),
 		RunE: func(_ *cobra.Command, args []string) error {
-			return runRepoAdd(args[0], asAlias, defaultBase, yes)
+			return runRepoAdd(args[0], asAlias, defaultBase, yes, containerConfig)
 		},
 	}
 	cmd.Flags().StringVar(&defaultBase, "default-base", "", "default branch to base new branches on (default: detect from the remote's HEAD)")
 	cmd.Flags().StringVar(&asAlias, "as", "", "additional alias for this repo (must not collide with any existing alias)")
 	cmd.Flags().BoolVarP(&yes, "yes", "y", false, "skip the GitHub PAT prompt (the repo is added without a per-repo GH_TOKEN; set one later with `ahjo repo set-token`)")
+	cmd.Flags().StringVar(&containerConfig, "container-config", "", containerConfigFlagShort)
 	return cmd
 }
 
-func runRepoAdd(input, asAlias, defaultBase string, yes bool) error {
+func runRepoAdd(input, asAlias, defaultBase string, yes bool, containerConfig string) error {
 	url := resolveRepoURL(input)
 	slug, primary, aliases, err := repoAddPlan(url, asAlias)
 	if err != nil {
 		return err
 	}
-	return repoAddSetup(slug, primary, aliases, url, defaultBase, yes)
+	return repoAddSetup(slug, primary, aliases, url, defaultBase, yes, containerConfig)
 }
 
 // resolveRepoURL accepts either a git URL or a bare "<owner>/<repo>" alias
@@ -181,7 +185,7 @@ func repoAddPlan(url, asAlias string) (slug, primary string, aliases []string, e
 // Lockfile is acquired only for the final registry write; the long
 // container/network operations run unlocked so concurrent ahjo invocations
 // (e.g. `ahjo top` refresh) aren't starved.
-func repoAddSetup(slug, primary string, aliases []string, url, defaultBase string, yes bool) error {
+func repoAddSetup(slug, primary string, aliases []string, url, defaultBase string, yes bool, containerConfig string) error {
 	cfg, err := config.Load()
 	if err != nil {
 		return err
@@ -323,12 +327,44 @@ func repoAddSetup(slug, primary string, aliases []string, url, defaultBase strin
 			"`run` → `postCreateCommand`, `forward_env` / `auto_expose` → `customizations.ahjo.*`")
 	}
 
-	// Parse ahjocontainer.json (if present). Docker-flavored fields are
-	// rejected by the parser itself, so by the time we have a *Config the
-	// schema is already valid for ahjo.
-	dcConf, _, err := ahjocontainer.LoadFromContainer(containerName)
-	if err != nil {
-		return err
+	// Container config resolution. Order, first match wins:
+	//   1. Explicit --container-config — host path, repo-local
+	//      .ahjo/<name>.json, bundled stack, or "bare". Overrides the
+	//      in-repo canonical file by design (so a contributor can spin
+	//      up a CI-flavored container against a repo whose committed
+	//      ahjocontainer.json targets full local dev).
+	//   2. In-repo .ahjo/ahjocontainer.json (the canonical file).
+	//   3. Interactive picker on a TTY.
+	//   4. Bare (non-TTY fallback).
+	// Docker-flavored fields are rejected by the parser itself, so by
+	// the time we have a *Config it's already valid for ahjo.
+	var dcConf *ahjocontainer.Config
+	if containerConfig != "" {
+		cfg, _, err := resolveContainerConfig(containerName, containerConfig)
+		if err != nil {
+			return err
+		}
+		dcConf = cfg
+	} else {
+		cfg, found, err := ahjocontainer.LoadFromContainer(containerName)
+		if err != nil {
+			return err
+		}
+		if found {
+			dcConf = cfg
+		} else {
+			chosen, err := promptContainerConfig(containerName, os.Stdin, cobraOut())
+			if err != nil {
+				return err
+			}
+			if chosen != "" && chosen != bareConfigName {
+				picked, _, err := resolveContainerConfig(containerName, chosen)
+				if err != nil {
+					return err
+				}
+				dcConf = picked
+			}
+		}
 	}
 	if msg := remoteUserWarning(dcConf); msg != "" {
 		fmt.Fprintln(cobraOutErr(), msg)
@@ -1072,7 +1108,14 @@ func runRepoPull(repoAlias string) error {
 // shape, it auto-adds the repo by deriving a GitHub URL (SSH if
 // reachable, else HTTPS) and running the standard `repo add` flow.
 // Idempotent: a second call on a registered repo just returns it.
-func EnsureRepo(repoAlias string) (*registry.Repo, error) {
+//
+// containerConfig is the value of --container-config (a built-in stack
+// name, a repo-local .ahjo/<name>.json basename, a host path, or
+// "bare"). Forwarded to runRepoAdd for the auto-add path. Pass "" to
+// fall back to the standard resolution (in-repo ahjocontainer.json, or
+// the interactive picker on a TTY). Ignored when the repo is already
+// registered.
+func EnsureRepo(repoAlias, containerConfig string) (*registry.Repo, error) {
 	reg, err := registry.Load()
 	if err != nil {
 		return nil, err
@@ -1088,7 +1131,7 @@ func EnsureRepo(repoAlias string) (*registry.Repo, error) {
 
 	url := pickGitHubURL(owner, name)
 	fmt.Printf("repo %q not registered; adding from %s...\n", repoAlias, url)
-	if err := runRepoAdd(url, "", "", false); err != nil {
+	if err := runRepoAdd(url, "", "", false, containerConfig); err != nil {
 		return nil, err
 	}
 
