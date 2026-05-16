@@ -27,6 +27,7 @@ func newTopCmd() *cobra.Command {
 				HostStatus:           hostStatusForTop,
 				ToggleExpose:         toggleExposeForTop,
 				IDEs:                 idesForTop,
+				Terminals:            terminalsForTop,
 				LoadSnapshot:         loadSnapshotInVM,
 				LoadBranchStatus:     fetchBranchStatusInVM,
 			}
@@ -63,17 +64,22 @@ func loadSnapshotInVM() (top.Snapshot, error) {
 	}
 
 	snap.Containers = make(map[string]bool, len(reg.Branches))
+	snap.ContainersRunning = make(map[string]bool, len(reg.Branches))
 	for i := range reg.Branches {
 		br := &reg.Branches[i]
 		name, err := resolveContainerName(br)
 		if err != nil {
 			continue
 		}
-		exists, err := incus.ContainerExists(name)
+		// ContainerStatus returns "" for unknown (== not registered),
+		// "Running" / "Stopped" / "Frozen" otherwise, so it subsumes
+		// the existence check.
+		status, err := incus.ContainerStatus(name)
 		if err != nil {
 			continue
 		}
-		snap.Containers[br.Slug] = exists
+		snap.Containers[br.Slug] = status != ""
+		snap.ContainersRunning[br.Slug] = strings.EqualFold(status, "Running")
 	}
 
 	for i := range reg.Branches {

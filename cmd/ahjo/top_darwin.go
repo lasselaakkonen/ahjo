@@ -16,6 +16,7 @@ import (
 	"github.com/lasselaakkonen/ahjo/internal/lima"
 	"github.com/lasselaakkonen/ahjo/internal/ports"
 	"github.com/lasselaakkonen/ahjo/internal/registry"
+	"github.com/lasselaakkonen/ahjo/internal/terminal"
 	"github.com/lasselaakkonen/ahjo/internal/tui/top"
 )
 
@@ -36,6 +37,7 @@ func runMacTop() error {
 		HostStatus:           macHostStatusForTop,
 		ToggleExpose:         macToggleExpose,
 		IDEs:                 macIDEs,
+		Terminals:            macTerminals,
 		LoadSnapshot:         macLoadSnapshot,
 		LoadBranchStatus:     macLoadBranchStatus,
 	}
@@ -133,6 +135,28 @@ func macIDEs() []top.IDE {
 			Name: ide.DisplayName(slug),
 			Open: func(host, path string) error {
 				return ide.LaunchOnHost(slug, host, path)
+			},
+		})
+	}
+	return out
+}
+
+// macTerminals probes the Mac's /Applications + ~/Applications for installed
+// terminal-emulator bundles and wraps each one in a launcher that spawns
+// the emulator running an `ahjo` command. The user's current terminal (if
+// detected from $TERM_PROGRAM et al.) is flagged so the picker opens that
+// row in a new tab rather than a new window.
+func macTerminals() []top.Terminal {
+	slugs := terminal.DetectInstalled()
+	cur, hasCur := terminal.Current()
+	out := make([]top.Terminal, 0, len(slugs))
+	for _, slug := range slugs {
+		slug := slug
+		out = append(out, top.Terminal{
+			Name:      terminal.DisplayName(slug),
+			IsCurrent: hasCur && slug == cur,
+			Run: func(argv []string, asTab bool) error {
+				return terminal.LaunchCommand(slug, argv, asTab)
 			},
 		})
 	}

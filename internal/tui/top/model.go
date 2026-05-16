@@ -42,6 +42,7 @@ const (
 	inputNewContainer
 	inputMirrorTarget
 	inputIDE
+	inputRunTarget
 )
 
 const (
@@ -157,6 +158,17 @@ type model struct {
 	idePickerIdx  int
 	idePickerHost string
 	idePickerPath string
+
+	// runTargetTerms / runTargetIdx back the inputRunTarget picker
+	// (presented when `s`/`a` is pressed on a selected container).
+	// runTargetSub is "claude" or "shell"; runTargetAlias is the
+	// branch alias the picker was opened against, captured at entry so
+	// the launcher doesn't rely on selection state holding still. Reset
+	// on cancel/submit.
+	runTargetTerms []Terminal
+	runTargetIdx   int
+	runTargetSub   string
+	runTargetAlias string
 }
 
 func (m *model) Init() tea.Cmd {
@@ -191,6 +203,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.branchStatus[msg.slug] = msg.status
 		delete(m.inFlightStatus, msg.slug)
+		m.refreshContainers()
 		m.refreshDetails()
 		return m, nil
 
@@ -237,6 +250,9 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m *model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if m.inputMode == inputIDE {
 		return m.handleIDEPickerKey(msg)
+	}
+	if m.inputMode == inputRunTarget {
+		return m.handleRunTargetPickerKey(msg)
 	}
 	if m.inputMode != inputNone {
 		switch {
@@ -296,9 +312,11 @@ func (m *model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		case key.Matches(msg, m.keys.ToggleMirror):
 			return m.handleToggleMirror()
 		case key.Matches(msg, m.keys.CopyClaudeCmd):
-			return m, m.copyAhjoCmdForBranch("claude")
+			m.startRunTargetPicker("claude")
+			return m, nil
 		case key.Matches(msg, m.keys.CopyShellCmd):
-			return m, m.copyAhjoCmdForBranch("shell")
+			m.startRunTargetPicker("shell")
+			return m, nil
 		case key.Matches(msg, m.keys.OpenIDE):
 			m.startIDEPicker()
 			return m, nil
@@ -383,6 +401,10 @@ func (m *model) cancelInput() {
 	m.idePickerIdx = 0
 	m.idePickerHost = ""
 	m.idePickerPath = ""
+	m.runTargetTerms = nil
+	m.runTargetIdx = 0
+	m.runTargetSub = ""
+	m.runTargetAlias = ""
 }
 
 // startIDEPicker enters inputIDE mode for the currently selected branch.
@@ -519,7 +541,7 @@ func (m *model) refreshContainers() {
 		m.containers.SetItems(nil)
 		return
 	}
-	m.containers.SetItems(containerItemsFor(m.snap, repo.Name))
+	m.containers.SetItems(containerItemsFor(m.snap, repo.Name, m.branchStatus))
 }
 
 func (m *model) refreshDetails() {
@@ -639,19 +661,93 @@ func (m *model) execWorktreeRm() tea.Cmd {
 	return execAhjo("removed", alias, "rm", alias)
 }
 
-// copyAhjoCmdForBranch yanks `ahjo <sub> <alias>` for the currently selected
-// branch into the system clipboard via OSC 52 (tea.SetClipboard). Returns nil
-// when no real container is selected (e.g. focus is on the "+ create
-// container" sentinel, or focusDetails with no branch chosen) — silent in
-// that case rather than misleading.
-func (m *model) copyAhjoCmdForBranch(sub string) tea.Cmd {
+// startRunTargetPicker enters inputRunTarget mode for the currently selected
+// branch and the given subcommand ("claude" or "shell"). Captures the
+// branch alias at entry so the picker isn't affected by later list moves.
+// When no branch is selected, flashes without switching modes — mirrors
+// startIDEPicker's behaviour. The picker always renders a "copy to
+// clipboard" entry, so an empty Terminals() result is fine.
+func (m *model) startRunTargetPicker(sub string) {
 	w := selectedBranch(m.containers)
 	if w == nil {
-		return nil
+		m.flash = "select a container first"
+		return
 	}
-	cmdStr := "ahjo " + sub + " " + w.Aliases[0]
-	m.flash = "copied to clipboard: " + cmdStr
-	return tea.SetClipboard(cmdStr)
+	var terms []Terminal
+	if m.deps.Terminals != nil {
+		terms = m.deps.Terminals()
+	}
+	m.runTargetTerms = terms
+	m.runTargetIdx = 0
+	m.runTargetSub = sub
+	m.runTargetAlias = w.Aliases[0]
+	m.inputMode = inputRunTarget
+	m.flash = ""
+}
+
+// handleRunTargetPickerKey owns the keypress loop while inputRunTarget is
+// active. Up/down navigate the combined list (detected terminals followed
+// by the clipboard sentinel); enter dispatches; esc cancels. All other
+// keys are dropped so an in-flight picker can't leak keys into the
+// underlying list/viewport.
+func (m *model) handleRunTargetPickerKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	rows := len(m.runTargetTerms) + 1 // +1 for the clipboard sentinel
+	switch {
+	case key.Matches(msg, m.keys.Cancel):
+		m.cancelInput()
+		return m, nil
+	case key.Matches(msg, m.keys.Up):
+		if m.runTargetIdx > 0 {
+			m.runTargetIdx--
+		}
+		return m, nil
+	case key.Matches(msg, m.keys.Down):
+		if m.runTargetIdx < rows-1 {
+			m.runTargetIdx++
+		}
+		return m, nil
+	case key.Matches(msg, m.keys.Submit):
+		return m.dispatchRunTarget(true)
+	case key.Matches(msg, m.keys.SubmitWindow):
+		return m.dispatchRunTarget(false)
+	}
+	return m, nil
+}
+
+// dispatchRunTarget acts on the selected row: clipboard sentinel copies,
+// terminal rows spawn. honorTab is true for plain Enter (use the term's
+// own preference — tab for the current terminal, window for the rest) and
+// false for Shift+Enter (force a new window regardless). Shift+Enter on
+// the clipboard sentinel behaves the same as Enter — there's no "shift to
+// copy differently" semantic.
+func (m *model) dispatchRunTarget(honorTab bool) (tea.Model, tea.Cmd) {
+	sub := m.runTargetSub
+	alias := m.runTargetAlias
+	idx := m.runTargetIdx
+	terms := m.runTargetTerms
+	m.cancelInput()
+	cmdStr := "ahjo " + sub + " " + alias
+	if idx >= len(terms) {
+		m.flash = "copied to clipboard: " + cmdStr
+		return m, tea.SetClipboard(cmdStr)
+	}
+	term := terms[idx]
+	if term.Run == nil {
+		m.flash = "run target " + term.Name + ": no launcher"
+		return m, nil
+	}
+	self, err := os.Executable()
+	if err != nil || self == "" {
+		self = "ahjo"
+	}
+	argv := []string{self, sub, alias}
+	asTab := honorTab && term.IsCurrent
+	if err := term.Run(argv, asTab); err != nil {
+		m.flash = "open " + term.Name + " failed: " + err.Error()
+		return m, nil
+	}
+	m.flash = "opening " + term.Name + " → " + cmdStr
+	return m, nil
 }
 
 func (m *model) execToggleExpose() tea.Cmd {
@@ -694,41 +790,53 @@ type branchStatusMsg struct {
 	status BranchStatus
 }
 
-// maybeRefreshBranchStatus returns a tea.Cmd that fetches a fresh
-// BranchStatus for the currently selected branch via Deps.LoadBranchStatus,
-// or nil when there's nothing to do (no branch selected, container missing,
-// fetch already in flight, cached result still fresh, or no fetcher wired).
+// maybeRefreshBranchStatus returns a tea.Cmd that fetches BranchStatus
+// for every present container in the focused repo via
+// Deps.LoadBranchStatus. The single-flight + staleness guards are
+// applied per slug, so this is safe to call on every tick: each branch
+// gets at most one in-flight fetch and is re-fetched only after the
+// cache goes stale. Returns nil when there's nothing to do (no repo
+// focused, no eligible containers, or no fetcher wired).
 func (m *model) maybeRefreshBranchStatus() tea.Cmd {
-	br := selectedBranch(m.containers)
-	if br == nil {
-		return nil
-	}
-	if !m.snap.Containers[br.Slug] {
-		return nil
-	}
-	if m.inFlightStatus[br.Slug] {
-		return nil
-	}
-	if cur, ok := m.branchStatus[br.Slug]; ok && time.Since(cur.FetchedAt) < branchStatusStaleness {
-		return nil
-	}
 	if m.deps.LoadBranchStatus == nil {
 		return nil
 	}
-	slug := br.Slug
-
+	repo := selectedRepo(m.repos)
+	if repo == nil {
+		return nil
+	}
 	if m.inFlightStatus == nil {
 		m.inFlightStatus = make(map[string]bool)
 	}
-	m.inFlightStatus[slug] = true
-	return func() tea.Msg {
-		bs, err := m.deps.LoadBranchStatus(slug)
-		if err != nil {
-			bs.FetchedAt = time.Now()
-			bs.GitErr = err.Error()
+	var cmds []tea.Cmd
+	for _, br := range m.snap.Branches {
+		if br.Repo != repo.Name {
+			continue
 		}
-		return branchStatusMsg{slug: slug, status: bs}
+		if !m.snap.ContainersRunning[br.Slug] {
+			continue
+		}
+		if m.inFlightStatus[br.Slug] {
+			continue
+		}
+		if cur, ok := m.branchStatus[br.Slug]; ok && time.Since(cur.FetchedAt) < branchStatusStaleness {
+			continue
+		}
+		slug := br.Slug
+		m.inFlightStatus[slug] = true
+		cmds = append(cmds, func() tea.Msg {
+			bs, err := m.deps.LoadBranchStatus(slug)
+			if err != nil {
+				bs.FetchedAt = time.Now()
+				bs.GitErr = err.Error()
+			}
+			return branchStatusMsg{slug: slug, status: bs}
+		})
 	}
+	if len(cmds) == 0 {
+		return nil
+	}
+	return tea.Batch(cmds...)
 }
 
 type actionDoneMsg struct {
@@ -786,6 +894,8 @@ func (m *model) View() tea.View {
 		// no overlay
 	case inputIDE:
 		rightContent = m.idePickerBlock()
+	case inputRunTarget:
+		rightContent = m.runTargetPickerBlock()
 	default:
 		rightContent = m.inputBlock()
 	}
@@ -854,6 +964,64 @@ func (m *model) inputBlock() string {
 		hint = detailLabel.Render("enter to submit · esc to cancel")
 	}
 	return strings.Join([]string{title, "", m.input.View(), "", hint}, "\n")
+}
+
+// runTargetPickerBlock renders the inputRunTarget overlay: a ▸-marked list
+// of detected terminal emulators (the current one tagged "(current)" and
+// noted as opening a new tab) followed by a sentinel "copy to clipboard"
+// row. Mirrors idePickerBlock's title/hint chrome so the two modals look
+// consistent.
+func (m *model) runTargetPickerBlock() string {
+	title := detailTitle.Render("run ahjo " + m.runTargetSub + " · " + m.runTargetAlias)
+	rows := len(m.runTargetTerms) + 1
+	lines := make([]string, 0, rows)
+	for i, term := range m.runTargetTerms {
+		caret := "  "
+		style := detailValue
+		if i == m.runTargetIdx {
+			caret = "▸ "
+			style = detailTitle
+		}
+		label := term.Name
+		switch {
+		case term.IsCurrent:
+			label += "  (current, new tab)"
+		default:
+			label += "  (new window)"
+		}
+		lines = append(lines, style.Render(caret+label))
+	}
+	caret := "  "
+	style := detailValue
+	if m.runTargetIdx == len(m.runTargetTerms) {
+		caret = "▸ "
+		style = detailTitle
+	}
+	lines = append(lines, style.Render(caret+"copy to clipboard"))
+	hint := detailLabel.Render(m.runTargetHint())
+	parts := []string{title, ""}
+	parts = append(parts, lines...)
+	parts = append(parts, "", hint)
+	return strings.Join(parts, "\n")
+}
+
+// runTargetHint returns the footer text for the picker, mirroring the
+// actions available for the currently highlighted row so the hint never
+// promises something the row can't deliver (e.g. "w for new window" on a
+// non-current terminal whose Enter already opens a window, or on the
+// clipboard sentinel where there's no window/tab choice at all).
+func (m *model) runTargetHint() string {
+	parts := []string{"↑/↓ pick"}
+	switch {
+	case m.runTargetIdx >= len(m.runTargetTerms):
+		parts = append(parts, "enter to copy")
+	case m.runTargetTerms[m.runTargetIdx].IsCurrent:
+		parts = append(parts, "enter for new tab", "w for new window")
+	default:
+		parts = append(parts, "enter for new window")
+	}
+	parts = append(parts, "esc to cancel")
+	return strings.Join(parts, " · ")
 }
 
 // idePickerBlock renders the inputIDE overlay: a ▸-marked list of the
@@ -945,11 +1113,13 @@ func (m *model) logHeight() int {
 	return lipgloss.Height(s)
 }
 
-// paneStyle pins the pane to a fixed (width × height) box: Width sets the
-// content width inside the rounded border; Height pads short content out;
-// MaxHeight clips long content (e.g. a viewport line that lipgloss wrapped
-// because it exceeded the content width) so the row never grows past `height`
-// and pushes the footer off-screen.
+// paneStyle pins the pane to a fixed (width × height) box. In lipgloss v2
+// Width/Height set the *exterior* block size (borders included), so we pass
+// width/height directly — the content area inside the rounded border is
+// width-2 × height-2, which is what SetSize() on the embedded list/viewport
+// is given in applySizes. MaxHeight clips long content (e.g. a viewport
+// line that lipgloss wrapped) so the row never grows past `height` and
+// pushes the footer off-screen.
 func paneStyle(focused bool, width, height int) lipgloss.Style {
 	color := lipgloss.Color("240")
 	if focused {
@@ -958,8 +1128,8 @@ func paneStyle(focused bool, width, height int) lipgloss.Style {
 	return lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(color).
-		Width(width - 2).
-		Height(height - 2).
+		Width(width).
+		Height(height).
 		MaxHeight(height)
 }
 

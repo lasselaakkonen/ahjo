@@ -25,13 +25,14 @@ type snapshotMsg struct {
 // platform-locally on the Mac side (the VM doesn't know the host's Lima
 // state), so it's never serialized.
 type Snapshot struct {
-	Repos         []registry.Repo               `json:"repos"`
-	Branches      []registry.Branch             `json:"branches"`
-	Containers    map[string]bool               `json:"containers"`
-	PortsByBranch map[string][]ports.Allocation `json:"ports_by_branch"`
-	Host          HostStatus                    `json:"-"`
-	MirrorSlug    string                        `json:"mirror_slug,omitempty"`
-	MirrorAlive   bool                          `json:"mirror_alive"`
+	Repos             []registry.Repo               `json:"repos"`
+	Branches          []registry.Branch             `json:"branches"`
+	Containers        map[string]bool               `json:"containers"`
+	ContainersRunning map[string]bool               `json:"containers_running"`
+	PortsByBranch     map[string][]ports.Allocation `json:"ports_by_branch"`
+	Host              HostStatus                    `json:"-"`
+	MirrorSlug        string                        `json:"mirror_slug,omitempty"`
+	MirrorAlive       bool                          `json:"mirror_alive"`
 }
 
 func tickCmd() tea.Cmd {
