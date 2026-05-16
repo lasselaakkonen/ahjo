@@ -130,25 +130,78 @@ func LoadFromHost(repoDir string) (*Config, bool, error) {
 // named container via `incus exec ... cat`. Returns (nil, false, nil) when
 // the file is absent.
 func LoadFromContainer(container string) (*Config, bool, error) {
-	p := "/repo/" + ConfigPath
+	return loadJSONFromContainer(container, "/repo/"+ConfigPath, ConfigPath)
+}
+
+// LoadAlternateFromContainer reads /repo/.ahjo/<name>.json — a repo-local
+// named alternate to the canonical ahjocontainer.json. Used by the
+// --container-config resolver: a repo author can offer multiple variants
+// (`.ahjo/lite.json`, `.ahjo/ci.json`, …) addressed by basename. Returns
+// (nil, false, nil) when the named file is absent. `name` is taken
+// verbatim — no path traversal sanitization here; the resolver enforces
+// that name is a single identifier with no path separators before calling.
+func LoadAlternateFromContainer(container, name string) (*Config, bool, error) {
+	p := "/repo/.ahjo/" + name + ".json"
+	return loadJSONFromContainer(container, p, ".ahjo/"+name+".json")
+}
+
+// loadJSONFromContainer is the shared probe-then-cat helper behind both
+// LoadFromContainer and LoadAlternateFromContainer. Returns
+// (nil, false, nil) when path doesn't exist; surfaces real incus errors
+// otherwise.
+func loadJSONFromContainer(container, path, source string) (*Config, bool, error) {
 	// `test -f` exit 1 means missing. incus.Exec wraps the exit code into
 	// the error string; sniff for "exit 1" so we can treat absent as
 	// "not configured".
-	if _, err := incus.Exec(container, "test", "-f", p); err != nil {
+	if _, err := incus.Exec(container, "test", "-f", path); err != nil {
 		if strings.Contains(err.Error(), "exit 1") {
 			return nil, false, nil
 		}
-		return nil, false, fmt.Errorf("probe %s in %s: %w", p, container, err)
+		return nil, false, fmt.Errorf("probe %s in %s: %w", path, container, err)
 	}
-	b, err := incus.Exec(container, "cat", p)
+	b, err := incus.Exec(container, "cat", path)
 	if err != nil {
-		return nil, false, fmt.Errorf("read %s in %s: %w", p, container, err)
+		return nil, false, fmt.Errorf("read %s in %s: %w", path, container, err)
 	}
-	cfg, err := Parse(b, ConfigPath)
+	cfg, err := Parse(b, source)
 	if err != nil {
 		return nil, true, err
 	}
 	return cfg, true, nil
+}
+
+// ListAlternatesInContainer returns the basenames (without ".json") of
+// /repo/.ahjo/*.json entries inside container, excluding ahjocontainer.json
+// itself (the canonical name is not an "alternate"). Powers the
+// interactive picker. Returns nil with no error when /repo/.ahjo is
+// missing or empty.
+func ListAlternatesInContainer(container string) ([]string, error) {
+	// `find` is used over `ls` so a missing /repo/.ahjo doesn't error;
+	// -maxdepth 1 keeps it from descending. Output one path per line.
+	out, err := incus.Exec(container, "sh", "-c", `find /repo/.ahjo -maxdepth 1 -type f -name '*.json' 2>/dev/null | sort`)
+	if err != nil {
+		// `find` itself exiting non-zero on a missing dir is squelched by
+		// the redirect; any error reaching here is the incus exec layer.
+		if strings.Contains(err.Error(), "exit 1") {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("list /repo/.ahjo in %s: %w", container, err)
+	}
+	var names []string
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		base := filepath.Base(line)
+		base = strings.TrimSuffix(base, ".json")
+		if base == "ahjocontainer" {
+			// Canonical config is not an "alternate".
+			continue
+		}
+		names = append(names, base)
+	}
+	return names, nil
 }
 
 // HasLegacyAhjoconfig reports whether /repo/.ahjoconfig is present in the

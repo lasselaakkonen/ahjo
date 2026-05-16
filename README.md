@@ -70,6 +70,33 @@ Ahjo reads `.ahjo/ahjocontainer.json` from the default branch from remote and us
 }
 ```
 
+##### Picking a container config
+
+When the repo carries no `.ahjo/ahjocontainer.json` — or you want to override the one it ships — pass `--container-config=<value>` to `ahjo repo add` or `ahjo claude`. Resolution order (first match wins):
+
+1. **Explicit `--container-config <value>`** — overrides everything below.
+2. **`.ahjo/ahjocontainer.json` in the repo** if present.
+3. **Interactive picker** on a TTY (offers bare + any `.ahjo/*.json` the repo ships + the bundled stacks).
+4. **Bare** (no toolchain beyond ahjo-base), used as the non-TTY fallback.
+
+`--container-config <value>` accepts:
+
+- A **bundled stack name**: `node`, `python`, `go`, `rust`. Each is a curated `ahjocontainer.json` shipped inside the ahjo binary — view the source under [internal/stacks/](internal/stacks/).
+- A **repo-local basename**, resolved against `.ahjo/<value>.json` in the repo. Lets a repo offer multiple variants (`.ahjo/lite.json`, `.ahjo/ci.json`, …) alongside the canonical one.
+- An **absolute or relative path** to a `.json` file on the host. Resolved against the directory you ran ahjo from. On macOS, paths outside the home directory (e.g. `/tmp/foo.json`) are transparently staged into the Lima VM through the shared dir — you don't need to move the file into `~/`.
+- The literal `bare` to opt out of any container config (same as the picker's bare option).
+
+Examples:
+
+```
+ahjo repo add myacc/some-go-repo --container-config=go
+ahjo claude myacc/some-node-repo@main --container-config=node
+ahjo repo add myacc/myrepo --container-config=ci         # uses .ahjo/ci.json from the repo
+ahjo repo add myacc/myrepo --container-config=/abs/path/cfg.json
+```
+
+Nothing is written to the repo; the chosen config is applied to that repo's base container only. The choice persists in the repo base container until `ahjo repo rm` clears it.
+
 #### 4. Domain concepts
 
 **Ahjo base image** is
@@ -80,8 +107,10 @@ Ahjo reads `.ahjo/ahjocontainer.json` from the default branch from remote and us
   - [common-utils](https://github.com/devcontainers/features/tree/main/src/common-utils) devcontainer Feature (provides `jq`, `curl`, `unzip`, `gnupg`, `ca-certificates`, UID-1000 `ubuntu` user with sudo, en_US locale, and a bunch of other base CLI utilities)
   - [git](https://github.com/devcontainers/features/tree/main/src/git) devcontainer Feature (provides `git`)
   - [github-cli](https://github.com/devcontainers/features/tree/main/src/github-cli) devcontainer Feature (provides `gh`)
-  - `node`, `claude`, plus sshd-as-a-service and the `ahjo-mirror` daemon from [install.sh](internal/ahjoruntime/feature/install.sh)
+  - `claude`, plus sshd-as-a-service and the `ahjo-mirror` daemon from [install.sh](internal/ahjoruntime/feature/install.sh)
   - `rg`, `fd`, `eza`, `httpie`, `make`, `yq`, `ast-grep`, `rtk` from [install.sh](internal/ahjodevtools/feature/install.sh)
+
+Language toolchains (Node, Python, Go, Rust, …) are NOT in the base image. They come from either your repo's `.ahjo/ahjocontainer.json` or `--stack=<name>` at repo-add time (see "Built-in stacks" above).
 
 
 **Repo base container** is

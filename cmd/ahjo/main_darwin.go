@@ -123,6 +123,19 @@ func main() {
 		args = newArgs
 	}
 
+	// --container-config <host-path> staging: Lima reverse-mounts
+	// /Users/<user> into the VM, but not /tmp or other Mac-only paths. So
+	// `ahjo repo add … --container-config /tmp/foo.json` would otherwise
+	// reach the in-VM ahjo as a path the VM can't see. The shim copies
+	// path values into SharedDir (virtiofs-mounted on both sides) and
+	// rewrites the argv. Identifier values (node, ci, bare) pass through.
+	stagedArgs, err := stageContainerConfigPaths(args)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "ahjo:", err)
+		os.Exit(1)
+	}
+	args = stagedArgs
+
 	// Per-repo PAT handling: on macOS we keep PATs in the user's login
 	// Keychain instead of as plaintext on the shared disk. The shim is the
 	// only writer; the in-VM ahjo reads through GH_TOKEN injected on the

@@ -1,0 +1,21 @@
+{
+  // ahjo built-in "python" stack. Loaded when ahjo is invoked with
+  // --stack=python against a repo that has no .ahjo/ahjocontainer.json.
+  //
+  // Python (latest 3.x via the upstream Feature) plus uv and ruff — the
+  // two tools nearly every modern Python project reaches for.
+  //
+  // Caveat for repos that ship a uv.lock: ahjo's lockfile-aware warm
+  // install runs BEFORE postCreateCommand and will hit `uv sync --frozen`
+  // before uv is installed. If your repo carries uv.lock, author a real
+  // .ahjo/ahjocontainer.json that pins uv via a Feature instead of
+  // relying on the stack.
+  "name": "ahjo-stack-python",
+  "features": {
+    "ghcr.io/devcontainers/features/python:1": {
+      "version": "latest",
+      "installTools": true
+    }
+  },
+  "postCreateCommand": "set -e; pip install --user --upgrade uv ruff"
+}

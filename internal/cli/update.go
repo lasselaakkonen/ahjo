@@ -70,7 +70,7 @@ func vmUpdateSteps() []initflow.Step {
 			Note: "applies the curated upstream Features (common-utils, git, github-cli) " +
 				"followed by ahjo's embedded ahjo-default-dev-tools (rg, fd, eza, yq, " +
 				"ast-grep, httpie, make) and ahjo-runtime (sshd, ahjo-claude-prepare, " +
-				"Node + corepack) to a fresh transient container off " + devcontainer.OSBaseAlias + ", " +
+				"claude) to a fresh transient container off " + devcontainer.OSBaseAlias + ", " +
 				"then publishes the result as ahjo-base. The local " + devcontainer.OSBaseAlias + " " +
 				"mirror of " + devcontainer.UpstreamRemote + " is reused — re-pulling it would " +
 				"slow update for no gain.",
