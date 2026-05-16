@@ -116,6 +116,18 @@ func applyGitStatus(container string, bs *top.BranchStatus) {
 		return
 	}
 	parseGitStatus(out, bs)
+	// Stashes don't show in `git status` but count toward "dirty" for the
+	// containers column. Ignore failures here — a missing stash store
+	// shouldn't mask a successful status read.
+	if stashOut, sErr := runCapturing("incus", "exec", container, "--",
+		"git", "-c", "safe.directory=/repo",
+		"-C", "/repo", "stash", "list"); sErr == nil {
+		for _, line := range strings.Split(strings.TrimRight(string(stashOut), "\n"), "\n") {
+			if line != "" {
+				bs.Stashed++
+			}
+		}
+	}
 	bs.GitChecked = true
 }
 
@@ -132,7 +144,7 @@ func applyPRStatus(container, owner, name, branch string, bs *top.BranchStatus) 
 		"--head", branch,
 		"--state", "all",
 		"--limit", "1",
-		"--json", "number,url,state,title,statusCheckRollup")
+		"--json", "number,url,state,title,statusCheckRollup,isDraft")
 	if err != nil {
 		bs.PRErr = err.Error()
 		return
@@ -149,6 +161,7 @@ func applyPRStatus(container, owner, name, branch string, bs *top.BranchStatus) 
 			URL:    r.URL,
 			State:  r.State,
 			Title:  r.Title,
+			Draft:  r.IsDraft,
 		}
 		if strings.EqualFold(r.State, "OPEN") {
 			pr.Checks = summarizeChecks(r.StatusCheckRollup)
@@ -166,6 +179,7 @@ type prRow struct {
 	URL               string       `json:"url"`
 	State             string       `json:"state"`
 	Title             string       `json:"title"`
+	IsDraft           bool         `json:"isDraft"`
 	StatusCheckRollup []checkEntry `json:"statusCheckRollup"`
 }
 

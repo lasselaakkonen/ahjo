@@ -29,10 +29,17 @@ func (r repoItem) FilterValue() string {
 
 // containerItem represents one branch row in the middle column.
 // kind == "new" is the sentinel "+ create container" affordance.
+//
+// status and snap are stamped at build time by containerItemsFor so the
+// row's status icons can be rendered without the delegate needing back-
+// references to the model. status is nil when no fetch has completed
+// yet for this slug; icon renderers treat nil as "pending".
 type containerItem struct {
-	kind  string // "container" | "new"
-	br    registry.Branch
-	state string // "present" | "missing"
+	kind   string // "container" | "new"
+	br     registry.Branch
+	state  string // "running" | "stopped" | "missing"
+	status *BranchStatus
+	snap   Snapshot
 }
 
 func (c containerItem) FilterValue() string {
@@ -55,18 +62,9 @@ func (d compactDelegate) Render(w io.Writer, m list.Model, index int, item list.
 	selected := index == m.Index()
 	focused := d.focused != nil && *d.focused
 
-	label := itemLabel(item)
 	caret := "  "
 	if selected {
 		caret = "▸ "
-	}
-	line := caret + label
-
-	// Hard-truncate to the list's width so a long alias can't wrap into a
-	// second line — that wrap pushes the body past m.height and the
-	// alt-screen frame clips the footer off the bottom.
-	if w := m.Width(); w > 0 {
-		line = ansi.Truncate(line, w, "…")
 	}
 
 	style := lipgloss.NewStyle()
@@ -78,7 +76,28 @@ func (d compactDelegate) Render(w io.Writer, m list.Model, index int, item list.
 	default:
 		style = style.Foreground(lipgloss.Color("252"))
 	}
-	fmt.Fprint(w, style.Render(line))
+
+	// For real container rows we render the status icons pre-styled so
+	// their per-state colors survive — they sit between the caret and the
+	// alias, both of which take the row style.
+	var line string
+	if v, ok := item.(containerItem); ok && v.kind == "container" {
+		icons := renderReplicationIcon(v.snap, v.br.Slug) +
+			renderGitIcon(v.status, v.state) +
+			renderPRIcon(v.status, v.state)
+		line = style.Render(caret) + icons + style.Render(aliasOf(v))
+	} else {
+		line = style.Render(caret + itemLabel(item))
+	}
+
+	// Hard-truncate to the list's width so a long alias can't wrap into a
+	// second line — that wrap pushes the body past m.height and the
+	// alt-screen frame clips the footer off the bottom.
+	if lw := m.Width(); lw > 0 {
+		line = ansi.Truncate(line, lw, "…")
+	}
+
+	fmt.Fprint(w, line)
 }
 
 func itemLabel(item list.Item) string {
@@ -95,17 +114,18 @@ func itemLabel(item list.Item) string {
 		if v.kind == "new" {
 			return "＋ create container"
 		}
-		alias := v.br.Slug
-		if len(v.br.Aliases) > 0 {
-			alias = v.br.Aliases[0]
-		}
-		marker := "·"
-		if v.state == "present" {
-			marker = "●"
-		}
-		return fmt.Sprintf("%s %s", marker, alias)
+		return aliasOf(v)
 	}
 	return ""
+}
+
+// aliasOf returns the display alias for a container row — first listed
+// alias when set, otherwise the slug.
+func aliasOf(v containerItem) string {
+	if len(v.br.Aliases) > 0 {
+		return v.br.Aliases[0]
+	}
+	return v.br.Slug
 }
 
 // repoItemsFrom builds the leftmost column's items from a snapshot, always
@@ -120,19 +140,28 @@ func repoItemsFrom(snap Snapshot) []list.Item {
 }
 
 // containerItemsFor returns the branches of a single repo, with their
-// container-existence state pre-resolved. Always appends the
-// "+ create container" sentinel last.
-func containerItemsFor(snap Snapshot, repoName string) []list.Item {
+// container-existence state pre-resolved. status holds the most recent
+// BranchStatus per slug (nil entries / missing keys render as pending).
+// Always appends the "+ create container" sentinel last.
+func containerItemsFor(snap Snapshot, repoName string, status map[string]BranchStatus) []list.Item {
 	var out []list.Item
 	for _, br := range snap.Branches {
 		if br.Repo != repoName {
 			continue
 		}
 		state := "missing"
-		if snap.Containers[br.Slug] {
-			state = "present"
+		switch {
+		case snap.ContainersRunning[br.Slug]:
+			state = "running"
+		case snap.Containers[br.Slug]:
+			state = "stopped"
 		}
-		out = append(out, containerItem{kind: "container", br: br, state: state})
+		item := containerItem{kind: "container", br: br, state: state, snap: snap}
+		if s, ok := status[br.Slug]; ok {
+			s := s
+			item.status = &s
+		}
+		out = append(out, item)
 	}
 	out = append(out, containerItem{kind: "new"})
 	return out
