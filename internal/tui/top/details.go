@@ -76,64 +76,85 @@ func renderBranchDetail(deps Deps, br registry.Branch, snap Snapshot, status *Br
 	}
 	b.WriteString(detailTitle.Render(alias))
 	b.WriteString("\n\n")
+	// row writes a `key: value` line. The value is taken verbatim so callers
+	// that need state-colored segments (git, pr, mirror) can pass pre-styled
+	// strings; plain rows wrap their value in detailValue at the call site.
 	row := func(k, v string) {
 		b.WriteString(detailLabel.Render(fmt.Sprintf("%-12s", k+":")))
 		b.WriteString(" ")
-		b.WriteString(detailValue.Render(v))
+		b.WriteString(v)
 		b.WriteString("\n")
 	}
-	row("repo", br.Repo)
-	row("branch", br.Branch)
-	row("slug", br.Slug)
-	row("ssh", fmt.Sprintf("127.0.0.1:%d", br.SSHPort))
 
-	state := "missing"
 	if snap.Containers[br.Slug] {
-		state = "present"
+		if snap.ContainersRunning[br.Slug] {
+			row("git", FormatGitStatus(status))
+			row("pr", FormatPRStatus(status))
+		} else {
+			notRunning := iconPending.Render("Instance not running")
+			row("git", notRunning)
+			row("pr", notRunning)
+		}
+	}
+	row("repo", detailValue.Render(br.Repo))
+	row("branch", detailValue.Render(br.Branch))
+	row("slug", detailValue.Render(br.Slug))
+	row("ssh", detailValue.Render(fmt.Sprintf("127.0.0.1:%d", br.SSHPort)))
+
+	containerState := "missing"
+	if snap.Containers[br.Slug] {
+		containerState = "present"
 	}
 	if name, err := deps.ResolveContainerName(&br); err == nil {
-		row("container", fmt.Sprintf("%s (%s)", name, state))
+		row("container", detailValue.Render(fmt.Sprintf("%s (%s)", name, containerState)))
 	} else {
-		row("container", state)
+		row("container", detailValue.Render(containerState))
 	}
 
-	row("exposed", deps.FormatExposed(snap.PortsByBranch[br.Slug]))
-	row("path", "/repo")
+	row("exposed", detailValue.Render(deps.FormatExposed(snap.PortsByBranch[br.Slug])))
+	row("path", detailValue.Render("/repo"))
+	row("created", detailValue.Render(br.CreatedAt.Format("2006-01-02 15:04")))
 	if snap.MirrorSlug == br.Slug {
-		state := "active"
-		if !snap.MirrorAlive {
-			state = "inactive"
-		}
-		if target := mirrorTargetFor(snap, br.Repo); target != "" {
-			row("mirror", fmt.Sprintf("%s → %s", state, target))
-		} else {
-			row("mirror", state)
-		}
+		row("mirror", formatMirror(snap, br.Repo))
 	}
 	if br.IsDefault {
-		row("default", "yes")
-	}
-	row("created", br.CreatedAt.Format("2006-01-02 15:04"))
-
-	if snap.Containers[br.Slug] {
-		row("git", FormatGitStatus(status))
-		row("pr", FormatPRStatus(status))
+		row("default", detailValue.Render("yes"))
 	}
 	return b.String()
 }
 
-// FormatGitStatus turns a cached BranchStatus into the one-line value shown
-// next to the "git" label. Returns "…" while the first fetch is outstanding
-// so the user gets immediate feedback that work is happening.
+// formatMirror colors the leading "active →" (or "inactive →") in the same
+// blue/red palette the containers column uses for the ← arrow, then renders
+// the target path in the normal value color. When no target is configured
+// (legacy snapshot data), the state stands alone with no arrow.
+func formatMirror(snap Snapshot, repoName string) string {
+	state := "active"
+	style := replicationAlive
+	if !snap.MirrorAlive {
+		state = "inactive"
+		style = replicationDown
+	}
+	target := mirrorTargetFor(snap, repoName)
+	if target == "" {
+		return style.Render(state)
+	}
+	return style.Render(state+" →") + " " + detailValue.Render(target)
+}
+
+// FormatGitStatus turns a cached BranchStatus into the styled one-line value
+// shown next to the "git" label. Output mirrors the icon + color the
+// containers-column glyph uses for the same state (●/○/!/·) so the eye can
+// link the two views. Returns a dim "· …" while the first fetch is
+// outstanding so the user gets immediate feedback that work is happening.
 func FormatGitStatus(s *BranchStatus) string {
 	if s == nil {
-		return "…"
+		return iconPending.Render("· …")
 	}
 	if s.GitErr != "" {
-		return errLine(s.GitErr)
+		return gitError.Render("! " + errLine(s.GitErr))
 	}
 	if !s.GitChecked {
-		return "…"
+		return iconPending.Render("· …")
 	}
 	parts := []string{}
 	if s.Dirty {
@@ -147,47 +168,35 @@ func FormatGitStatus(s *BranchStatus) string {
 	if s.Behind > 0 {
 		parts = append(parts, fmt.Sprintf("behind %d", s.Behind))
 	}
-	return strings.Join(parts, " · ")
+	text := strings.Join(parts, " · ")
+	if s.Dirty || s.Stashed > 0 || s.Ahead > 0 {
+		return gitDirty.Render("○ " + text)
+	}
+	return gitClean.Render("● " + text)
 }
 
+// FormatPRStatus is the PR-side counterpart to FormatGitStatus: glyph and
+// label share a color (open=green, checking=amber, failed/closed=red,
+// merged=purple, draft=grey-blue) so the row visually echoes the
+// containers-column icon. "no PR" renders as a dim dot rather than blank
+// so the row reads as "checked, nothing here" instead of "still loading".
 func FormatPRStatus(s *BranchStatus) string {
 	if s == nil {
-		return "…"
+		return iconPending.Render("· …")
 	}
 	if s.PRErr != "" {
-		return errLine(s.PRErr)
+		return gitError.Render("! " + errLine(s.PRErr))
 	}
 	if !s.PRChecked {
-		return "…"
+		return iconPending.Render("· …")
 	}
 	if s.PR == nil {
-		return "none"
+		return iconMissing.Render("· none")
 	}
-	label, style := prLabelStyle(s.PR)
-	colored := style.Render("● " + label)
-	return fmt.Sprintf("%s · #%d %s", colored, s.PR.Number, s.PR.URL)
-}
-
-// prLabelStyle picks the label text and color for a PR. For open PRs the
-// CI rollup (s.Checks) becomes a comma-suffix; for merged/closed the
-// state alone wins. Unknown states fall back to plain "open" styling so
-// the renderer never produces an uncolored dot.
-func prLabelStyle(pr *PRStatus) (string, lipgloss.Style) {
-	switch strings.ToUpper(pr.State) {
-	case "MERGED":
-		return "merged", prStateMerged
-	case "CLOSED":
-		return "closed", prStateClosed
-	}
-	switch pr.Checks {
-	case "failed":
-		return "open, failed", prStateFailed
-	case "checking":
-		return "open, checking", prStateChecking
-	case "passed":
-		return "open, passed", prStateOpen
-	}
-	return "open", prStateOpen
+	glyph, label, style := prGlyphLabelStyle(s.PR)
+	head := style.Render(glyph + " " + label)
+	tail := detailValue.Render(fmt.Sprintf(" · #%d %s", s.PR.Number, s.PR.URL))
+	return head + tail
 }
 
 // errLine renders an error message for the one-row detail field. Truncates
