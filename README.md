@@ -34,14 +34,15 @@ ahjo doctor
 This relies on automagicism in `ahjo claude`, which assumes you are using GitHub and is triggered when `ahjo repo add <repo>` and `ahjo create <repo> <branch>` have not yet been run:
 
 ```
-# e.g. ahjo claude lasselaakkonen/ahjo@readme-quick-start
-ahjo claude <account>/<repo>@<branch>
+# e.g. ahjo claude lasselaakkonen/ahjo@readme-quick-start --container-config node
+# Or replace 'node' with other built-in base toolsets: 'python', 'go', 'rust'
+# Later you will define your own, but you can use those built-in ones now.
+ahjo claude <account>/<repo>@<branch> --container-config node
 ```
 
 - **Creates base container for repo** without any specific tech stack support -- one time step, takes a few minutes. ⚠️  Copies `CLAUDE.md`, `settings.json`, `.claude.json`, `agents/`, `commands/`, `skills/`, `rules/` from `~/.claude` to the container, which moves them over the isolation boundary.
-
 - **Asks for you to create a fine grained PAT for GitHub** -- the containers for that repo will have access ONLY to that repo
-
+- **Asks you which tech stack you want** -- these can be configured extensively, but the prompt let's you set a basic set of tooling in to the container
 - **Creates a feature container** -- takes only seconds, won't have your project tech stack or tooling in it
 
 ##### In a container through TUI
@@ -52,52 +53,9 @@ ahjo
 
 1. Add repo
 2. Add container
-3. Press `a` to open Claude Code
+3. Press `a` to open your agent, only one available for now is Claude Code
 
-#### 3. Configure repo specific tech stack
-
-Ahjo reads `.ahjo/ahjocontainer.json` from the default branch from remote and uses it to configure your repo base container.
-
-`ahjocontainer.json` schema is a subset of devcontainers schema, for a Go project like ahjo, you might define it as:
-
-```
-{
-  "name": "ahjo",
-  "features": {
-    "ghcr.io/devcontainers/features/go:1": {}
-  },
-  "postCreateCommand": "make hooks"
-}
-```
-
-##### Picking a container config
-
-When the repo carries no `.ahjo/ahjocontainer.json` — or you want to override the one it ships — pass `--container-config=<value>` to `ahjo repo add` or `ahjo claude`. Resolution order (first match wins):
-
-1. **Explicit `--container-config <value>`** — overrides everything below.
-2. **`.ahjo/ahjocontainer.json` in the repo** if present.
-3. **Interactive picker** on a TTY (offers bare + any `.ahjo/*.json` the repo ships + the bundled stacks).
-4. **Bare** (no toolchain beyond ahjo-base), used as the non-TTY fallback.
-
-`--container-config <value>` accepts:
-
-- A **bundled stack name**: `node`, `python`, `go`, `rust`. Each is a curated `ahjocontainer.json` shipped inside the ahjo binary — view the source under [internal/stacks/](internal/stacks/).
-- A **repo-local basename**, resolved against `.ahjo/<value>.json` in the repo. Lets a repo offer multiple variants (`.ahjo/lite.json`, `.ahjo/ci.json`, …) alongside the canonical one.
-- An **absolute or relative path** to a `.json` file on the host. Resolved against the directory you ran ahjo from. On macOS, paths outside the home directory (e.g. `/tmp/foo.json`) are transparently staged into the Lima VM through the shared dir — you don't need to move the file into `~/`.
-- The literal `bare` to opt out of any container config (same as the picker's bare option).
-
-Examples:
-
-```
-ahjo repo add myacc/some-go-repo --container-config=go
-ahjo claude myacc/some-node-repo@main --container-config=node
-ahjo repo add myacc/myrepo --container-config=ci         # uses .ahjo/ci.json from the repo
-ahjo repo add myacc/myrepo --container-config=/abs/path/cfg.json
-```
-
-Nothing is written to the repo; the chosen config is applied to that repo's base container only. The choice persists in the repo base container until `ahjo repo rm` clears it.
-
-#### 4. Domain concepts
+#### 3. Domain concepts
 
 **Ahjo base image** is
 
@@ -128,11 +86,11 @@ Language toolchains (Node, Python, Go, Rust, …) are NOT in the base image. The
 - Created by `ahjo create <repo> <branch>`
 - Configured already in the **repo base container**, since a new **feature container** is just a copy of the **repo base container**
 
-## Workflow examples
+## Use cases
 
 Examples use the CLI for easier presentation of the steps, but TUI might be easier to use in practice, open TUI with plain `ahjo` command.
 
-### Work on two PRs in a repo
+### Work on two PRs simultaneously in a single repo
 
 Add repo once, which creates the repo base container:
 
@@ -195,6 +153,51 @@ ahjo mirror off
 
 ⚠️ For now ahjo DOES NOT do any clean up in `/Users/lasse/github/myrepo`, you need to do it yourself, perhaps with just `git checkout .`.
 
+### View multiple versions of same app running in multiple containers
+
+Create feature containers for each branch:
+
+```
+ahjo create myacc/myrepo feat-1
+ahjo create myacc/myrepo feat-2
+```
+
+Then either `ahjo claude ...` and ask Claude to start the web app or `ahjo shell ...` and do it yourself.
+
+Now you will have same port exposed inside both containers.
+
+Then expose ports from the containers to your host:
+
+```
+ahjo expose myacc/myrepo@feat-1
+ahjo expose myacc/myrepo@feat-2
+```
+
+### From a monorepo, run two different tech stacks in two different containers
+
+Tech stacks are per **repository base container** in ahjo and automatic aliases are based on only account name + repo name, so you need to set custom aliases with `--as` and define which container config to use with `--container-config`.
+
+`--container-config backendcontainer` expects to find `.ahjo/backendcontainer.json` in the repo.
+
+```
+ahjo repo add myacc/monorepoapp --as monorepoapp-backend --container-config backendcontainer
+ahjo repo add myacc/monorepoapp --as monorepoapp-frontend --container-config frontendcontainer
+```
+
+Now you have two containers running with different tech stacks, eg:
+- `monorepo-backend@main` using your backend tech stack
+- `monorepo-frontend@main` using your backend tech stack
+
+```
+# Create feature containers
+ahjo create monorepoapp-backend new-feat-x-apis
+ahjo create monorepoapp-frontend new-feat-x-ui
+
+# Launch claude sessions in both
+ahjo claude monorepoapp-backend@new-feat-x-apis
+ahjo claude monorepoapp-frontend@new-feat-x-ui
+```
+
 ### Refresh dependencies in repo base container
 
 ⚠️ For now ahjo DOES NOT manage updating the repo base container for you.
@@ -211,7 +214,68 @@ Inside the container do whatever you need, eg `pnpm i`.
 
 Now every feature container created for the repo will have the updated node modules ready in them immediately after creation.
 
+### You do not want feature branches to branch off the default branch
 
+By default this will branch the feature container from `origin/<default branch>`, so typically `origin/main`:
+
+```
+ahjo repo add myacc/myrepo
+ahjo create myacc/myrepo feat-1
+# -> container with `feat-1` branch branched off `origin/main`
+```
+
+To have all feature branches in `myrepo` branch off `develop` branch:
+
+```
+ahjo repo add myacc/myrepo --default-base develop
+ahjo create myacc/myrepo feat-1
+# -> container with `feat-1` branch branched off `origin/develop`
+```
+
+## Container tech stack setup
+
+#### `.ahjo/ahjocontainer.json`
+
+Primarily ahjo tries to read `.ahjo/ahjocontainer.json` from the default branch from remote and uses it to configure your repo base container.
+
+`ahjocontainer.json` schema is a subset of devcontainers schema, for a Go project like ahjo, you might define it as:
+
+```
+{
+  "name": "ahjo",
+  "features": {
+    "ghcr.io/devcontainers/features/go:1": {}
+  },
+  "postCreateCommand": "make hooks"
+}
+```
+
+#### How ahjo picks the container configPicking a container config
+
+When the repo carries no `.ahjo/ahjocontainer.json` — or you want to override the one it ships — pass `--container-config=<value>` to `ahjo repo add` or `ahjo claude`. Resolution order (first match wins):
+
+1. **Explicit `--container-config <value>`** — overrides everything below.
+2. **`.ahjo/ahjocontainer.json` in the repo** if present.
+3. **Interactive picker** on a TTY (offers bare + any `.ahjo/*.json` the repo ships + the bundled stacks).
+4. **Bare** (no toolchain beyond ahjo-base), used as the non-TTY fallback.
+
+`--container-config <value>` accepts:
+
+- A **bundled stack name**: `node`, `python`, `go`, `rust`. Each is a curated `ahjocontainer.json` shipped inside the ahjo binary — view the source under [internal/stacks/](internal/stacks/).
+- A **repo-local basename**, resolved against `.ahjo/<value>.json` in the repo. Lets a repo offer multiple variants (`.ahjo/lite.json`, `.ahjo/ci.json`, …) alongside the canonical one.
+- An **absolute or relative path** to a `.json` file on the host. Resolved against the directory you ran ahjo from. On macOS, paths outside the home directory (e.g. `/tmp/foo.json`) are transparently staged into the Lima VM through the shared dir — you don't need to move the file into `~/`.
+- The literal `bare` to opt out of any container config (same as the picker's bare option).
+
+Examples:
+
+```
+ahjo repo add myacc/some-go-repo --container-config=go
+ahjo claude myacc/some-node-repo@main --container-config=node
+ahjo repo add myacc/myrepo --container-config=ci         # uses .ahjo/ci.json from the repo
+ahjo repo add myacc/myrepo --container-config=/abs/path/cfg.json
+```
+
+Nothing is written to the repo; the chosen config is applied to that repo's base container only. The choice persists in the repo base container until `ahjo repo rm` clears it.
 
 ## Git / GitHub auth
 
@@ -267,8 +331,6 @@ On macOS the same command does both the host setup (Homebrew check → `brew ins
 On Linux there's no VM — `ahjo init` runs the bring-up directly. After `usermod -aG incus-admin` it re-execs itself under `sg incus-admin` so the new group activates without a re-shell, then continues with the `ahjo-base` build and `claude setup-token` in the same pass.
 
 `claude setup-token` requires the `claude` CLI on PATH inside the VM. ahjo will not auto-install it — if it's missing the step fails with install instructions. The resulting `sk-ant-oat01-…` token is saved to `~/.ahjo/.env` (mode 0600) and loaded automatically on every ahjo invocation, so containers receive it via the `forward_env` mechanism (applied with `incus exec --env`) without any shellrc edits.
-
-## 
 
 ## Use case example
 
@@ -435,34 +497,6 @@ runs via `bash -c`), an array (`["echo", "hi"]`, runs argv directly), or an
 object map (`{"a": "...", "b": "..."}`, runs each entry sequentially in
 sorted key order). A failed step aborts the chain so half-set-up containers
 surface a clear error.
-
-### Migrating from `.ahjoconfig`
-
-The retired TOML schema maps to the ahjocontainer.json fields above:
-
-| Old `.ahjoconfig` | New `.ahjo/ahjocontainer.json` |
-| --- | --- |
-| `run = ["..."]` | `"postCreateCommand": "..."` (or array form) |
-| `forward_env = [...]` | `"customizations": { "ahjo": { "forward_env": [...] } }` |
-| `auto_expose.enabled` / `auto_expose.min_port` | `"customizations": { "ahjo": { "auto_expose": { ... } } }` |
-
-### Migrating from `.devcontainer/devcontainer.json`
-
-If your repo still has the per-repo config under
-`.devcontainer/devcontainer.json` (or the flat `.devcontainer.json`),
-move it to `.ahjo/ahjocontainer.json` — the schema is identical, only the
-path moved.
-
-| Old path | New path |
-| --- | --- |
-| `.devcontainer/devcontainer.json` | `.ahjo/ahjocontainer.json` |
-| `.devcontainer.json` | `.ahjo/ahjocontainer.json` |
-
-Per ahjo's no-runtime-migration convention, ahjo does not parse legacy
-`.ahjoconfig` or `.devcontainer/devcontainer.json` files. `ahjo repo add`
-fails fast when either is present, with a pointer to this section.
-Existing branch containers continue to work but silently lose their
-per-repo overrides until you migrate.
 
 ## Rebuilding after a change
 
