@@ -3,8 +3,5 @@
   "version": "1.0.0",
   "name": "ahjo default dev tools",
   "description": "Bundles small CLI utilities ahjo's preferred workflows assume (rg, fd, eza, yq, ast-grep, httpie, make) plus rtk (Claude-side token-saving proxy). Tools with their own curated upstream Feature (common-utils, git, github-cli) are not duplicated here. Applied at base-bake time after the upstream Features and after ahjo-runtime, so rtk's `rtk init -g --auto-patch` finds the freshly-installed claude binary.",
-  "dependsOn": {
-    "ahjo-runtime": {}
-  },
   "options": {}
 }
