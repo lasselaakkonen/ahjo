@@ -657,6 +657,14 @@ func (m *model) execWorktreeRm() tea.Cmd {
 		return nil
 	}
 	alias := w.Aliases[0]
+	// Removing a default-branch container also drops the repo row + PAT and
+	// strands sibling branches (the COW source is gone). There's no way back
+	// short of a full `ahjo repo add`, so refuse here and point the user at
+	// the repo-column `r` binding instead of bothering with a force prompt.
+	if w.IsDefault {
+		m.flash = "can't remove default-branch container in isolation; focus the repo column and press 'r' to remove the repo"
+		return nil
+	}
 	m.flash = "removing " + alias + "…"
 	return execAhjo("removed", alias, "rm", alias)
 }
