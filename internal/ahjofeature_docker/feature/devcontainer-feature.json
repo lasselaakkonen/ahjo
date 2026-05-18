@@ -4,10 +4,9 @@
   "name": "Docker (ahjo built-in)",
   "description": "Installs Docker Engine + compose plugin into an ahjo container. Configured for security.nesting=true + mknod/setxattr intercepts; no mounts or privileged required.",
   "options": {
-    "version":        { "default": "latest" },
-    "channel":        { "default": "stable" },
-    "storage_driver": { "default": "" },
-    "daemon_args":    { "default": "" }
+    "version":     { "default": "latest" },
+    "channel":     { "default": "stable" },
+    "daemon_args": { "default": "" }
   },
   "containerEnv": {
     "DOCKER_BUILDKIT": "1"

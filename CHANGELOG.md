@@ -1,5 +1,37 @@
 # Changelog
 
+## Unreleased — `ahjo/docker` defaults off the legacy graph driver
+
+### Fixed
+
+- **`ahjo/docker` no longer forces `storage-driver: overlay2` into
+  `/etc/docker/daemon.json`.** Previous behavior wrote that key
+  unconditionally (with a btrfs/ext4 rootfs heuristic). On dockerd >=26 —
+  the version `get.docker.com` installs — the key routes off the working
+  containerd snapshotter (xattr whiteouts, covered by the profile's
+  `security.syscalls.intercept.setxattr=true`) onto the legacy graph
+  driver (mknod-c-0-0 whiteouts, not reliably covered by the mknod
+  intercept's mode/dev-bit matching). The failure was masked when dockerd
+  was first started by the apt postinst (no daemon.json yet → defaulted to
+  the snapshotter → worked); it surfaced after any later
+  `systemctl restart docker` — typically a dev-script restart or a Claude
+  agent fixing socket permissions — at which point pulls of Debian-based
+  images like `postgres:17` started failing with
+  `failed to register layer: failed to mknod(... S_IFCHR, 0): operation not permitted`.
+- The Feature now leaves daemon.json absent by default; dockerd's own
+  default is what ahjo wants.
+
+### Changed
+
+- **`storage_driver` option removed from `ahjo/docker`.** Callers needing
+  the legacy graph driver can opt in via `daemon_args`
+  (`{"storage-driver":"overlay2","features":{"containerd-snapshotter":false}}`
+  — both keys are required together; setting `storage-driver` alone in
+  snapshotter mode makes dockerd refuse to start).
+- When `daemon_args` is set, the Feature now restarts dockerd after
+  writing daemon.json so the merged config takes effect (the apt postinst
+  has already started dockerd by that point).
+
 ## Unreleased — `--container-config` and built-in stacks
 
 ### Added

@@ -6,7 +6,7 @@ ahjo honors the upstream devcontainer Features spec — `features:` keys in `.ah
 // .ahjo/ahjocontainer.json
 {
   "features": {
-    "ahjo/docker": { "version": "latest", "storage_driver": "overlay2" }
+    "ahjo/docker": { "version": "latest" }
   }
 }
 ```
@@ -62,7 +62,7 @@ That's the whole change — addressing, trust, dispatch, env envelope, and Incus
 
 | Name | What it installs | Options |
 | --- | --- | --- |
-| `ahjo/docker` | Docker Engine via `get.docker.com` + compose plugin; configures `/etc/docker/daemon.json` for the storage driver the rootfs supports; starts the daemon via systemd | `version` (default `latest`), `channel` (`stable`), `storage_driver` (auto-pick if empty), `daemon_args` (JSON fragment merged into daemon.json) |
+| `ahjo/docker` | Docker Engine via `get.docker.com` + compose plugin. Leaves `/etc/docker/daemon.json` at dockerd's default (>=26: containerd snapshotter with overlayfs snapshotter, xattr whiteouts — covered by the profile's `setxattr` intercept). | `version` (default `latest`), `channel` (`stable`), `daemon_args` (JSON fragment merged into daemon.json; if set, dockerd is restarted to pick it up) |
 
 ## How this relates to `ahjo-runtime` / `ahjo-default-dev-tools`
 

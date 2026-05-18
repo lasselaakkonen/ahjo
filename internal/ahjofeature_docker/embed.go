@@ -3,11 +3,14 @@
 // fetch. The upstream docker-in-docker / docker-outside-of-docker
 // Features declare `mounts` and `privileged: true`, both of which
 // ahjo's runner rejects because the runtime profile
-// (security.nesting=true + mknod/setxattr intercepts, btrfs rootfs,
+// (security.nesting=true + setxattr/mknod intercepts, btrfs rootfs,
 // systemd PID 1 — see CONTAINER-ISOLATION.md) already provides the
-// kernel surface Docker needs. This Feature is the ahjo-shaped
-// equivalent and ships in the same release as the profile it depends
-// on.
+// kernel surface Docker needs. Specifically, dockerd >=26 defaults to
+// the containerd snapshotter, whose layer whiteouts are xattrs handled
+// by the profile's setxattr intercept; the mknod intercept is retained
+// for defense in depth but is not what makes pulls work. This Feature
+// is the ahjo-shaped equivalent and ships in the same release as the
+// profile it depends on.
 package ahjofeature_docker
 
 import (
