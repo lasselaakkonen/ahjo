@@ -18,6 +18,13 @@ import (
 // FeatureConsent. Bumping this is a deliberate trust-policy change.
 const CuratedTrustedGlob = "ghcr.io/devcontainers/features/*"
 
+// BuiltinTrustedGlob is the source pattern for built-in Features
+// shipped embedded in the ahjo binary (the `ahjo/<name>` addressing
+// form). Auto-trusted because a Feature shipped with the binary the
+// user installed has the same trust posture as ahjo itself — there's
+// nothing new to consent to. Never enters per-repo FeatureConsent.
+const BuiltinTrustedGlob = "ahjo/*"
+
 // SourceToGlob normalizes a Feature reference into the glob pattern
 // users consent to. The rule: drop tag/digest, drop the leaf segment,
 // append "/*". Examples:
@@ -45,6 +52,12 @@ func SourceToGlob(source string) string {
 // curated upstream namespace and therefore needs no per-repo consent.
 func IsCuratedTrusted(source string) bool {
 	return MatchesGlob(CuratedTrustedGlob, source)
+}
+
+// IsBuiltinTrusted reports whether source resolves to an ahjo built-in
+// Feature and therefore needs no per-repo consent.
+func IsBuiltinTrusted(source string) bool {
+	return MatchesGlob(BuiltinTrustedGlob, source)
 }
 
 // MatchesGlob reports whether source is matched by glob using path.Match
@@ -83,6 +96,8 @@ func PartitionFeatureSources(sources []string, consented []string) (auto, known,
 		seen[glob] = struct{}{}
 		switch {
 		case glob == CuratedTrustedGlob || IsCuratedTrusted(s):
+			auto = append(auto, glob)
+		case glob == BuiltinTrustedGlob || IsBuiltinTrusted(s):
 			auto = append(auto, glob)
 		case MatchesAnyGlob(consented, s):
 			known = append(known, glob)

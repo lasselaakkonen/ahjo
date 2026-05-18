@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/lasselaakkonen/ahjo/internal/ahjocontainer"
+	"github.com/lasselaakkonen/ahjo/internal/ahjofeatures"
 	"github.com/lasselaakkonen/ahjo/internal/devcontainer"
 )
 
@@ -94,6 +95,39 @@ func applyRepoFeatures(
 
 	fetch := func(ctx context.Context, ref devcontainer.FeatureRef, opts map[string]any) (devcontainer.FetchedFeature, error) {
 		dir := filepath.Join(tmpRoot, devcontainer.SafeRefDir(ref.String()))
+		// Built-in Features (`ahjo/<name>`) materialize from the binary's
+		// embed.FS instead of OCI. The Resolve loop sets Registry="ahjo"
+		// for these via its parseRef helper. After materialization the
+		// shape is identical to the OCI path — ReadMetadata still gates
+		// `mounts`/`privileged`, ApplyOptionDefaults + NormalizeOptions
+		// still run, and downstream Apply doesn't know the difference.
+		if ref.Registry == "ahjo" {
+			materialize, ok := ahjofeatures.Lookup(ref.Repository)
+			if !ok {
+				return devcontainer.FetchedFeature{}, fmt.Errorf("unknown built-in feature %q (known: %s)", ref.String(), ahjofeatures.List())
+			}
+			if err := materialize(dir); err != nil {
+				return devcontainer.FetchedFeature{}, fmt.Errorf("materialize %s: %w", ref.String(), err)
+			}
+			meta, err := devcontainer.ReadMetadata(dir, ref.String())
+			if err != nil {
+				return devcontainer.FetchedFeature{}, err
+			}
+			mergedOpts := devcontainer.ApplyOptionDefaults(opts, meta)
+			stringOpts, err := devcontainer.NormalizeOptions(mergedOpts)
+			if err != nil {
+				return devcontainer.FetchedFeature{}, fmt.Errorf("feature %s: %w", ref, err)
+			}
+			return devcontainer.FetchedFeature{
+				Ref: ref,
+				Feature: devcontainer.Feature{
+					ID:      ref.String(),
+					Dir:     dir,
+					Options: stringOpts,
+				},
+				Metadata: meta,
+			}, nil
+		}
 		if err := fetcher.Fetch(ctx, ref, dir); err != nil {
 			return devcontainer.FetchedFeature{}, err
 		}

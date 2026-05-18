@@ -87,6 +87,31 @@ func TestPartitionFeatureSources(t *testing.T) {
 	}
 }
 
+func TestIsBuiltinTrusted(t *testing.T) {
+	cases := map[string]bool{
+		"ahjo/docker":       true,
+		"ahjo/postgres":     true,
+		"ahjo/sub/x":        false, // * doesn't cross /
+		"ghcr.io/foo/bar:1": false,
+	}
+	for src, want := range cases {
+		if got := IsBuiltinTrusted(src); got != want {
+			t.Errorf("IsBuiltinTrusted(%q) = %v; want %v", src, got, want)
+		}
+	}
+}
+
+func TestPartitionFeatureSources_BuiltinAuto(t *testing.T) {
+	sources := []string{"ahjo/docker"}
+	auto, known, prompt := PartitionFeatureSources(sources, nil)
+	if len(auto) != 1 || auto[0] != "ahjo/*" {
+		t.Fatalf("auto = %v; want [ahjo/*]", auto)
+	}
+	if len(known) != 0 || len(prompt) != 0 {
+		t.Fatalf("known/prompt unexpectedly populated: %v / %v", known, prompt)
+	}
+}
+
 func TestPartitionFeatureSources_Dedupe(t *testing.T) {
 	// Two refs from the same publisher should produce one bucket entry.
 	sources := []string{
