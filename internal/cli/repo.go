@@ -1014,7 +1014,15 @@ func runRepoRm(alias string, force bool) error {
 	if defaultBranchKey != "" {
 		br := reg.FindBranch(repo.Name, defaultBranchKey)
 		if br != nil {
-			return removeBranchLocked(reg, br, true)
+			if err := removeBranchLocked(reg, br, true); err != nil {
+				return err
+			}
+			// removeBranchLocked already dropped the PAT via its wasDefault
+			// path, but call again defensively — `repo rm` is the repo-level
+			// owner of PAT lifecycle and shouldn't depend on the branch-level
+			// helper getting it right. dropRepoToken is idempotent.
+			dropRepoToken(repo.Name)
+			return nil
 		}
 	}
 
@@ -1093,6 +1101,9 @@ func sweepUnmanagedContainers(reg *registry.Registry, alias string, force bool) 
 	// Host keys for the base slug are deterministic from the alias. Branch
 	// host-keys live under their own (unknown-to-us) slugs, so they stay.
 	_ = os.RemoveAll(paths.SlugHostKeysDir(slug))
+	// A crashed `repo add` may have written the PAT before the registry row;
+	// drop it here so the orphan sweep leaves no plaintext token behind.
+	dropRepoToken(slug)
 	return nil
 }
 
