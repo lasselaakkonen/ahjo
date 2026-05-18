@@ -1011,8 +1011,9 @@ func runRepoRm(alias string, force bool) error {
 		}
 	}
 
+	slug := repo.Name
 	if defaultBranchKey != "" {
-		br := reg.FindBranch(repo.Name, defaultBranchKey)
+		br := reg.FindBranch(slug, defaultBranchKey)
 		if br != nil {
 			if err := removeBranchLocked(reg, br, true); err != nil {
 				return err
@@ -1021,8 +1022,8 @@ func runRepoRm(alias string, force bool) error {
 			// path, but call again defensively — `repo rm` is the repo-level
 			// owner of PAT lifecycle and shouldn't depend on the branch-level
 			// helper getting it right. dropRepoToken is idempotent.
-			dropRepoToken(repo.Name)
-			return nil
+			dropRepoToken(slug)
+			return sweepRepoOrphans(reg, slug, force)
 		}
 	}
 
@@ -1038,8 +1039,8 @@ func runRepoRm(alias string, force bool) error {
 	// Drop the per-repo PAT (Linux: the .env on disk; Mac: a marker file the
 	// shim sweeps post-relay against Keychain). Best-effort: a missing file
 	// is fine; permission failures log but don't block the rest of cleanup.
-	dropRepoToken(repo.Name)
-	reg.RemoveRepo(repo.Name)
+	dropRepoToken(slug)
+	reg.RemoveRepo(slug)
 	if err := reg.Save(); err != nil {
 		return err
 	}
@@ -1047,7 +1048,67 @@ func runRepoRm(alias string, force bool) error {
 		return err
 	}
 	fmt.Printf("removed repo %s\n", repo.Aliases[0])
+	return sweepRepoOrphans(reg, slug, force)
+}
+
+// sweepRepoOrphans deletes any `ahjo-<slug>*` container not registered to a
+// branch in reg. Runs after a successful `repo rm` to mop up suffix-past-orphan
+// leftovers from prior crashed `repo add` attempts (e.g. `ahjo-foo-2`,
+// `ahjo-foo-3` when only `ahjo-foo` was registered — see
+// internal/registry's slug allocator).
+//
+// With --force, deletes silently. Without --force, lists and prompts.
+// Best-effort: a per-container delete failure logs a warn but doesn't abort
+// the rest of the sweep.
+func sweepRepoOrphans(reg *registry.Registry, slug string, force bool) error {
+	orphans, err := findOrphanContainers(reg, slug)
+	if err != nil {
+		fmt.Fprintf(cobraOutErr(), "warn: scan for orphan containers: %v\n", err)
+		return nil
+	}
+	if len(orphans) == 0 {
+		return nil
+	}
+	if !force {
+		fmt.Printf("found unmanaged container(s) matching ahjo-%s prefix (likely left by a past crashed `repo add`):\n", slug)
+		for _, name := range orphans {
+			fmt.Printf("  %s\n", name)
+		}
+		if !promptYesNo("Delete them?") {
+			return nil
+		}
+	}
+	for _, name := range orphans {
+		fmt.Printf("→ incus delete --force %s\n", name)
+		if err := incus.ContainerDeleteForce(name); err != nil {
+			fmt.Fprintf(cobraOutErr(), "warn: incus delete %s: %v\n", name, err)
+		}
+	}
 	return nil
+}
+
+// findOrphanContainers returns container names matching `ahjo-<slug>` or
+// `ahjo-<slug>-…` that aren't registered to any branch in reg. Used by both
+// the `repo rm` tail sweep (after the registered repo is gone) and
+// `sweepUnmanagedContainers` (no repo row exists at all).
+func findOrphanContainers(reg *registry.Registry, slug string) ([]string, error) {
+	candidates, err := incus.ContainersWithPrefix("ahjo-" + slug)
+	if err != nil {
+		return nil, err
+	}
+	registered := map[string]bool{}
+	for _, b := range reg.Branches {
+		if b.IncusName != "" {
+			registered[b.IncusName] = true
+		}
+	}
+	var orphans []string
+	for _, name := range candidates {
+		if !registered[name] {
+			orphans = append(orphans, name)
+		}
+	}
+	return orphans, nil
 }
 
 // sweepUnmanagedContainers handles the case where `repo rm <alias>` finds no
@@ -1060,25 +1121,9 @@ func sweepUnmanagedContainers(reg *registry.Registry, alias string, force bool) 
 	if slug == "" {
 		return fmt.Errorf("no repo with alias %q", alias)
 	}
-	prefix := "ahjo-" + slug
-	candidates, err := incus.ContainersWithPrefix(prefix)
+	orphans, err := findOrphanContainers(reg, slug)
 	if err != nil {
 		return err
-	}
-	// Defensive: drop any name that's still owned by a registered branch.
-	// FindRepoByAlias missed our alias, but a different repo's branch could
-	// in principle share the prefix — never delete something we know is live.
-	registered := map[string]bool{}
-	for _, b := range reg.Branches {
-		if b.IncusName != "" {
-			registered[b.IncusName] = true
-		}
-	}
-	var orphans []string
-	for _, name := range candidates {
-		if !registered[name] {
-			orphans = append(orphans, name)
-		}
 	}
 	if len(orphans) == 0 {
 		return fmt.Errorf("no repo with alias %q", alias)
