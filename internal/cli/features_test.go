@@ -79,6 +79,57 @@ func TestApplyRepoFeatures_CuratedAutoTrustNoPrompt(t *testing.T) {
 	}
 }
 
+func TestApplyRepoFeatures_BuiltinAutoTrustNoPrompt(t *testing.T) {
+	// `ahjo/<name>` resolves to a binary-embedded Feature; trust posture
+	// is auto under BuiltinTrustedGlob, dispatch is in-process (no OCI
+	// fetch). We don't have a real container here, so Apply will fail at
+	// `incus exec`; what matters is that:
+	//   - the auto-trusted line names ahjo/*,
+	//   - no prompt is shown,
+	//   - the error path is past Resolve (i.e. the built-in materialized
+	//     successfully) — anything else would mean dispatch is wrong.
+	cfg := &ahjocontainer.Config{
+		Features: map[string]any{
+			"ahjo/docker": map[string]any{},
+		},
+	}
+	in := strings.NewReader("")
+	out := &bytes.Buffer{}
+	_, err := applyRepoFeatures(context.Background(), "x", cfg, nil, in, out)
+	if err == nil {
+		t.Fatal("expected Apply to fail without a real container")
+	}
+	if strings.Contains(out.String(), "Trust Features matching") {
+		t.Fatalf("ahjo/* must not prompt; output:\n%s", out.String())
+	}
+	if !strings.Contains(out.String(), "auto-trusted") || !strings.Contains(out.String(), "ahjo/*") {
+		t.Fatalf("expected ahjo/* in auto-trusted line; output:\n%s", out.String())
+	}
+	if !strings.Contains(out.String(), "ahjo/docker") {
+		t.Fatalf("expected feature line for ahjo/docker; output:\n%s", out.String())
+	}
+}
+
+func TestApplyRepoFeatures_UnknownBuiltin(t *testing.T) {
+	cfg := &ahjocontainer.Config{
+		Features: map[string]any{
+			"ahjo/dockerd": map[string]any{},
+		},
+	}
+	in := strings.NewReader("")
+	out := &bytes.Buffer{}
+	_, err := applyRepoFeatures(context.Background(), "x", cfg, nil, in, out)
+	if err == nil {
+		t.Fatal("expected unknown built-in to error")
+	}
+	if !strings.Contains(err.Error(), "unknown built-in feature") {
+		t.Fatalf("error should mention unknown built-in; got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "docker") {
+		t.Fatalf("error should list known built-ins; got: %v", err)
+	}
+}
+
 func TestApplyRepoFeatures_PriorConsentSkipsPrompt(t *testing.T) {
 	cfg := &ahjocontainer.Config{
 		Features: map[string]any{
