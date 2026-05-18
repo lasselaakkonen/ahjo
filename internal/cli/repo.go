@@ -101,7 +101,7 @@ into branch containers via btrfs reflinks, eliminating the cold-install tax.
 URL handling: pass the URL you actually want to use. SSH remotes
 (git@github.com:…) keep using the host's ssh-agent (forwarded into the
 container). HTTPS remotes (https://github.com/…) authenticate via the
-per-repo PAT prompted for after clone — ` + "`gh auth setup-git`" + ` wires git's
+per-repo PAT prompted for before clone — ` + "`gh auth setup-git`" + ` wires git's
 HTTPS credential helper to read it. ahjo does not auto-rewrite SSH ↔ HTTPS.
 
 ` + containerConfigHelpBlock,
@@ -281,28 +281,20 @@ func repoAddSetup(slug, primary string, aliases []string, url, defaultBase strin
 		return fmt.Errorf("seed git identity: %w", err)
 	}
 
-	// /repo is at the container root, where uid 1000 can't `mkdir`. Create
-	// it as ubuntu:ubuntu first so `git clone` runs unprivileged.
-	if err := incus.ExecAs(containerName, 0, nil, "/", "install", "-d", "-m", "0755", "-o", "ubuntu", "-g", "ubuntu", paths.RepoMountPath); err != nil {
-		return fmt.Errorf("create %s: %w", paths.RepoMountPath, err)
-	}
-	fmt.Printf("→ git clone %s %s (in container as ubuntu)\n", url, paths.RepoMountPath)
-	if err := incus.ExecAs(containerName, 1000, nil, "/", "git", "clone", url, paths.RepoMountPath); err != nil {
-		return wrapCloneErr(err)
-	}
-
 	// Per-repo GitHub token prompt. Non-fatal: skipped on --yes / non-TTY /
 	// already-set / empty paste. See `ahjo repo set-token` to add later.
+	// Runs before `git clone` so HTTPS remotes authenticate via the credential
+	// helper rather than landing on git's interactive `Username:` prompt.
 	if err := promptRepoGHToken(slug, primary, yes); err != nil {
 		return err
 	}
-	// If a token landed (either from this prompt or a prior repo-set-token
-	// run that failed mid-flow), promote it onto the container as
-	// environment.GH_TOKEN/GITHUB_TOKEN and configure git's HTTPS credential
-	// helper. Both are no-ops when the token is absent — users who skipped
-	// the prompt keep the existing ssh-agent/public-clone paths exactly.
-	// `incus copy` carries environment.* and the in-$HOME .gitconfig into
-	// every branch container, so this runs once.
+	// If a token landed (either from this prompt, the Mac shim's pre-relay
+	// Keychain read, or a prior repo-set-token run), promote it onto the
+	// container as environment.GH_TOKEN/GITHUB_TOKEN and configure git's
+	// HTTPS credential helper. Both are no-ops when the token is absent —
+	// users who skipped the prompt keep the existing ssh-agent/public-clone
+	// paths exactly. `incus copy` carries environment.* and the in-$HOME
+	// .gitconfig into every branch container, so this runs once.
 	if tok, found, err := repoToken(slug); err != nil {
 		return err
 	} else if found && tok != "" {
@@ -317,6 +309,19 @@ func repoAddSetup(slug, primary string, aliases []string, url, defaultBase strin
 		); err != nil {
 			return fmt.Errorf("gh auth setup-git: %w", err)
 		}
+	}
+
+	// /repo is at the container root, where uid 1000 can't `mkdir`. Create
+	// it as ubuntu:ubuntu first so `git clone` runs unprivileged.
+	if err := incus.ExecAs(containerName, 0, nil, "/", "install", "-d", "-m", "0755", "-o", "ubuntu", "-g", "ubuntu", paths.RepoMountPath); err != nil {
+		return fmt.Errorf("create %s: %w", paths.RepoMountPath, err)
+	}
+	fmt.Printf("→ git clone %s %s (in container as ubuntu)\n", url, paths.RepoMountPath)
+	// GIT_TERMINAL_PROMPT=0 turns a missing-credentials misconfig into a
+	// fast clone failure instead of a hung `Username:` prompt the user
+	// can't always see (e.g., when ahjo is invoked from a TUI surface).
+	if err := incus.ExecAs(containerName, 1000, map[string]string{"GIT_TERMINAL_PROMPT": "0"}, "/", "git", "clone", url, paths.RepoMountPath); err != nil {
+		return wrapCloneErr(err)
 	}
 
 	if defaultBase == "" {
