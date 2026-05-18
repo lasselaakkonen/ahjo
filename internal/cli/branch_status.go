@@ -135,23 +135,43 @@ func applyGitStatus(container string, bs *top.BranchStatus) {
 // result (or error) into bs. gh runs in-container so the host doesn't
 // need its own gh+auth setup. --state all surfaces merged/closed PRs;
 // --limit 1 because gh sorts newest-first and we only want the most
-// recent for this head. statusCheckRollup is summarized down to a single
-// "passed/checking/failed" tag so the RPC payload stays small.
+// recent for this head.
+//
+// Two-phase fetch — why:
+//
+// The full --json field set includes statusCheckRollup, which traverses
+// into commit→checkRuns under the hood. Fine-grained PATs cannot reach
+// the Checks API at all on private repos
+// (https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens
+// — "PAT v2 limitations": "fine-grained tokens currently lack support
+// for … interacting with the Checks API"). GitHub disabled the Checks
+// scope on fine-grained PATs during the beta and hasn't re-enabled it;
+// the open tracking thread is
+// https://github.com/orgs/community/discussions/129512, and the broader
+// GraphQL coverage roadmap entry is
+// https://github.com/github/roadmap/issues/622. There's no REST escape
+// hatch: both protocols resolve to the same gated backend, and the
+// legacy "commit statuses" API is a different signal that GitHub
+// Actions doesn't write to.
+//
+// So we try the combined query first — classic PATs and any PAT on a
+// public repo get the rollup in one round-trip — and only fall back to
+// a stripped query when GitHub explicitly rejects the Checks read. The
+// fallback drops the checks tag entirely; icons.go renders pr.Checks
+// == "" as the plain "◉ open" badge. We deliberately do NOT swallow
+// other errors (network, missing pull_requests permission, repo not
+// found) — those still surface as bs.PRErr so the user sees what's
+// actually wrong instead of a silently-empty PR row.
 func applyPRStatus(container, owner, name, branch string, bs *top.BranchStatus) {
-	out, err := runCapturing("incus", "exec", container, "--",
-		"gh", "pr", "list",
-		"-R", owner+"/"+name,
-		"--head", branch,
-		"--state", "all",
-		"--limit", "1",
-		"--json", "number,url,state,title,statusCheckRollup,isDraft")
+	rows, err := fetchPRRows(container, owner, name, branch, true)
+	if err != nil && isChecksAPIDenied(err) {
+		// Fine-grained-PAT-on-private-repo path: GitHub rejected the
+		// Checks read but the rest of the query is fine. Retry without
+		// statusCheckRollup and continue with no checks tag.
+		rows, err = fetchPRRows(container, owner, name, branch, false)
+	}
 	if err != nil {
 		bs.PRErr = err.Error()
-		return
-	}
-	var rows []prRow
-	if jerr := json.Unmarshal(out, &rows); jerr != nil {
-		bs.PRErr = fmt.Errorf("parse gh pr list: %w", jerr).Error()
 		return
 	}
 	if len(rows) > 0 {
@@ -171,9 +191,51 @@ func applyPRStatus(container, owner, name, branch string, bs *top.BranchStatus) 
 	bs.PRChecked = true
 }
 
-// prRow shadows top.PRStatus for unmarshalling the gh response so we can
-// pull statusCheckRollup off the wire without bloating top.PRStatus with
-// fields it never reads.
+// fetchPRRows runs `gh pr list` once and decodes the JSON. When
+// withRollup is false the call omits statusCheckRollup from the --json
+// field set, which is the form fine-grained PATs can serve on private
+// repos. Decoded rows always carry an empty StatusCheckRollup in that
+// mode, which is the right input for summarizeChecks (returns "").
+func fetchPRRows(container, owner, name, branch string, withRollup bool) ([]prRow, error) {
+	fields := "number,url,state,title,isDraft"
+	if withRollup {
+		fields += ",statusCheckRollup"
+	}
+	out, err := runCapturing("incus", "exec", container, "--",
+		"gh", "pr", "list",
+		"-R", owner+"/"+name,
+		"--head", branch,
+		"--state", "all",
+		"--limit", "1",
+		"--json", fields)
+	if err != nil {
+		return nil, err
+	}
+	var rows []prRow
+	if jerr := json.Unmarshal(out, &rows); jerr != nil {
+		return nil, fmt.Errorf("parse gh pr list: %w", jerr)
+	}
+	return rows, nil
+}
+
+// isChecksAPIDenied detects the specific GraphQL permission error
+// GitHub returns when a fine-grained PAT (with all the other right
+// perms) tries to traverse into commit.statusCheckRollup. gh prefixes
+// these with "GraphQL: " on stderr; runCapturing pulls the last stderr
+// line into err.Error(). The substring match is narrow enough that
+// other failures (network, missing repo, missing pull_requests
+// permission) keep their original error path.
+func isChecksAPIDenied(err error) bool {
+	if err == nil {
+		return false
+	}
+	return strings.Contains(err.Error(), "Resource not accessible by personal access token")
+}
+
+// prRow shadows top.PRStatus for unmarshalling the gh response. When
+// applyPRStatus falls back to the rollup-less query, StatusCheckRollup
+// stays empty and summarizeChecks returns "" — exactly the no-checks-tag
+// shape the renderer in internal/tui/top/icons.go expects.
 type prRow struct {
 	Number            int          `json:"number"`
 	URL               string       `json:"url"`
