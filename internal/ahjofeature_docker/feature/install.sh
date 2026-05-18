@@ -1,22 +1,27 @@
 #!/bin/bash
 # ahjo/docker built-in Feature: installs Docker Engine + the compose plugin
 # into an ahjo container. Runs as root with the spec-defined Feature env
-# vars (_REMOTE_USER, VERSION, CHANNEL, STORAGE_DRIVER, DAEMON_ARGS).
+# vars (_REMOTE_USER, VERSION, CHANNEL, DAEMON_ARGS).
 #
 # This Feature is shipped embedded in the ahjo binary; the upstream
 # docker-in-docker / docker-outside-of-docker Features declare `mounts`
 # and `privileged: true`, both of which ahjo rejects because the runtime
-# profile (security.nesting=true + mknod/setxattr syscall intercepts,
+# profile (security.nesting=true + setxattr/mknod syscall intercepts,
 # btrfs rootfs, systemd PID 1) already provides the kernel surface Docker
 # needs. The install here just lays down get.docker.com's binaries and
-# configures the daemon for that profile.
+# leaves dockerd at its default config — which on dockerd >=26 is the
+# containerd snapshotter, whose layer whiteouts use xattrs (handled by
+# security.syscalls.intercept.setxattr=true). Writing
+# `{"storage-driver":"overlay2"}` here would route off the snapshotter
+# onto the legacy graph driver, whose mknod-c-0-0 whiteouts are not
+# reliably covered by the intercept and which in snapshotter mode
+# refuses to start at all.
 set -euo pipefail
 
 : "${_REMOTE_USER:?ahjo/docker: _REMOTE_USER must be set by the runner}"
 
 VERSION="${VERSION:-latest}"
 CHANNEL="${CHANNEL:-stable}"
-STORAGE_DRIVER="${STORAGE_DRIVER:-}"
 DAEMON_ARGS="${DAEMON_ARGS:-}"
 
 if command -v docker >/dev/null 2>&1; then
@@ -30,7 +35,12 @@ DEBIAN_FRONTEND=noninteractive apt-get install -y -qq ca-certificates curl jq
 # get.docker.com honors $VERSION and $CHANNEL via env. The script also
 # installs `docker-buildx-plugin` and `docker-compose-plugin` from
 # Docker's apt repo, which is what every workflow that says "docker
-# compose up" actually needs.
+# compose up" actually needs. Its apt postinst starts dockerd; at that
+# point /etc/docker/daemon.json does not exist, so dockerd uses its
+# default — which on >=26 is the containerd snapshotter (overlayfs
+# snapshotter, xattr whiteouts). That's the working path for ahjo, so
+# we deliberately leave daemon.json absent unless the caller overrides
+# via DAEMON_ARGS.
 #
 # `VERSION=latest` is the natural string for a user typing in
 # devcontainer.json, but the upstream script literally greps apt-cache
@@ -50,44 +60,26 @@ if getent group docker >/dev/null; then
     usermod -aG docker "$_REMOTE_USER"
 fi
 
-# Pick a storage driver. security.nesting=true gives `overlay2` on
-# btrfs/ext4; everything else falls back to fuse-overlayfs which
-# works inside a userns without needing host-side mount() privileges
-# the kernel doesn't grant us.
-rootfs="$(findmnt -no FSTYPE / || true)"
-driver="$STORAGE_DRIVER"
-if [ -z "$driver" ]; then
-    case "$rootfs" in
-        btrfs|ext4)
-            driver="overlay2"
-            ;;
-        *)
-            driver="fuse-overlayfs"
-            ;;
-    esac
-fi
-
-mkdir -p /etc/docker
-daemon_json="/etc/docker/daemon.json"
-existing="{}"
-if [ -s "$daemon_json" ]; then
-    existing="$(cat "$daemon_json")"
-fi
-
-overrides="$(jq -n --arg sd "$driver" '{"storage-driver": $sd}')"
+# Honor DAEMON_ARGS as the escape hatch for per-repo dockerd config
+# overrides (log-level, registry-mirrors, insecure-registries, …, or
+# for the rare caller who genuinely needs the legacy graph driver:
+# `{"storage-driver":"overlay2","features":{"containerd-snapshotter":false}}`
+# — both keys are required together; setting storage-driver alone in
+# snapshotter mode makes dockerd refuse to start).
+#
+# Apt's postinst already started dockerd with no daemon.json; we have
+# to restart so the merged config takes effect.
 if [ -n "$DAEMON_ARGS" ]; then
-    # DAEMON_ARGS is expected to be a JSON fragment users can paste; merge
-    # it on top so per-repo overrides win without us inventing a schema.
-    overrides="$(jq -s '.[0] * .[1]' <(printf '%s' "$overrides") <(printf '%s' "$DAEMON_ARGS"))"
+    mkdir -p /etc/docker
+    daemon_json="/etc/docker/daemon.json"
+    existing='{}'
+    if [ -s "$daemon_json" ]; then
+        existing="$(cat "$daemon_json")"
+    fi
+    printf '%s' "$existing" | jq --argjson add "$DAEMON_ARGS" '. * $add' > "$daemon_json.tmp"
+    mv "$daemon_json.tmp" "$daemon_json"
+    systemctl restart docker
 fi
-printf '%s' "$existing" | jq --argjson add "$overrides" '. * $add' > "$daemon_json.tmp"
-mv "$daemon_json.tmp" "$daemon_json"
-
-# systemd is PID 1 (see CONTAINER-ISOLATION.md). The installer enables
-# the unit but doesn't always start it under apt's chrooted maintainer
-# scripts; bring it up explicitly so the smoke test below has a daemon
-# to talk to.
-systemctl enable --now docker
 
 # Smoke test as the remote user. `newgrp docker` is needed because the
 # usermod above only takes effect on next login; sudo -i gives us a fresh

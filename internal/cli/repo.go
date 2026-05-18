@@ -699,10 +699,18 @@ func attachPasteShim(containerName string) error {
 }
 
 // securityConfigFlags are the per-container Incus config keys ahjo applies:
-// nesting (for docker-in-container), mknod/setxattr syscall intercepts (so
-// pnpm/npm postinstall scripts that touch xattrs work), unprivileged-port
-// binding (so a dev server on :80 works without sudo), and disabling the
-// guest-API mount (which exposes the host's incus socket inside).
+// nesting (for docker-in-container), setxattr/mknod syscall intercepts,
+// unprivileged-port binding (so a dev server on :80 works without sudo),
+// and disabling the guest-API mount (which exposes the host's incus
+// socket inside).
+//
+// The setxattr intercept is load-bearing for docker-in-container: dockerd
+// >=26 defaults to the containerd snapshotter, whose layer whiteouts are
+// xattrs (trusted.overlay.opaque / trusted.overlay.whiteout). pnpm/npm
+// postinstall scripts that touch xattrs lean on the same intercept. The
+// mknod intercept is kept as defense in depth — the snapshotter path
+// doesn't need it, and the legacy graph driver path that does isn't
+// reliably covered by the intercept's mode/dev-bit matching anyway.
 //
 // `incus copy` carries these keys to branch containers, so the default
 // container's wireBranchContainer call covers the whole repo.
