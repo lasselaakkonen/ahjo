@@ -368,16 +368,39 @@ func repoAddSetup(slug, primary string, aliases []string, url, defaultBase strin
 		if found {
 			dcConf = cfg
 		} else {
-			chosen, err := promptContainerConfig(containerName, os.Stdin, cobraOut())
+			// Lockfile-driven suggestion: a lockfile in /repo is the
+			// clearest hint about which bundled stack the user wants.
+			// Prompt before falling through to the generic picker so
+			// the obvious case is one keypress, and so `bare` (picked
+			// after declining all matches) genuinely means bare —
+			// runWarmInstall is gated on dcConf below.
+			matches, err := detectLockfiles(containerName)
 			if err != nil {
 				return err
 			}
-			if chosen != "" && chosen != bareConfigName {
-				picked, _, err := resolveContainerConfig(containerName, chosen)
+			autoYes := yes || !isTerminal(os.Stdin)
+			detected, err := promptLockfileStack(matches, os.Stdin, cobraOut(), autoYes)
+			if err != nil {
+				return err
+			}
+			if detected != "" {
+				picked, _, err := resolveContainerConfig(containerName, detected)
 				if err != nil {
 					return err
 				}
 				dcConf = picked
+			} else {
+				chosen, err := promptContainerConfig(containerName, os.Stdin, cobraOut())
+				if err != nil {
+					return err
+				}
+				if chosen != "" && chosen != bareConfigName {
+					picked, _, err := resolveContainerConfig(containerName, chosen)
+					if err != nil {
+						return err
+					}
+					dcConf = picked
+				}
 			}
 		}
 	}
@@ -436,7 +459,13 @@ func repoAddSetup(slug, primary string, aliases []string, url, defaultBase strin
 		return err
 	}
 
-	if err := runWarmInstall(containerName, hostEnv); err != nil {
+	if dcConf == nil {
+		// `bare` (either explicit --container-config bare, or chosen
+		// from the picker after declining every lockfile suggestion):
+		// no stack means no installer. Matches the existing "no
+		// lockfile detected" line for parity in the output.
+		fmt.Println("→ bare config; skipping warm install")
+	} else if err := runWarmInstall(containerName, hostEnv); err != nil {
 		fmt.Fprintf(cobraOutErr(), "warn: warm install: %v\n", err)
 	}
 
@@ -716,23 +745,21 @@ func detectContainerDefaultBranch(containerName string) (string, error) {
 // `incus copy` with btrfs/zfs reflinks) inherit a hot dependency cache.
 // hostEnv is forwarded into each installer (NPM_TOKEN etc.).
 func runWarmInstall(containerName string, hostEnv map[string]string) error {
-	type installer struct {
-		lockfile string
-		cmd      []string
-	}
-	candidates := []installer{
-		{"pnpm-lock.yaml", []string{"pnpm", "install", "--frozen-lockfile"}},
-		{"package-lock.json", []string{"npm", "ci"}},
-		{"bun.lockb", []string{"bun", "install", "--frozen-lockfile"}},
-		{"uv.lock", []string{"uv", "sync", "--frozen"}},
-		{"Cargo.lock", []string{"cargo", "fetch"}},
-	}
 	any := false
-	for _, c := range candidates {
+	for _, c := range lockfileTable {
 		if _, err := incus.Exec(containerName, "test", "-f", paths.RepoMountPath+"/"+c.lockfile); err != nil {
 			continue
 		}
 		any = true
+		// Pre-check the installer binary inside the container. The
+		// chosen stack may not provide every runtime the lockfile
+		// table covers (polyglot repo, custom in-repo config), so a
+		// missing binary becomes a one-line skip rather than a loud
+		// `exec: cargo: not found`-style failure.
+		if _, err := incus.Exec(containerName, "command", "-v", c.cmd[0]); err != nil {
+			fmt.Printf("→ %s not found in container; skipping %s\n", c.cmd[0], strings.Join(c.cmd, " "))
+			continue
+		}
 		fmt.Printf("→ %s (lockfile %s detected)\n", strings.Join(c.cmd, " "), c.lockfile)
 		if err := incus.ExecAs(containerName, 1000, hostEnv, paths.RepoMountPath, c.cmd...); err != nil {
 			return fmt.Errorf("%s: %w", strings.Join(c.cmd, " "), err)
