@@ -100,6 +100,23 @@ func optionToString(key string, v any) (string, error) {
 	}
 }
 
+// parseRef canonicalizes a top-level / dependsOn reference into a
+// FeatureRef. OCI refs go through ParseFeatureRef; the `ahjo/<name>`
+// built-in form bypasses parse (its first segment is not a registry
+// host and would fail ParseFeatureRef's `.`/`:`/localhost check) and
+// produces a sentinel ref with Registry="ahjo" + empty Reference. The
+// fetch closure in cli/features.go dispatches on Registry=="ahjo".
+func parseRef(raw string) (FeatureRef, error) {
+	if strings.HasPrefix(raw, "ahjo/") {
+		name := strings.TrimPrefix(raw, "ahjo/")
+		if name == "" || strings.Contains(name, "/") {
+			return FeatureRef{}, fmt.Errorf("built-in feature reference %q must be `ahjo/<name>` with no further path segments", raw)
+		}
+		return FeatureRef{Registry: "ahjo", Repository: name, Reference: ""}, nil
+	}
+	return ParseFeatureRef(raw)
+}
+
 // stripRefVersion returns the registry+repository part of an OCI ref,
 // dropping the `:tag` or `@digest` suffix. Used for installsAfter
 // matching, which the spec defines without version pins.
@@ -150,7 +167,7 @@ func Resolve(ctx context.Context, features map[string]any, fetch FetchFunc) ([]F
 	for len(queue) > 0 {
 		item := queue[0]
 		queue = queue[1:]
-		ref, err := ParseFeatureRef(item.raw)
+		ref, err := parseRef(item.raw)
 		if err != nil {
 			return nil, fmt.Errorf("feature %q: %w", item.raw, err)
 		}
@@ -207,7 +224,7 @@ func Resolve(ctx context.Context, features map[string]any, fetch FetchFunc) ([]F
 	// canonicalize via ParseFeatureRef before lookup.
 	for k, n := range nodes {
 		for depRefRaw := range n.fetched.Metadata.DependsOn {
-			depRef, err := ParseFeatureRef(depRefRaw)
+			depRef, err := parseRef(depRefRaw)
 			if err != nil {
 				return nil, fmt.Errorf("feature %s dependsOn %q: %w", k, depRefRaw, err)
 			}

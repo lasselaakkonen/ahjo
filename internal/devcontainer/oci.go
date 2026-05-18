@@ -50,8 +50,15 @@ type FeatureRef struct {
 	Reference  string // tag or sha256:<hex>
 }
 
-// String renders ref back into the canonical addressing form.
+// String renders ref back into the canonical addressing form. An empty
+// Reference omits the `:` separator entirely — used for the `ahjo/*`
+// sentinel built-in-Feature refs, which aren't OCI-versioned. OCI refs
+// always have a Reference (ParseFeatureRef defaults missing tags to
+// "latest"), so this branch is unreachable for them.
 func (r FeatureRef) String() string {
+	if r.Reference == "" {
+		return r.Registry + "/" + r.Repository
+	}
 	if strings.HasPrefix(r.Reference, "sha256:") {
 		return r.Registry + "/" + r.Repository + "@" + r.Reference
 	}
