@@ -33,10 +33,12 @@ import (
 //
 // Order matters: detectStacks probes rows in table order, and
 // promptStackDetections walks matches in the same order so the prompt
-// sequence is stable. pnpm-first beats package-lock so a repo carrying
-// both lockfiles defaults to the bundled `node` stack's corepack-pnpm
-// postCreate. Within a row, probes are any-match (Docker fires on any
-// of Dockerfile / compose.y*ml).
+// sequence is stable. The node group is ordered pnpm > yarn > npm so a
+// repo carrying multiple JS lockfiles is prompted in modernity order
+// (declining the first still surfaces the rest). The python group is
+// ordered uv > poetry > pipenv > requirements.txt for the same reason.
+// Within a row, probes are any-match (Docker fires on any of
+// Dockerfile / compose.y*ml).
 //
 // `bun.lockb` intentionally absent: no bundled stack ships bun, so
 // detecting it would suggest nothing and warm-installing it would
@@ -51,8 +53,28 @@ type detectEntry struct {
 
 var detectTable = []detectEntry{
 	{probes: []string{"pnpm-lock.yaml"}, name: "node", stack: "node", cmd: []string{"pnpm", "install", "--frozen-lockfile"}},
+	// yarn.lock: APT-installed yarn from the node Feature
+	// (installYarnUsingApt:true) is the classic v1 line, so the lock
+	// guard is `--frozen-lockfile` (yarn 1.x). Berry's `--immutable`
+	// would not parse against APT's binary.
+	{probes: []string{"yarn.lock"}, name: "node", stack: "node", cmd: []string{"yarn", "install", "--frozen-lockfile"}},
 	{probes: []string{"package-lock.json"}, name: "node", stack: "node", cmd: []string{"npm", "ci"}},
 	{probes: []string{"uv.lock"}, name: "python", stack: "python", cmd: []string{"uv", "sync", "--frozen"}},
+	// poetry.lock: pipx run ephemerally fetches poetry into ~/.local/pipx,
+	// then forwards remaining argv to `poetry install`. Cached on disk so
+	// subsequent invocations from the user's shell hit the same install.
+	// Lives ahead of Pipfile/requirements so a repo carrying multiple
+	// python manifests defaults to the highest-fidelity manager.
+	{probes: []string{"poetry.lock"}, name: "python", stack: "python", cmd: []string{"pipx", "run", "poetry", "install", "--no-root", "--no-interaction"}},
+	// Pipfile.lock: pipenv ships in the Python Feature's default
+	// installTools set, so no extra Feature options needed — the binary
+	// is on PATH after the Feature install phase.
+	{probes: []string{"Pipfile.lock"}, name: "python", stack: "python", cmd: []string{"pipenv", "install", "--deploy"}},
+	// requirements.txt: the long tail of Python projects. --user keeps
+	// the install in ~/.local for the ubuntu account, matching the
+	// stack's postCreateCommand convention. Runs from /repo so the
+	// relative path resolves.
+	{probes: []string{"requirements.txt"}, name: "python", stack: "python", cmd: []string{"pip", "install", "--user", "-r", "requirements.txt"}},
 	{probes: []string{"Cargo.lock"}, name: "rust", stack: "rust", cmd: []string{"cargo", "fetch"}},
 	// go.sum (not go.mod): a module-only repo without dependencies ships
 	// go.mod and `go mod download` would be a no-op. go.sum signals

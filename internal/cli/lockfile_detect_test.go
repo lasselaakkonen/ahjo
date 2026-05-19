@@ -61,8 +61,12 @@ func TestDetectTable_Pairings(t *testing.T) {
 	}
 	wanted := map[string]want{
 		"pnpm-lock.yaml":      {stack: "node", bin: "pnpm"},
+		"yarn.lock":           {stack: "node", bin: "yarn"},
 		"package-lock.json":   {stack: "node", bin: "npm"},
 		"uv.lock":             {stack: "python", bin: "uv"},
+		"poetry.lock":         {stack: "python", bin: "pipx"},
+		"Pipfile.lock":        {stack: "python", bin: "pipenv"},
+		"requirements.txt":    {stack: "python", bin: "pip"},
 		"Cargo.lock":          {stack: "rust", bin: "cargo"},
 		"go.sum":              {stack: "go", bin: "go"},
 		"Dockerfile":          {features: []string{"ahjo/docker"}},
