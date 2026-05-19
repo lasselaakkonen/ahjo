@@ -93,6 +93,17 @@ var detectTable = []detectEntry{
 	// unlike python/uv, the warm-install command is guaranteed to find
 	// its binary.
 	{probes: []string{"go.sum"}, name: "go", stack: "go", cmd: []string{"go", "mod", "download"}},
+	// .pre-commit-config.yaml: applied as the ahjo/pre-commit Feature
+	// directly. The Feature stages its own python+pipx surface and runs
+	// `pre-commit install-hooks` during Feature install, so the warm-up
+	// is the Feature install itself — no warm-install cmd on the row.
+	// install-hooks (not install) is deliberate: it warms the hook
+	// cache without writing to .git/hooks.
+	{
+		probes:   []string{".pre-commit-config.yaml"},
+		name:     "pre-commit",
+		features: map[string]interface{}{"ahjo/pre-commit": map[string]interface{}{}},
+	},
 	// Docker: any of Dockerfile / compose.y*ml triggers one prompt.
 	// Applied as the ahjo/docker Feature directly rather than a bundled
 	// stack — Docker isn't a language toolchain, so it composes with
