@@ -355,43 +355,53 @@ func repoAddSetup(slug, primary string, aliases []string, url, defaultBase strin
 	//   4. Bare (non-TTY fallback).
 	// Docker-flavored fields are rejected by the parser itself, so by
 	// the time we have a *Config it's already valid for ahjo.
-	var dcConf *ahjocontainer.Config
+	// dcConfs is a slice so detection can apply multiple stacks to a
+	// monorepo (node + go + docker etc.). The single-config paths
+	// (committed file / --container-config) wrap into a 1-element
+	// slice; the apply-in-series block below treats both shapes
+	// uniformly.
+	var dcConfs []*ahjocontainer.Config
 	if containerConfig != "" {
 		cfg, _, err := resolveContainerConfig(containerName, containerConfig)
 		if err != nil {
 			return err
 		}
-		dcConf = cfg
+		if cfg != nil {
+			dcConfs = []*ahjocontainer.Config{cfg}
+		}
 	} else {
 		cfg, found, err := ahjocontainer.LoadFromContainer(containerName)
 		if err != nil {
 			return err
 		}
 		if found {
-			dcConf = cfg
+			dcConfs = []*ahjocontainer.Config{cfg}
 		} else {
-			// Lockfile-driven suggestion: a lockfile in /repo is the
-			// clearest hint about which bundled stack the user wants.
-			// Prompt before falling through to the generic picker so
-			// the obvious case is one keypress, and so `bare` (picked
-			// after declining all matches) genuinely means bare —
-			// runWarmInstall is gated on dcConf below.
-			matches, err := detectLockfiles(containerName)
+			// Detection-driven suggestion: a lockfile, Dockerfile, or
+			// compose manifest in /repo is the clearest hint about
+			// which bundled stack(s) and Features the user wants.
+			// Prompt per match before falling through to the generic
+			// picker so the obvious case is one keypress per row, and
+			// so `bare` (picked after declining everything) genuinely
+			// means bare — runWarmInstall is gated on dcConfs below.
+			matches, err := detectStacks(containerName)
 			if err != nil {
 				return err
 			}
 			autoYes := yes || !isTerminal(os.Stdin)
-			detected, err := promptLockfileStack(matches, os.Stdin, cobraOut(), autoYes)
+			accepted, err := promptStackDetections(matches, os.Stdin, cobraOut(), autoYes)
 			if err != nil {
 				return err
 			}
-			if detected != "" {
-				picked, _, err := resolveContainerConfig(containerName, detected)
+			for _, m := range accepted {
+				picked, err := resolveDetectMatch(m)
 				if err != nil {
 					return err
 				}
-				dcConf = picked
-			} else {
+				fmt.Printf("→ applying %s\n", picked.Source)
+				dcConfs = append(dcConfs, picked)
+			}
+			if len(dcConfs) == 0 {
 				chosen, err := promptContainerConfig(containerName, os.Stdin, cobraOut())
 				if err != nil {
 					return err
@@ -401,26 +411,34 @@ func repoAddSetup(slug, primary string, aliases []string, url, defaultBase strin
 					if err != nil {
 						return err
 					}
-					dcConf = picked
+					if picked != nil {
+						dcConfs = []*ahjocontainer.Config{picked}
+					}
 				}
 			}
 		}
 	}
-	if msg := remoteUserWarning(dcConf); msg != "" {
-		fmt.Fprintln(cobraOutErr(), msg)
+	for _, c := range dcConfs {
+		if msg := remoteUserWarning(c); msg != "" {
+			fmt.Fprintln(cobraOutErr(), msg)
+		}
 	}
 
 	// Apply containerEnv via Incus's `environment.<KEY>` config keys so
 	// every subsequent `incus exec` (including warm-install, lifecycle
 	// hooks, and the user's shell) sees the values. Already-running
 	// services aren't restarted; the spec doesn't promise that.
-	if err := dcConf.ApplyContainerEnv(func(k, v string) error {
-		return incus.ConfigSet(containerName, k, v)
-	}); err != nil {
-		return err
+	// Per-config in pick order: when two configs set the same key, the
+	// later write wins via Incus's last-write-wins config semantics.
+	for _, c := range dcConfs {
+		if err := c.ApplyContainerEnv(func(k, v string) error {
+			return incus.ConfigSet(containerName, k, v)
+		}); err != nil {
+			return err
+		}
 	}
 
-	if dcConf != nil && dcConf.Customizations.Ahjo.NestedIncus {
+	if anyNestedIncus(dcConfs) {
 		if err := wireLoopDevices(containerName); err != nil {
 			return fmt.Errorf("wire loop devices: %w", err)
 		}
@@ -429,41 +447,44 @@ func repoAddSetup(slug, primary string, aliases []string, url, defaultBase strin
 	}
 
 	// Resolve the host-env keys to forward into warm-install and lifecycle
-	// hooks: global config.ForwardEnv ∪ customizations.ahjo.forward_env.
+	// hooks: global config.ForwardEnv ∪ union of each config's
+	// customizations.ahjo.forward_env.
 	envKeys := append([]string(nil), cfg.ForwardEnv...)
-	if dcConf != nil {
-		envKeys = append(envKeys, dcConf.Customizations.Ahjo.ForwardEnv...)
+	for _, c := range dcConfs {
+		envKeys = append(envKeys, c.Customizations.Ahjo.ForwardEnv...)
 	}
 	hostEnv := resolveHostEnv(envKeys)
 	// Merge containerEnv into the per-exec env too — covers both stale
 	// containers and the case where Incus's environment.* propagation
-	// races a freshly-issued exec.
-	if dcConf != nil {
-		for k, v := range dcConf.ContainerEnv {
-			if _, set := hostEnv[k]; !set {
-				if hostEnv == nil {
-					hostEnv = map[string]string{}
-				}
-				hostEnv[k] = v
+	// races a freshly-issued exec. Later configs override earlier ones,
+	// matching the ApplyContainerEnv pass above.
+	for _, c := range dcConfs {
+		for k, v := range c.ContainerEnv {
+			if hostEnv == nil {
+				hostEnv = map[string]string{}
 			}
+			hostEnv[k] = v
 		}
 	}
 
 	// Apply user-declared devcontainer Features (Phase 2b). Runs
 	// before warm-install so a Feature that installs a runtime (Node,
 	// Bun, …) is available to the lockfile-detected installer that
-	// follows.
+	// follows. When multiple configs are stacked we synthesize a single
+	// config with their Features unioned (last-wins on key collision)
+	// so the existing single-config resolver runs one trust-prompt /
+	// fetch / resolve / apply pass for the combined set.
 	consent, err := applyRepoFeatures(
-		context.Background(), containerName, dcConf,
+		context.Background(), containerName, mergeFeaturesForApply(dcConfs),
 		featureConsentForNew, os.Stdin, cobraOut(),
 	)
 	if err != nil {
 		return err
 	}
 
-	if dcConf == nil {
+	if len(dcConfs) == 0 {
 		// `bare` (either explicit --container-config bare, or chosen
-		// from the picker after declining every lockfile suggestion):
+		// from the picker after declining every detection suggestion):
 		// no stack means no installer. Matches the existing "no
 		// lockfile detected" line for parity in the output.
 		fmt.Println("→ bare config; skipping warm install")
@@ -471,18 +492,24 @@ func repoAddSetup(slug, primary string, aliases []string, url, defaultBase strin
 		fmt.Fprintf(cobraOutErr(), "warn: warm install: %v\n", err)
 	}
 
-	if dcConf != nil {
-		// onCreate runs before postCreate per spec. Sequential; a failure
-		// aborts so the half-set-up container surfaces a clear error
-		// rather than getting registered in a broken state.
+	// onCreate runs before postCreate per spec, per config, in pick
+	// order. Sequential within and across configs; a failure aborts so
+	// the half-set-up container surfaces a clear error rather than
+	// getting registered in a broken state. Lifecycle hooks aren't
+	// merged because their three legal JSON shapes (string / array /
+	// object) don't compose cleanly — running them in series is the
+	// honest equivalent.
+	for _, c := range dcConfs {
 		if err := ahjocontainer.RunLifecycle(
-			containerName, ahjocontainer.StageOnCreate, dcConf.OnCreateCommand,
+			containerName, ahjocontainer.StageOnCreate, c.OnCreateCommand,
 			1000, hostEnv, paths.RepoMountPath, cobraOut(),
 		); err != nil {
 			return err
 		}
+	}
+	for _, c := range dcConfs {
 		if err := ahjocontainer.RunLifecycle(
-			containerName, ahjocontainer.StagePostCreate, dcConf.PostCreateCommand,
+			containerName, ahjocontainer.StagePostCreate, c.PostCreateCommand,
 			1000, hostEnv, paths.RepoMountPath, cobraOut(),
 		); err != nil {
 			return err
@@ -750,29 +777,37 @@ func detectContainerDefaultBranch(containerName string) (string, error) {
 	return name, nil
 }
 
-// runWarmInstall detects per-language lockfiles in /repo and runs the
-// matching installer inside the container so branch containers (cloned via
-// `incus copy` with btrfs/zfs reflinks) inherit a hot dependency cache.
-// hostEnv is forwarded into each installer (NPM_TOKEN etc.).
+// runWarmInstall walks detectTable, runs the warm-install command for
+// each row whose probe file exists in /repo and whose installer binary
+// is present in the container. Branch containers (cloned via `incus
+// copy` with btrfs/zfs reflinks) inherit the hot dependency cache.
+// hostEnv is forwarded into each installer (NPM_TOKEN etc.). Rows
+// without a warm-install command (e.g. Docker — the Feature install IS
+// the warm-up) are skipped silently.
 func runWarmInstall(containerName string, hostEnv map[string]string) error {
 	any := false
-	for _, c := range lockfileTable {
-		if _, err := incus.Exec(containerName, "test", "-f", paths.RepoMountPath+"/"+c.lockfile); err != nil {
+	for _, e := range detectTable {
+		if len(e.cmd) == 0 {
+			continue
+		}
+		hit := firstProbeHit(containerName, e)
+		if hit == "" {
 			continue
 		}
 		any = true
 		// Pre-check the installer binary inside the container. The
-		// chosen stack may not provide every runtime the lockfile
-		// table covers (polyglot repo, custom in-repo config), so a
-		// missing binary becomes a one-line skip rather than a loud
+		// chosen stack(s) may not provide every runtime the detect
+		// table covers (polyglot repo, custom in-repo config, user
+		// declined the stack but kept the lockfile), so a missing
+		// binary becomes a one-line skip rather than a loud
 		// `exec: cargo: not found`-style failure.
-		if _, err := incus.Exec(containerName, "command", "-v", c.cmd[0]); err != nil {
-			fmt.Printf("→ %s not found in container; skipping %s\n", c.cmd[0], strings.Join(c.cmd, " "))
+		if _, err := incus.Exec(containerName, "command", "-v", e.cmd[0]); err != nil {
+			fmt.Printf("→ %s not found in container; skipping %s\n", e.cmd[0], strings.Join(e.cmd, " "))
 			continue
 		}
-		fmt.Printf("→ %s (lockfile %s detected)\n", strings.Join(c.cmd, " "), c.lockfile)
-		if err := incus.ExecAs(containerName, 1000, hostEnv, paths.RepoMountPath, c.cmd...); err != nil {
-			return fmt.Errorf("%s: %w", strings.Join(c.cmd, " "), err)
+		fmt.Printf("→ %s (%s detected)\n", strings.Join(e.cmd, " "), hit)
+		if err := incus.ExecAs(containerName, 1000, hostEnv, paths.RepoMountPath, e.cmd...); err != nil {
+			return fmt.Errorf("%s: %w", strings.Join(e.cmd, " "), err)
 		}
 	}
 	if !any {
