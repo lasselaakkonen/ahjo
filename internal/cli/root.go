@@ -30,6 +30,7 @@ func NewRoot(version string) *cobra.Command {
 		newTopToggleExposeCmd(),
 		newTopStartStopCmd(),
 		newRmCmd(),
+		newRefreshBaseCmd(),
 		newGCCmd(),
 		newEnvCmd(),
 		newDoctorCmd(),

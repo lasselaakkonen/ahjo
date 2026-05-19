@@ -77,6 +77,12 @@ func RepoAliasesPath() string { return filepath.Join(SharedDir(), RepoAliasesFil
 func KnownHostsPath() string  { return filepath.Join(SharedDir(), KnownHostsFile) }
 func HostKeysDir() string     { return filepath.Join(AhjoDir(), "host-keys") }
 
+// RefreshBaseLogPath is where the detached `_refresh-base` subprocess (spawned
+// by `ahjo rm` to pre-pull a repo's base container) writes its stdout/stderr.
+// Append-only across runs; users tail this when a follow-up `ahjo create`
+// shows commits older than expected.
+func RefreshBaseLogPath() string { return filepath.Join(AhjoDir(), "refresh-base.log") }
+
 func SlugHostKeysDir(slug string) string { return filepath.Join(HostKeysDir(), slug) }
 
 // SlugAncestorPubkeysDir holds one .pub file per pubkey trusted by this
