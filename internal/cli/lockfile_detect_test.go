@@ -68,6 +68,8 @@ func TestDetectTable_Pairings(t *testing.T) {
 		"Pipfile.lock":        {stack: "python", bin: "pipenv"},
 		"requirements.txt":    {stack: "python", bin: "pip"},
 		"Cargo.lock":          {stack: "rust", bin: "cargo"},
+		"Gemfile.lock":        {stack: "ruby", bin: "bundle"},
+		"composer.lock":       {stack: "php", bin: "composer"},
 		"go.sum":              {stack: "go", bin: "go"},
 		"Dockerfile":          {features: []string{"ahjo/docker"}},
 		"compose.yaml":        {features: []string{"ahjo/docker"}},
