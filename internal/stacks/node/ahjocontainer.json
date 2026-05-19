@@ -13,7 +13,8 @@
     "ghcr.io/devcontainers/features/node:1": {
       "version": "lts",
       "nodeGypDependencies": true,
-      "pnpmVersion": "latest"
+      "pnpmVersion": "latest",
+      "installYarnUsingApt": true
     }
   },
   "postCreateCommand": "set -e; export NVM_DIR=${NVM_DIR:-/usr/local/share/nvm}; if [ -f /repo/.nvmrc ] && [ -s \"$NVM_DIR/nvm.sh\" ]; then . \"$NVM_DIR/nvm.sh\"; nvm install && nvm alias default \"$(nvm current)\"; fi"
