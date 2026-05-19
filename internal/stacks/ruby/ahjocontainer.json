@@ -1,0 +1,17 @@
+{
+  // ahjo built-in "ruby" stack. Loaded when ahjo is invoked with
+  // --stack=ruby against a repo that has no .ahjo/ahjocontainer.json,
+  // and auto-suggested when `ahjo repo add` finds Gemfile.lock.
+  //
+  // The upstream Ruby Feature uses RVM and reads .ruby-version
+  // natively, so a repo carrying that file gets the pinned interpreter
+  // for free without any host-side parsing on ahjo's side. Bundler
+  // ships with the Ruby install, so `bundle install` works as the
+  // warm-install step without a postCreateCommand prerequisite.
+  "name": "ahjo-stack-ruby",
+  "features": {
+    "ghcr.io/devcontainers/features/ruby:1": {
+      "version": "latest"
+    }
+  }
+}

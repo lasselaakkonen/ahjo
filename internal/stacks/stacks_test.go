@@ -9,7 +9,7 @@ import (
 // wantStacks is the canonical list of bundled stacks. A new stack file
 // must land here too — keeps "I added a stack file but forgot to
 // document/wire it" failures out of the field.
-var wantStacks = []string{"go", "node", "python", "rust"}
+var wantStacks = []string{"go", "node", "php", "python", "ruby", "rust"}
 
 func TestList_MatchesEmbeddedSet(t *testing.T) {
 	got := List()
