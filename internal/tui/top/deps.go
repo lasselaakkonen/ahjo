@@ -24,6 +24,12 @@ type Deps struct {
 	// run as an `ahjo mirror` subprocess via tea.ExecProcess instead.
 	ToggleExpose func(*registry.Branch) (string, error)
 
+	// StartStop flips the branch container between running and stopped.
+	// "Running" → stop, anything else (Stopped/Frozen/...) → start. Returns
+	// a one-line flash status. Quiet (no stdout writes), like ToggleExpose,
+	// so it can run inline in the TUI process.
+	StartStop func(*registry.Branch) (string, error)
+
 	// IDEs enumerates SSH-capable IDEs the host has installed, in
 	// preferred display order. Each entry knows how to launch itself
 	// pointed at a given ssh host + remote path. Returns nil/empty when
