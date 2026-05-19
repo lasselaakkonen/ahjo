@@ -16,6 +16,14 @@
 # onto the legacy graph driver, whose mknod-c-0-0 whiteouts are not
 # reliably covered by the intercept and which in snapshotter mode
 # refuses to start at all.
+#
+# `customizations.ahjo.nested_incus` is NOT required either. That opt-in
+# exists for nested Incus / LXC, which need loop-mounted block-backed
+# filesystems wired through /dev/loop-control + /dev/loop0..7. Docker's
+# containerd snapshotter sits on the container's existing overlayfs and
+# never touches /dev/loop*, so the kernel-attack-surface bump that
+# nested_incus carries (see CONTAINER-ISOLATION.md) is unnecessary for
+# docker-in-incus.
 set -euo pipefail
 
 : "${_REMOTE_USER:?ahjo/docker: _REMOTE_USER must be set by the runner}"
