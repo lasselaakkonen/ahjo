@@ -3,6 +3,8 @@ package cli
 import (
 	"fmt"
 	"os"
+	"os/exec"
+	"syscall"
 
 	"github.com/spf13/cobra"
 
@@ -59,7 +61,73 @@ func runRm(alias string, forceDefault, force bool) error {
 	if err := ensureRepoCleanOrForce(br, "remove", force); err != nil {
 		return err
 	}
-	return removeBranchLocked(reg, br, forceDefault)
+	wasNonDefault := !br.IsDefault
+	repoName := br.Repo
+	if err := removeBranchLocked(reg, br, forceDefault); err != nil {
+		return err
+	}
+	if wasNonDefault {
+		spawnRefreshBase(repoName)
+	}
+	return nil
+}
+
+// spawnRefreshBase fires off `ahjo _refresh-base <repo-name>` as a detached
+// subprocess so the repo's base container is restarted and fast-forwarded
+// against origin while the user's shell returns from `ahjo rm`. The child
+// blocks on the ahjo lockfile (held by this process until runRm returns),
+// so a follow-up `ahjo create` queues behind it instead of COWing a base
+// that's mid-pull. Best-effort: any failure here just means no prefetch —
+// the next `ahjo create` still works, it just won't have the latest commits.
+//
+// Detachment specifics:
+//   - SysProcAttr.Setsid=true puts the child in its own session/process group
+//     so a Ctrl+C in the parent's terminal between cmd.Start() and runRm's
+//     return doesn't take the prefetch down with it.
+//   - Stdout/Stderr are redirected to ~/.ahjo/refresh-base.log (append) so a
+//     silent failure is debuggable; if the log can't be opened we fall back
+//     to /dev/null rather than skipping the prefetch.
+//   - cmd.Process.Release() drops Go's bookkeeping; the kernel reparents to
+//     init so the orphan isn't waiting on us to reap.
+func spawnRefreshBase(repoName string) {
+	exe, err := os.Executable()
+	if err != nil {
+		fmt.Fprintf(cobraOutErr(), "warn: skip base refresh (resolve ahjo binary): %v\n", err)
+		return
+	}
+
+	logPath := paths.RefreshBaseLogPath()
+	var logFile *os.File
+	if f, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644); err == nil {
+		logFile = f
+	} else {
+		fmt.Fprintf(cobraOutErr(), "warn: base refresh log %s unavailable (%v); output dropped\n", logPath, err)
+	}
+
+	cmd := exec.Command(exe, "_refresh-base", repoName)
+	cmd.Stdin = nil
+	cmd.Stdout = logFile // nil → /dev/null
+	cmd.Stderr = logFile
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+
+	if err := cmd.Start(); err != nil {
+		fmt.Fprintf(cobraOutErr(), "warn: spawn base refresh: %v\n", err)
+		if logFile != nil {
+			logFile.Close()
+		}
+		return
+	}
+	// Parent's copy of the log fd was dup'd into the child by os/exec; close
+	// ours so we don't keep an extra fd open after rm exits.
+	if logFile != nil {
+		logFile.Close()
+	}
+	_ = cmd.Process.Release()
+	if logFile != nil {
+		fmt.Printf("→ refreshing %s base container in background (log: %s)\n", repoName, logPath)
+	} else {
+		fmt.Printf("→ refreshing %s base container in background\n", repoName)
+	}
 }
 
 // removeBranchLocked tears down one branch's container + ports + host-keys +
