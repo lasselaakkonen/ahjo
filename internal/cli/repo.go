@@ -790,6 +790,33 @@ func runWarmInstall(containerName string, hostEnv map[string]string) error {
 	if err != nil {
 		return err
 	}
+	return runWarmInstallWith(matches,
+		// `command -v` is a POSIX shell builtin, so it must run through
+		// /bin/sh — `incus exec` resolves argv[0] via execve, which only
+		// finds binaries on PATH. e.cmd[0] is drawn from the hardcoded
+		// detectTable (alphanumeric/dash only), so single-quoting the
+		// arg is defense-in-depth rather than load-bearing.
+		func(bin string) bool {
+			_, err := incus.Exec(containerName, "/bin/sh", "-c", "command -v '"+bin+"'")
+			return err == nil
+		},
+		func(argv []string) error {
+			return incus.ExecAs(containerName, 1000, hostEnv, paths.RepoMountPath, argv...)
+		},
+		os.Stdout,
+	)
+}
+
+// runWarmInstallWith is runWarmInstall's testable core: detection is
+// already resolved, and the two side-effecting steps (binary precheck +
+// installer invocation) are passed in. Output is written to out so
+// tests can capture the user-visible skip/applied lines verbatim.
+func runWarmInstallWith(
+	matches []detectMatch,
+	probeBin func(bin string) bool,
+	runCmd func(argv []string) error,
+	out io.Writer,
+) error {
 	any := false
 	for _, m := range matches {
 		e := m.entry
@@ -797,23 +824,22 @@ func runWarmInstall(containerName string, hostEnv map[string]string) error {
 			continue
 		}
 		any = true
-		// Pre-check the installer binary inside the container. The
-		// chosen stack(s) may not provide every runtime the detect
+		// The chosen stack(s) may not provide every runtime the detect
 		// table covers (polyglot repo, custom in-repo config, user
 		// declined the stack but kept the lockfile), so a missing
 		// binary becomes a one-line skip rather than a loud
 		// `exec: cargo: not found`-style failure.
-		if _, err := incus.Exec(containerName, "command", "-v", e.cmd[0]); err != nil {
-			fmt.Printf("→ %s not found in container; skipping %s\n", e.cmd[0], strings.Join(e.cmd, " "))
+		if !probeBin(e.cmd[0]) {
+			fmt.Fprintf(out, "→ %s not found in container; skipping %s\n", e.cmd[0], strings.Join(e.cmd, " "))
 			continue
 		}
-		fmt.Printf("→ %s (%s detected)\n", strings.Join(e.cmd, " "), m.hit)
-		if err := incus.ExecAs(containerName, 1000, hostEnv, paths.RepoMountPath, e.cmd...); err != nil {
+		fmt.Fprintf(out, "→ %s (%s detected)\n", strings.Join(e.cmd, " "), m.hit)
+		if err := runCmd(e.cmd); err != nil {
 			return fmt.Errorf("%s: %w", strings.Join(e.cmd, " "), err)
 		}
 	}
 	if !any {
-		fmt.Println("→ no lockfile detected; skipping warm install")
+		fmt.Fprintln(out, "→ no lockfile detected; skipping warm install")
 	}
 	return nil
 }
