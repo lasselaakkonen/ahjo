@@ -21,15 +21,16 @@ type keymap struct {
 	// Contextual: when a container is selected (in the containers column
 	// or in the details pane showing that container's info).
 	CopyClaudeCmd, CopyShellCmd key.Binding
+	StartStop                   key.Binding
 	OpenIDE                     key.Binding
 }
 
 func newKeymap() keymap {
 	return keymap{
-		Left:         key.NewBinding(key.WithKeys("left", "h"), key.WithHelp("←↓↑→/hjkl", "")),
-		Right:        key.NewBinding(key.WithKeys("right", "l")),
-		Up:           key.NewBinding(key.WithKeys("up", "k")),
-		Down:         key.NewBinding(key.WithKeys("down", "j")),
+		Left:         key.NewBinding(key.WithKeys("left"), key.WithHelp("←↓↑→", "")),
+		Right:        key.NewBinding(key.WithKeys("right")),
+		Up:           key.NewBinding(key.WithKeys("up")),
+		Down:         key.NewBinding(key.WithKeys("down")),
 		Submit:       key.NewBinding(key.WithKeys("enter"), key.WithHelp("⏎", "submit")),
 		SubmitWindow: key.NewBinding(key.WithKeys("w"), key.WithHelp("w", "new window")),
 		Cancel:       key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", "cancel")),
@@ -47,7 +48,8 @@ func newKeymap() keymap {
 		ToggleMirror: key.NewBinding(key.WithKeys("m"), key.WithHelp("m", "toggle mirror")),
 
 		CopyClaudeCmd: key.NewBinding(key.WithKeys("a"), key.WithHelp("a", "run `ahjo claude`")),
-		CopyShellCmd:  key.NewBinding(key.WithKeys("s"), key.WithHelp("s", "run `ahjo shell`")),
+		CopyShellCmd:  key.NewBinding(key.WithKeys("h"), key.WithHelp("h", "run `ahjo shell`")),
+		StartStop:     key.NewBinding(key.WithKeys("s"), key.WithHelp("s", "start/stop")),
 		OpenIDE:       key.NewBinding(key.WithKeys("i"), key.WithHelp("i", "ide")),
 	}
 }

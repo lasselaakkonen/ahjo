@@ -26,6 +26,7 @@ func newTopCmd() *cobra.Command {
 				FormatExposed:        formatExposed,
 				HostStatus:           hostStatusForTop,
 				ToggleExpose:         toggleExposeForTop,
+				StartStop:            startStopForTop,
 				IDEs:                 idesForTop,
 				Terminals:            terminalsForTop,
 				LoadSnapshot:         loadSnapshotInVM,
@@ -65,6 +66,7 @@ func loadSnapshotInVM() (top.Snapshot, error) {
 
 	snap.Containers = make(map[string]bool, len(reg.Branches))
 	snap.ContainersRunning = make(map[string]bool, len(reg.Branches))
+	snap.ContainerStates = make(map[string]string, len(reg.Branches))
 	for i := range reg.Branches {
 		br := &reg.Branches[i]
 		name, err := resolveContainerName(br)
@@ -80,6 +82,9 @@ func loadSnapshotInVM() (top.Snapshot, error) {
 		}
 		snap.Containers[br.Slug] = status != ""
 		snap.ContainersRunning[br.Slug] = strings.EqualFold(status, "Running")
+		if status != "" {
+			snap.ContainerStates[br.Slug] = status
+		}
 	}
 
 	for i := range reg.Branches {
@@ -136,6 +141,73 @@ func newTopToggleExposeCmd() *cobra.Command {
 				return fmt.Errorf("no branch with slug %q", args[0])
 			}
 			msg, err := toggleExposeForTop(br)
+			if err != nil {
+				return err
+			}
+			fmt.Fprintln(cmd.OutOrStdout(), msg)
+			return nil
+		},
+	}
+}
+
+// startStopForTop flips the container between running and stopped based on
+// its current incus status. Uses the same single-flight lockfile as the
+// other lifecycle ops so it can't race a create/rm subprocess.
+func startStopForTop(br *registry.Branch) (string, error) {
+	release, err := lockfile.Acquire()
+	if err != nil {
+		return "", err
+	}
+	defer release()
+
+	containerName, err := resolveContainerName(br)
+	if err != nil {
+		return "", err
+	}
+	status, err := incus.ContainerStatus(containerName)
+	if err != nil {
+		return "", err
+	}
+	if status == "" {
+		return "", fmt.Errorf("container %s not found", containerName)
+	}
+	if strings.EqualFold(status, "Running") {
+		if err := incus.Stop(containerName); err != nil {
+			return "", err
+		}
+		return "stopped " + containerName, nil
+	}
+	if err := incus.Start(containerName); err != nil {
+		return "", err
+	}
+	return "started " + containerName, nil
+}
+
+// newTopStartStopCmd is the hidden `ahjo top-start-stop <slug>` RPC the Mac
+// TUI invokes via `limactl shell ahjo` to drive startStopForTop. Mirrors
+// newTopToggleExposeCmd: stdout is the one-line flash text on success.
+func newTopStartStopCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:    "top-start-stop <slug>",
+		Short:  "internal: start or stop the container for one branch slug",
+		Args:   cobra.ExactArgs(1),
+		Hidden: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			reg, err := registry.Load()
+			if err != nil {
+				return err
+			}
+			var br *registry.Branch
+			for i := range reg.Branches {
+				if reg.Branches[i].Slug == args[0] {
+					br = &reg.Branches[i]
+					break
+				}
+			}
+			if br == nil {
+				return fmt.Errorf("no branch with slug %q", args[0])
+			}
+			msg, err := startStopForTop(br)
 			if err != nil {
 				return err
 			}
