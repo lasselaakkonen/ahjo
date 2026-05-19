@@ -70,6 +70,7 @@ func TestDetectTable_Pairings(t *testing.T) {
 		"Cargo.lock":              {stack: "rust", bin: "cargo"},
 		"Gemfile.lock":            {stack: "ruby", bin: "bundle"},
 		"composer.lock":           {stack: "php", bin: "composer"},
+		"go.work":                 {stack: "go", bin: "go"},
 		"go.sum":                  {stack: "go", bin: "go"},
 		".pre-commit-config.yaml": {features: []string{"ahjo/pre-commit"}},
 		"Dockerfile":              {features: []string{"ahjo/docker"}},
@@ -284,6 +285,52 @@ func TestPromptStackDetections(t *testing.T) {
 			t.Fatalf("expected error on unrecognized response")
 		}
 	})
+}
+
+// TestDetectMatches_DedupeByName covers the workspace-supersedes-module
+// case end-to-end: both go.work and go.sum probes claim a hit, but only
+// the higher-priority go.work row should fire. Same shape would cover
+// pnpm-lock superseding package-lock, but go is the row that motivated
+// the dedupe (a workspace repo running `go mod download` after
+// `go work sync` fails with "go mod download requires a main module").
+func TestDetectMatches_DedupeByName(t *testing.T) {
+	probe := func(e detectEntry) string {
+		for _, p := range e.probes {
+			if p == "go.work" || p == "go.sum" {
+				return p
+			}
+		}
+		return ""
+	}
+	got := detectMatches(probe)
+	if len(got) != 1 {
+		t.Fatalf("want 1 match, got %d: %v", len(got), got)
+	}
+	if got[0].hit != "go.work" {
+		t.Fatalf("want go.work to win, got hit=%q", got[0].hit)
+	}
+	if len(got[0].entry.cmd) == 0 || got[0].entry.cmd[1] != "work" {
+		t.Fatalf("want `go work sync` cmd, got %v", got[0].entry.cmd)
+	}
+}
+
+// TestDetectMatches_FallthroughOnMiss confirms a higher-priority row's
+// non-hit doesn't block lower-priority rows with the same name from
+// being probed. Workspace absent, plain module present → go.sum row
+// matches and `go mod download` runs.
+func TestDetectMatches_FallthroughOnMiss(t *testing.T) {
+	probe := func(e detectEntry) string {
+		for _, p := range e.probes {
+			if p == "go.sum" {
+				return p
+			}
+		}
+		return ""
+	}
+	got := detectMatches(probe)
+	if len(got) != 1 || got[0].hit != "go.sum" {
+		t.Fatalf("want single go.sum match, got %v", got)
+	}
 }
 
 func equalStrings(a, b []string) bool {

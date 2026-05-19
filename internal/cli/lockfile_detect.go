@@ -33,12 +33,21 @@ import (
 //
 // Order matters: detectStacks probes rows in table order, and
 // promptStackDetections walks matches in the same order so the prompt
-// sequence is stable. The node group is ordered pnpm > yarn > npm so a
-// repo carrying multiple JS lockfiles is prompted in modernity order
-// (declining the first still surfaces the rest). The python group is
-// ordered uv > poetry > pipenv > requirements.txt for the same reason.
-// Within a row, probes are any-match (Docker fires on any of
-// Dockerfile / compose.y*ml).
+// sequence is stable. The dedupe-by-name pass (see detectMatches) then
+// keeps at most one match per `name`, so when several rows share a
+// name (node has pnpm/yarn/npm; python has uv/poetry/pipenv/
+// requirements; go has go.work/go.sum), the first match in table order
+// wins and the rest are suppressed. Order rows in priority order:
+//
+//   - pnpm > yarn > npm (modern manager first)
+//   - uv > poetry > pipenv > requirements.txt (modernity)
+//   - go.work > go.sum (workspace mode supersedes single-module)
+//
+// A repo with both pnpm-lock and package-lock is prompted ONCE, for
+// pnpm — declining at that point falls through to the generic picker
+// rather than re-prompting for npm (today's behavior; the dedupe
+// pass enforces it consistently). Within a row, probes are any-match
+// (Docker fires on any of Dockerfile / compose.y*ml).
 //
 // `bun.lockb` intentionally absent: no bundled stack ships bun, so
 // detecting it would suggest nothing and warm-installing it would
@@ -86,6 +95,17 @@ var detectTable = []detectEntry{
 	// composer from prompting on plugin trust; --no-progress keeps the
 	// warm-install log uncluttered for non-TTY repo adds.
 	{probes: []string{"composer.lock"}, name: "php", stack: "php", cmd: []string{"composer", "install", "--no-interaction", "--no-progress"}},
+	// go.work: workspace mode. `go work sync` is the canonical
+	// workspace operation — it resolves the workspace build list,
+	// which downloads go.mod files for transitive deps into the
+	// module cache. Not as aggressive as iterating `go mod download`
+	// per `use` module, but it's the verb a workspace user reaches
+	// for and it doesn't fail on a repo whose root `use` paths point
+	// at packages with incomplete cgo deps.
+	//
+	// Placed above the go.sum row so the dedupe-by-name logic in
+	// detectMatches picks workspace mode when both files are present.
+	{probes: []string{"go.work"}, name: "go", stack: "go", cmd: []string{"go", "work", "sync"}},
 	// go.sum (not go.mod): a module-only repo without dependencies ships
 	// go.mod and `go mod download` would be a no-op. go.sum signals
 	// actual deps to fetch. The Go toolchain is provided by features/go:1
@@ -141,17 +161,35 @@ type detectMatch struct {
 	hit   string
 }
 
-// detectStacks probes /repo inside containerName against every row of
-// detectTable, returning matches in table order. Each row contributes
-// at most one match (first probe hit).
-func detectStacks(containerName string) ([]detectMatch, error) {
+// detectMatches walks detectTable in order, calling probe per row, and
+// returns matches with at most one entry per `name` — the first row to
+// hit for a given name wins, later rows with the same name are
+// suppressed. Higher-priority rows (placed first in the table) that
+// don't hit don't block lower-priority same-name rows from being
+// probed. Extracted from detectStacks so the dedupe semantics can be
+// exercised without an Incus container.
+func detectMatches(probe func(detectEntry) string) []detectMatch {
 	var matches []detectMatch
+	seen := map[string]bool{}
 	for _, e := range detectTable {
-		if hit := firstProbeHit(containerName, e); hit != "" {
+		if seen[e.name] {
+			continue
+		}
+		if hit := probe(e); hit != "" {
 			matches = append(matches, detectMatch{entry: e, hit: hit})
+			seen[e.name] = true
 		}
 	}
-	return matches, nil
+	return matches
+}
+
+// detectStacks probes /repo inside containerName against every row of
+// detectTable, returning matches in table order with the dedupe-by-name
+// pass applied (see detectMatches).
+func detectStacks(containerName string) ([]detectMatch, error) {
+	return detectMatches(func(e detectEntry) string {
+		return firstProbeHit(containerName, e)
+	}), nil
 }
 
 // promptStackDetections walks `matches` in order, asking the user
