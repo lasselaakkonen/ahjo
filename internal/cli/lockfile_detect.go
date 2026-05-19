@@ -76,6 +76,16 @@ var detectTable = []detectEntry{
 	// relative path resolves.
 	{probes: []string{"requirements.txt"}, name: "python", stack: "python", cmd: []string{"pip", "install", "--user", "-r", "requirements.txt"}},
 	{probes: []string{"Cargo.lock"}, name: "rust", stack: "rust", cmd: []string{"cargo", "fetch"}},
+	// Gemfile.lock: the upstream Ruby Feature ships bundler with the
+	// RVM install, so `bundle install` is available without a
+	// postCreate prerequisite. RVM also honors .ruby-version
+	// automatically, so no host-side version-file parsing is needed.
+	{probes: []string{"Gemfile.lock"}, name: "ruby", stack: "ruby", cmd: []string{"bundle", "install"}},
+	// composer.lock: the upstream PHP Feature with installComposer:true
+	// stages composer alongside the interpreter. --no-interaction stops
+	// composer from prompting on plugin trust; --no-progress keeps the
+	// warm-install log uncluttered for non-TTY repo adds.
+	{probes: []string{"composer.lock"}, name: "php", stack: "php", cmd: []string{"composer", "install", "--no-interaction", "--no-progress"}},
 	// go.sum (not go.mod): a module-only repo without dependencies ships
 	// go.mod and `go mod download` would be a no-op. go.sum signals
 	// actual deps to fetch. The Go toolchain is provided by features/go:1

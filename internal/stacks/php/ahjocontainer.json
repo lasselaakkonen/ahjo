@@ -1,0 +1,16 @@
+{
+  // ahjo built-in "php" stack. Loaded when ahjo is invoked with
+  // --stack=php against a repo that has no .ahjo/ahjocontainer.json,
+  // and auto-suggested when `ahjo repo add` finds composer.lock.
+  //
+  // The upstream PHP Feature with installComposer:true stages both
+  // the interpreter and Composer, so `composer install` works as the
+  // warm-install step without a postCreateCommand prerequisite.
+  "name": "ahjo-stack-php",
+  "features": {
+    "ghcr.io/devcontainers/features/php:1": {
+      "version": "latest",
+      "installComposer": true
+    }
+  }
+}
