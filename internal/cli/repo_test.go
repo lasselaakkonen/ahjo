@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"errors"
 	"os"
 	"path/filepath"
@@ -196,5 +197,114 @@ func TestPickGitHubURL_FormatsBothSchemes(t *testing.T) {
 	wantHTTPS := "https://github.com/acme/widget.git"
 	if got != wantSSH && got != wantHTTPS {
 		t.Fatalf("pickGitHubURL = %q, want one of %q or %q", got, wantSSH, wantHTTPS)
+	}
+}
+
+// TestRunWarmInstallWith_SkipsWhenBinaryAbsent covers the polyglot-repo
+// case: detection produced a match but the installer binary isn't on
+// PATH inside the container. The precheck must short-circuit, log a
+// `not found ... skipping` line, and NOT invoke runCmd. This is the
+// regression target — the previous implementation routed `command -v`
+// through execve, which always missed the shell builtin and silently
+// skipped every warm-install.
+func TestRunWarmInstallWith_SkipsWhenBinaryAbsent(t *testing.T) {
+	match := detectMatch{
+		entry: detectEntry{name: "node", cmd: []string{"yarn", "install", "--frozen-lockfile"}},
+		hit:   "yarn.lock",
+	}
+	var probed []string
+	var ran [][]string
+	var out bytes.Buffer
+
+	err := runWarmInstallWith(
+		[]detectMatch{match},
+		func(bin string) bool { probed = append(probed, bin); return false },
+		func(argv []string) error { ran = append(ran, argv); return nil },
+		&out,
+	)
+	if err != nil {
+		t.Fatalf("runWarmInstallWith returned err: %v", err)
+	}
+	if len(probed) != 1 || probed[0] != "yarn" {
+		t.Fatalf("probeBin called with %v, want [yarn]", probed)
+	}
+	if len(ran) != 0 {
+		t.Fatalf("runCmd should not be invoked when probe misses; got %v", ran)
+	}
+	want := "→ yarn not found in container; skipping yarn install --frozen-lockfile\n"
+	if out.String() != want {
+		t.Fatalf("out=%q, want %q", out.String(), want)
+	}
+}
+
+// TestRunWarmInstallWith_InvokesCmdWhenBinaryPresent covers the happy
+// path: probe hit, installer invoked with the exact argv the detect
+// table specifies, and the user-visible line names both the command
+// and the detected lockfile.
+func TestRunWarmInstallWith_InvokesCmdWhenBinaryPresent(t *testing.T) {
+	match := detectMatch{
+		entry: detectEntry{name: "go", cmd: []string{"go", "mod", "download"}},
+		hit:   "go.sum",
+	}
+	var ran [][]string
+	var out bytes.Buffer
+
+	err := runWarmInstallWith(
+		[]detectMatch{match},
+		func(string) bool { return true },
+		func(argv []string) error { ran = append(ran, argv); return nil },
+		&out,
+	)
+	if err != nil {
+		t.Fatalf("runWarmInstallWith returned err: %v", err)
+	}
+	if len(ran) != 1 || strings.Join(ran[0], " ") != "go mod download" {
+		t.Fatalf("runCmd argv=%v, want [go mod download]", ran)
+	}
+	want := "→ go mod download (go.sum detected)\n"
+	if out.String() != want {
+		t.Fatalf("out=%q, want %q", out.String(), want)
+	}
+}
+
+// TestRunWarmInstallWith_NoMatchesPrintsHint confirms the "nothing to
+// warm" branch still surfaces the explanatory line. Empty input is the
+// common case for a repo with no lockfiles.
+func TestRunWarmInstallWith_NoMatchesPrintsHint(t *testing.T) {
+	var out bytes.Buffer
+	err := runWarmInstallWith(nil,
+		func(string) bool { t.Fatal("probeBin should not be called"); return false },
+		func([]string) error { t.Fatal("runCmd should not be called"); return nil },
+		&out,
+	)
+	if err != nil {
+		t.Fatalf("runWarmInstallWith returned err: %v", err)
+	}
+	if !strings.Contains(out.String(), "no lockfile detected") {
+		t.Fatalf("out=%q missing no-lockfile hint", out.String())
+	}
+}
+
+// TestRunWarmInstallWith_PropagatesRunCmdError ensures a failed
+// installer (e.g. lockfile drift) bubbles up wrapped with the argv,
+// matching today's `<cmd>: <inner err>` error surface that callers
+// already log against.
+func TestRunWarmInstallWith_PropagatesRunCmdError(t *testing.T) {
+	match := detectMatch{
+		entry: detectEntry{name: "php", cmd: []string{"composer", "install"}},
+		hit:   "composer.lock",
+	}
+	boom := errors.New("boom")
+	err := runWarmInstallWith(
+		[]detectMatch{match},
+		func(string) bool { return true },
+		func([]string) error { return boom },
+		&bytes.Buffer{},
+	)
+	if err == nil || !errors.Is(err, boom) {
+		t.Fatalf("want wrapped boom error, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "composer install") {
+		t.Fatalf("err=%q missing argv prefix", err.Error())
 	}
 }
