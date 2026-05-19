@@ -1,0 +1,6 @@
+{
+  "id": "pre-commit",
+  "version": "1.0.0",
+  "name": "pre-commit (ahjo built-in)",
+  "description": "Installs python+pipx+pre-commit and warms the hook cache from /repo/.pre-commit-config.yaml. install-hooks is used so .git/hooks is left untouched — the Feature is pure warm-up, not a git-hook installer."
+}
