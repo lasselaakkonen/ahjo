@@ -777,21 +777,23 @@ func detectContainerDefaultBranch(containerName string) (string, error) {
 	return name, nil
 }
 
-// runWarmInstall walks detectTable, runs the warm-install command for
-// each row whose probe file exists in /repo and whose installer binary
-// is present in the container. Branch containers (cloned via `incus
-// copy` with btrfs/zfs reflinks) inherit the hot dependency cache.
-// hostEnv is forwarded into each installer (NPM_TOKEN etc.). Rows
-// without a warm-install command (e.g. Docker — the Feature install IS
-// the warm-up) are skipped silently.
+// runWarmInstall reuses detectStacks' probe + dedupe-by-name pipeline
+// so a workspace repo (go.work + go.sum) runs `go work sync` once
+// instead of also running `go mod download` after, and a repo carrying
+// both pnpm-lock and package-lock warms pnpm only. Rows without a
+// warm-install command (Docker, pre-commit — the Feature install IS
+// the warm-up) are skipped silently. Branch containers (cloned via
+// `incus copy` with btrfs/zfs reflinks) inherit the hot dependency
+// cache. hostEnv is forwarded into each installer (NPM_TOKEN etc.).
 func runWarmInstall(containerName string, hostEnv map[string]string) error {
+	matches, err := detectStacks(containerName)
+	if err != nil {
+		return err
+	}
 	any := false
-	for _, e := range detectTable {
+	for _, m := range matches {
+		e := m.entry
 		if len(e.cmd) == 0 {
-			continue
-		}
-		hit := firstProbeHit(containerName, e)
-		if hit == "" {
 			continue
 		}
 		any = true
@@ -805,7 +807,7 @@ func runWarmInstall(containerName string, hostEnv map[string]string) error {
 			fmt.Printf("→ %s not found in container; skipping %s\n", e.cmd[0], strings.Join(e.cmd, " "))
 			continue
 		}
-		fmt.Printf("→ %s (%s detected)\n", strings.Join(e.cmd, " "), hit)
+		fmt.Printf("→ %s (%s detected)\n", strings.Join(e.cmd, " "), m.hit)
 		if err := incus.ExecAs(containerName, 1000, hostEnv, paths.RepoMountPath, e.cmd...); err != nil {
 			return fmt.Errorf("%s: %w", strings.Join(e.cmd, " "), err)
 		}
