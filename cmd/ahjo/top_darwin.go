@@ -36,6 +36,7 @@ func runMacTop() error {
 		FormatExposed:        macFormatExposed,
 		HostStatus:           macHostStatusForTop,
 		ToggleExpose:         macToggleExpose,
+		StartStop:            macStartStop,
 		IDEs:                 macIDEs,
 		Terminals:            macTerminals,
 		LoadSnapshot:         macLoadSnapshot,
@@ -200,6 +201,21 @@ func macLoadBranchStatus(slug string) (top.BranchStatus, error) {
 // the VM (it owns the incus state); this is a thin RPC.
 func macToggleExpose(br *registry.Branch) (string, error) {
 	out, stderr, err := runLima("ahjo", "top-toggle-expose", br.Slug)
+	if err != nil {
+		msg := strings.TrimSpace(stderr)
+		if msg == "" {
+			msg = err.Error()
+		}
+		return "", fmt.Errorf("%s", msg)
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+// macStartStop shells `ahjo top-start-stop <slug>` into the VM. Same RPC
+// shape as macToggleExpose — the VM decides start vs stop from the current
+// incus lifecycle state.
+func macStartStop(br *registry.Branch) (string, error) {
+	out, stderr, err := runLima("ahjo", "top-start-stop", br.Slug)
 	if err != nil {
 		msg := strings.TrimSpace(stderr)
 		if msg == "" {

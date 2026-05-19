@@ -78,6 +78,20 @@ func (m *model) containerColWidth() int {
 	return scaledWidth(m.width, colMinWidth, containerColMax, containerColBreakpoint)
 }
 
+// stripVimKeys rebinds the bubbles/list movement bindings so single-letter
+// hjkl/g/G keys no longer move the cursor or page the list. Arrow keys and
+// pgup/pgdn/home/end still work. We do this so `h` (shell shortcut) and `j`
+// /`k`/`l` are free for future contextual bindings without leaking into
+// list navigation as a side effect.
+func stripVimKeys(l *list.Model) {
+	l.KeyMap.CursorUp = key.NewBinding(key.WithKeys("up"), key.WithHelp("↑", "up"))
+	l.KeyMap.CursorDown = key.NewBinding(key.WithKeys("down"), key.WithHelp("↓", "down"))
+	l.KeyMap.PrevPage = key.NewBinding(key.WithKeys("pgup"), key.WithHelp("pgup", "prev page"))
+	l.KeyMap.NextPage = key.NewBinding(key.WithKeys("pgdown"), key.WithHelp("pgdn", "next page"))
+	l.KeyMap.GoToStart = key.NewBinding(key.WithKeys("home"), key.WithHelp("home", "go to start"))
+	l.KeyMap.GoToEnd = key.NewBinding(key.WithKeys("end"), key.WithHelp("end", "go to end"))
+}
+
 // New constructs the top model. Caller runs it via tea.NewProgram(m).
 func New(deps Deps) tea.Model {
 	reposFocused := true
@@ -88,12 +102,14 @@ func New(deps Deps) tea.Model {
 	repos.SetShowStatusBar(false)
 	repos.SetShowHelp(false)
 	repos.SetFilteringEnabled(false)
+	stripVimKeys(&repos)
 
 	containers := list.New(nil, compactDelegate{focused: &contFocused}, colMinWidth-2, 10)
 	containers.SetShowTitle(false)
 	containers.SetShowStatusBar(false)
 	containers.SetShowHelp(false)
 	containers.SetFilteringEnabled(false)
+	stripVimKeys(&containers)
 
 	details := viewport.New(viewport.WithWidth(40), viewport.WithHeight(10))
 
@@ -311,6 +327,8 @@ func (m *model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m, m.execToggleExpose()
 		case key.Matches(msg, m.keys.ToggleMirror):
 			return m.handleToggleMirror()
+		case key.Matches(msg, m.keys.StartStop):
+			return m, m.execStartStop()
 		case key.Matches(msg, m.keys.CopyClaudeCmd):
 			m.startRunTargetPicker("claude")
 			return m, nil
@@ -758,6 +776,25 @@ func (m *model) dispatchRunTarget(honorTab bool) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// execStartStop dispatches StartStop for the selected container. The Deps
+// implementation decides whether to start or stop based on the current
+// lifecycle state; this layer just routes the result onto the flash line.
+func (m *model) execStartStop() tea.Cmd {
+	w := selectedBranch(m.containers)
+	if w == nil {
+		return nil
+	}
+	if m.deps.StartStop == nil {
+		m.flash = "start/stop: not wired"
+		return nil
+	}
+	wt := *w
+	return func() tea.Msg {
+		out, err := m.deps.StartStop(&wt)
+		return toggleResultMsg{action: "start/stop", msg: out, err: err}
+	}
+}
+
 func (m *model) execToggleExpose() tea.Cmd {
 	w := selectedBranch(m.containers)
 	if w == nil {
@@ -1064,7 +1101,7 @@ func (m *model) renderFooter() string {
 	case focusContainers, focusDetails:
 		bindings = append(bindings, m.keys.NewContainer, m.keys.RemoveContainer)
 		if selectedBranch(m.containers) != nil {
-			bindings = append(bindings, m.keys.ToggleExpose, m.keys.ToggleMirror, m.keys.CopyClaudeCmd, m.keys.CopyShellCmd, m.keys.OpenIDE)
+			bindings = append(bindings, m.keys.StartStop, m.keys.ToggleExpose, m.keys.ToggleMirror, m.keys.CopyClaudeCmd, m.keys.CopyShellCmd, m.keys.OpenIDE)
 		}
 	}
 	bindings = append(bindings, m.keys.Submit, m.keys.Refresh, m.keys.Quit)

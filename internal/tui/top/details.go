@@ -86,6 +86,7 @@ func renderBranchDetail(deps Deps, br registry.Branch, snap Snapshot, status *Br
 		b.WriteString("\n")
 	}
 
+	row("state", formatContainerState(snap, br.Slug))
 	if snap.Containers[br.Slug] {
 		if snap.ContainersRunning[br.Slug] {
 			row("git", FormatGitStatus(status))
@@ -121,6 +122,32 @@ func renderBranchDetail(deps Deps, br registry.Branch, snap Snapshot, status *Br
 		row("default", detailValue.Render("yes"))
 	}
 	return b.String()
+}
+
+// formatContainerState renders the leading "● state" of the details pane.
+// Green for running, dim grey for stopped (the normal "off" state — not an
+// error), and red for anything else, including a missing/unreadable status
+// (snapshot didn't capture one). The raw incus string is shown lowercased
+// so the value reads as a single field, not a sentence.
+func formatContainerState(snap Snapshot, slug string) string {
+	raw, ok := snap.ContainerStates[slug]
+	if !ok || raw == "" {
+		if snap.Containers[slug] {
+			// Container is registered but the snapshot couldn't read its
+			// status — surface that as red so the user knows something
+			// went wrong with the probe.
+			return gitError.Render("● unknown")
+		}
+		return iconMissing.Render("● missing")
+	}
+	label := strings.ToLower(raw)
+	switch label {
+	case "running":
+		return gitClean.Render("● " + label)
+	case "stopped":
+		return iconPending.Render("● " + label)
+	}
+	return gitError.Render("● " + label)
 }
 
 // formatMirror colors the leading "active →" (or "inactive →") in the same
