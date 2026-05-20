@@ -72,7 +72,7 @@ func TestDetectTable_Pairings(t *testing.T) {
 		"composer.lock":           {stack: "php", bin: "composer"},
 		"go.work":                 {stack: "go", bin: "go"},
 		"go.sum":                  {stack: "go", bin: "go"},
-		".pre-commit-config.yaml": {features: []string{"ahjo/pre-commit"}},
+		".pre-commit-config.yaml": {features: []string{"ahjo/prek"}},
 		"Dockerfile":              {features: []string{"ahjo/docker"}},
 		"compose.yaml":            {features: []string{"ahjo/docker"}},
 		"compose.yml":             {features: []string{"ahjo/docker"}},

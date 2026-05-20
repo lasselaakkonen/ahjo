@@ -1,13 +1,13 @@
-// Package ahjofeature_pre_commit embeds the `ahjo/pre-commit` built-in
-// devcontainer Feature so the repo-add path can apply it without an OCI
-// fetch.
+// Package ahjofeature_prek embeds the `ahjo/prek` built-in devcontainer
+// Feature so the repo-add path can apply it without an OCI fetch.
 //
-// Self-contained on purpose: the Feature installs its own python+pipx
-// surface rather than depending on the bundled python stack, so a node-
-// only / go-only repo that happens to carry a .pre-commit-config.yaml
-// still gets its hook cache warmed. Composing it with the python stack
-// is harmless (pipx is idempotent) but never required.
-package ahjofeature_pre_commit
+// prek is a dependency-free, Rust-based reimplementation of pre-commit:
+// a single static binary with no Python runtime. That makes this Feature
+// genuinely self-contained — a node-only / go-only repo that happens to
+// carry a .pre-commit-config.yaml still gets its hook cache warmed,
+// without staging a python surface. prek reads the existing
+// .pre-commit-config.yaml as-is.
+package ahjofeature_prek
 
 import (
 	"embed"
@@ -23,7 +23,7 @@ var FeatureFS embed.FS
 // FeatureID is the Feature's stable identifier as declared in
 // devcontainer-feature.json. Used by the runner for tmp-dir naming and
 // error messages.
-const FeatureID = "pre-commit"
+const FeatureID = "prek"
 
 // Materialize copies the embedded feature dir into dst (created with 0o755),
 // preserving file modes. Mirrors internal/ahjofeature_docker/embed.go's

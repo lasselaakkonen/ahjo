@@ -1,4 +1,4 @@
-package ahjofeature_pre_commit
+package ahjofeature_prek
 
 import (
 	"bytes"
@@ -53,9 +53,9 @@ func TestMaterializePreservesExecBit(t *testing.T) {
 }
 
 // TestMetadataAcceptedByRejectDockerFields keeps the built-in Feature
-// honest against the runner's docker-field rejector. The pre-commit
-// Feature has no business declaring mounts or privileged, so a future
-// edit that adds either gets caught here.
+// honest against the runner's docker-field rejector. The prek Feature
+// has no business declaring mounts or privileged, so a future edit that
+// adds either gets caught here.
 func TestMetadataAcceptedByRejectDockerFields(t *testing.T) {
 	dst := t.TempDir()
 	if err := Materialize(dst); err != nil {
@@ -66,36 +66,30 @@ func TestMetadataAcceptedByRejectDockerFields(t *testing.T) {
 	}
 }
 
-// TestInstallScriptUsesInstallHooks guards the design invariant: the
-// warm-up command must be `pre-commit install-hooks`, NOT
-// `pre-commit install`. The latter writes the git hook into
-// .git/hooks/pre-commit, mutating the repo working tree on what the
-// user opted into as a warm-up. If a future edit swaps the verb, this
-// test fails before the surprise ships.
-func TestInstallScriptUsesInstallHooks(t *testing.T) {
+// TestInstallScriptUsesPrepareHooks guards the design invariant: the
+// warm-up command must be `prek prepare-hooks`, NOT `prek install`.
+// `prek install` writes a shim into .git/hooks (and `prek install
+// --prepare-hooks` warms AND writes it), mutating the repo working tree
+// on what the user opted into as a warm-up. If a future edit swaps the
+// verb, this test fails before the surprise ships.
+func TestInstallScriptUsesPrepareHooks(t *testing.T) {
 	b, err := FeatureFS.ReadFile("feature/install.sh")
 	if err != nil {
 		t.Fatalf("read install.sh: %v", err)
 	}
-	if !bytes.Contains(b, []byte("pre-commit install-hooks")) {
-		t.Fatalf("install.sh must invoke `pre-commit install-hooks` for hook warming")
+	if !bytes.Contains(b, []byte("prek prepare-hooks")) {
+		t.Fatalf("install.sh must invoke `prek prepare-hooks` for hook warming")
 	}
-	// `pre-commit install` (no -hooks suffix) writes the git hook —
-	// reject any line that does so. The split-by-newline + token check
-	// avoids false positives on the substring within `install-hooks`.
+	// `prek install` (in any form) writes the git shim — reject it in any
+	// non-comment line. `prek prepare-hooks` does not contain the
+	// substring, so a plain per-line Contains check is enough.
 	for _, line := range bytes.Split(b, []byte("\n")) {
 		trimmed := bytes.TrimSpace(line)
 		if bytes.HasPrefix(trimmed, []byte("#")) {
 			continue
 		}
-		// Match `pre-commit install` followed by end-of-token (space, quote, end).
-		idx := bytes.Index(trimmed, []byte("pre-commit install"))
-		if idx < 0 {
-			continue
-		}
-		after := trimmed[idx+len("pre-commit install"):]
-		if len(after) == 0 || after[0] == ' ' || after[0] == '\'' || after[0] == '"' {
-			t.Fatalf("install.sh has bare `pre-commit install` — would mutate .git/hooks: %q", string(line))
+		if bytes.Contains(trimmed, []byte("prek install")) {
+			t.Fatalf("install.sh has `prek install` — would mutate .git/hooks: %q", string(line))
 		}
 	}
 }

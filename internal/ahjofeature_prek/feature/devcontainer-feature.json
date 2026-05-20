@@ -1,0 +1,6 @@
+{
+  "id": "prek",
+  "version": "1.0.0",
+  "name": "prek (ahjo built-in)",
+  "description": "Installs prek (a dependency-free, Rust-based pre-commit) and warms the hook cache from /repo/.pre-commit-config.yaml. prepare-hooks is used so .git/hooks is left untouched — the Feature is pure warm-up, not a git-hook installer."
+}
