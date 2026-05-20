@@ -112,6 +112,13 @@ func BuildAhjoBase(out io.Writer, force bool) error {
 		return err
 	}
 
+	// Harden apt before any Feature's install.sh runs apt-get. Bakes into
+	// ahjo-base, so every repo/branch container inherits it for Feature +
+	// warm installs.
+	if err := writeAptResilience(buildName, out); err != nil {
+		return err
+	}
+
 	env := RuntimeEnv()
 
 	if err := applyUpstreamBaseFeatures(buildName, env, out); err != nil {
@@ -131,6 +138,36 @@ func BuildAhjoBase(out io.Writer, force bool) error {
 
 	fmt.Fprintf(out, "  → incus publish %s --alias %s\n", buildName, AhjoBaseAlias)
 	return incus.Publish(buildName, AhjoBaseAlias)
+}
+
+// aptResilienceConf hardens apt against transient ports.ubuntu.com flakes —
+// chiefly the brief window during a mirror publish where the package index
+// already lists a version whose .deb still 404s in the pool, plus slow-mirror
+// stalls. Retries let apt re-resolve the round-robin mirror and pick up a
+// synced backend (with apt 2.x's automatic backoff between attempts) instead
+// of failing the whole Feature install on the first miss; the timeouts cap a
+// hung connection so a retry actually gets a turn. The 80- prefix loads it
+// after apt's own defaults so these win.
+const aptResilienceConf = `Acquire::Retries "3";
+Acquire::http::Timeout "30";
+Acquire::https::Timeout "30";
+`
+
+// writeAptResilience drops aptResilienceConf into the build container's
+// apt.conf.d as root, before the upstream Features whose install.sh calls
+// apt-get update/upgrade. apt.conf.d already exists on the Ubuntu base; the
+// mkdir -p is belt-and-suspenders.
+func writeAptResilience(buildName string, out io.Writer) error {
+	fmt.Fprintln(out, "  → writing apt retry/timeout config (/etc/apt/apt.conf.d/80-ahjo-retries)")
+	script := "set -e\n" +
+		"mkdir -p /etc/apt/apt.conf.d\n" +
+		"cat > /etc/apt/apt.conf.d/80-ahjo-retries <<'EOF'\n" +
+		aptResilienceConf +
+		"EOF\n"
+	if _, err := incus.Exec(buildName, "sh", "-c", script); err != nil {
+		return fmt.Errorf("write apt resilience config: %w", err)
+	}
+	return nil
 }
 
 // applyUpstreamBaseFeatures fetches, resolves, and applies the curated
