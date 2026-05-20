@@ -27,25 +27,54 @@ ahjo init
 ahjo doctor
 ```
 
-#### 2. Run Claude Code
+#### 2. Starting a feature container from CLI
 
-##### In a container through CLI
+##### Quickest - Let ahjo try auto detect your tech stack
 
-This relies on automagicism in `ahjo claude`, which assumes you are using GitHub and is triggered when `ahjo repo add <repo>` and `ahjo create <repo> <branch>` have not yet been run:
-
-```
-# e.g. ahjo claude lasselaakkonen/ahjo@readme-quick-start --container-config node
-# Or replace 'node' with other built-in base toolsets: 'python', 'go', 'rust'
-# Later you will define your own, but you can use those built-in ones now.
-ahjo claude <account>/<repo>@<branch> --container-config node
-```
+There is automagicism in `ahjo claude` and `ahjo ide`, which assumes you are using GitHub and is triggered when `ahjo repo add <repo>` and `ahjo create <repo> <branch>` have not yet been run. It automatically:
 
 - **Creates base container for repo** without any specific tech stack support -- one time step, takes a few minutes. ⚠️  Copies `CLAUDE.md`, `settings.json`, `.claude.json`, `agents/`, `commands/`, `skills/`, `rules/` from `~/.claude` to the container, which moves them over the isolation boundary.
+- **Tries to detect your tech stack** based on the content of your repo
 - **Asks for you to create a fine grained PAT for GitHub** -- the containers for that repo will have access ONLY to that repo
 - **Asks you which tech stack you want** -- these can be configured extensively, but the prompt let's you set a basic set of tooling in to the container
 - **Creates a feature container** -- takes only seconds, won't have your project tech stack or tooling in it
 
-##### In a container through TUI
+```
+# e.g. ahjo claude lasselaakkonen/ahjo@readme-quick-start
+ahjo claude <account>/<repo>@<branch>
+```
+
+##### Quick - Define tech stack in CLI params
+
+Set `--container-config` as `node`, `python`, `go` or `rust`,  which automatically install tooling for your stack.
+
+`--container-config node` is necessary only on the first 
+
+```
+ahjo repo add <account>/<repo> --container-config <node|python|go|rust>
+ahjo create <account>/<repo> <branch>
+ahjo claude <account>/<repo>@<branch> 
+```
+
+For example:
+
+```
+ahjo repo add lasselaakkonen/ahjo --container-config go
+ahjo repo create lasselaakkonen/ahjo readme-quick-start
+ahjo claude lasselaakkonen/ahjo@readme-quick-start
+```
+
+##### Long term - Add `.ahjo/ahjocontainer.json` to your repo
+
+Add `.ahjo/ahjocontainer.json` to your repo, see [Container tech stack setup](#Container tech stack setup).
+
+```
+ahjo repo add <account>/<repo>
+ahjo create <account>/<repo> <branch>
+ahjo claude <account>/<repo>@<branch>
+```
+
+#### 3. Starting a feature container from TUI
 
 ```
 ahjo
@@ -55,7 +84,23 @@ ahjo
 2. Add container
 3. Press `a` to open your agent, only one available for now is Claude Code
 
-#### 3. Domain concepts
+#### 4. Edit code with VS Code / Cursor / etc
+
+```
+ahjo ide <account>/<repo>@<branch>
+```
+
+Or similarly from TUI.
+
+#### 5. Access feature container with SSH
+
+```
+ahjo ssh <account>/<repo>@<branch>
+```
+
+Or similarly from TUI.
+
+## Domain concepts
 
 **Ahjo base image** is
 
@@ -107,16 +152,12 @@ Start work on first feature:
 ahjo create myacc/repo "JIRA-123 Add thingamajig"
 
 ahjo claude myacc/repo@JIRA-123-Add-thingamajig
-
-# ... let Claude loose in the container ...
 ```
 
 Start work on the second feature:
 
 ```
 ahjo claude myacc/repo feat/twiddle-with-ui
-
-# ... let Claude loose in the container ...
 ```
 
 After you exit the Claude sessions, if the git dir is clean and PR is merged, ahjo will ask you if you want to remove the containers. Otherwise you can remove them later yourself:
@@ -153,7 +194,7 @@ ahjo mirror off
 
 ⚠️ For now ahjo DOES NOT do any clean up in `/Users/lasse/github/myrepo`, you need to do it yourself, perhaps with just `git checkout .`.
 
-### View multiple versions of same app running in multiple containers
+### Use multiple versions of same app running in multiple containers
 
 Create feature containers for each branch:
 
@@ -316,91 +357,6 @@ sudo ln -sf "$PWD/ahjo" /usr/local/bin/ahjo
 
 `make build` on macOS also drops `dist/ahjo-linux-<arch>` next to `./ahjo` — the in-VM companion. The symlink keeps the binary resolvable from `/usr/local/bin/ahjo` while leaving the companion next to its source, so `ahjo init` finds it locally without hitting GitHub. (Released binaries don't need the companion on disk; they fetch the matching one from the same release tag and verify it against `SHA256SUMS`.)
 
-### First run
-
-```sh
-ahjo init
-```
-
-That's it. Step-by-step prompts walk you through every install. The flow is resumable: re-running `ahjo init` skips anything already done.
-
-On macOS, `ahjo init` auto-detects the host ssh-agent (1Password, Secretive, gpg-agent, or whatever `IdentityAgent` in `~/.ssh/config` points at), persists the chosen socket to `~/.ahjo/config.toml`, and overrides `SSH_AUTH_SOCK` on every `limactl` invocation — no shellrc edits required. If no agent with keys is reachable, the init step errors out: load a key into your agent and re-run `ahjo init`. `ahjo doctor` verifies this end-to-end. See [CONTAINER-ISOLATION.md](CONTAINER-ISOLATION.md#the-ssh-agent-hole) for why agent forwarding (not key copying) is the model.
-
-On macOS the same command does both the host setup (Homebrew check → `brew install lima` → `limactl start`) and the in-VM bring-up (Zabbly + Incus, `incus admin init`, build the `ahjo-base` image by applying the embedded `ahjo-runtime` devcontainer Feature on top of `images:ubuntu/24.04`, `claude setup-token`). It pulls the matching `ahjo-linux-<arch>` from the GitHub release that built your host binary, verifies it against `SHA256SUMS`, drops it into the VM at `/usr/local/bin/ahjo`, and drives the rest by relaying through `limactl shell`. No second invocation, no shelling into the VM.
-
-On Linux there's no VM — `ahjo init` runs the bring-up directly. After `usermod -aG incus-admin` it re-execs itself under `sg incus-admin` so the new group activates without a re-shell, then continues with the `ahjo-base` build and `claude setup-token` in the same pass.
-
-`claude setup-token` requires the `claude` CLI on PATH inside the VM. ahjo will not auto-install it — if it's missing the step fails with install instructions. The resulting `sk-ant-oat01-…` token is saved to `~/.ahjo/.env` (mode 0600) and loaded automatically on every ahjo invocation, so containers receive it via the `forward_env` mechanism (applied with `incus exec --env`) without any shellrc edits.
-
-## Use case example
-
-You are reviewing two PRs against `acme-api` and prototyping a feature on `acme-web`, and you want each in its own clean container so they cannot collide on ports, dependencies, or `node_modules`.
-
-```sh
-# 1. Register the repos. ahjo bare-clones them into ~/.ahjo/repos/ and
-#    auto-aliases each by <owner>/<repo>. Use --as to add a friendlier alias.
-ahjo repo add git@github.com:acme/api.git           # alias: acme/api
-#   → after clone, ahjo asks for a GitHub PAT to forward into containers
-#     for this repo via $GH_TOKEN. Prefer a fine-grained PAT scoped to
-#     JUST this repo (Contents + PRs + Issues + Metadata):
-#         https://github.com/settings/personal-access-tokens/new
-#     Press Enter to skip; set later with `ahjo repo set-token acme/api`.
-#
-#     Auth model in containers:
-#       - SSH remotes (git@…) — host's ssh-agent forwarded into the
-#         container; PAT is irrelevant for plain `git`.
-#       - HTTPS remotes (https://…) — `gh auth setup-git` wires git's
-#         HTTPS credential helper to read the per-repo PAT, so raw
-#         `git clone/fetch/push/pull` works without per-call env juggling.
-#       - `gh` itself — uses the per-repo PAT either way.
-#     ahjo never auto-rewrites SSH ↔ HTTPS.
-ahjo repo add git@github.com:acme/web.git \
-  --default-base develop --as web                   # aliases: acme/web, web
-
-# 2. Spin up a worktree per branch. Each one gets its own container,
-#    its own SSH port, its own host keys. Auto alias is <repo-alias>@<branch>;
-#    --as adds a second one.
-ahjo create acme/api pr-482-rate-limit                 # alias: acme/api@pr-482-rate-limit
-ahjo create acme/api pr-491-token-refresh              # alias: acme/api@pr-491-token-refresh
-ahjo create web feat/checkout-redesign --as checkout   # aliases: acme/web@feat/checkout-redesign, checkout
-
-# 3. Drop into the first one. Container starts on demand.
-#    `ahjo shell` opens an interactive shell; use `ahjo claude` to launch claude.
-ahjo shell acme/api@pr-482-rate-limit
-#   ... in the container's shell, work normally ...
-ahjo claude acme/api@pr-482-rate-limit
-#   ... in claude's TUI, with the worktree mounted at /workspace ...
-
-# 4. From the Mac, ssh straight in (e.g. for VS Code Remote-SSH).
-#    Any alias works — auto or --as.
-ahjo ssh checkout
-
-# 5. Any TCP loopback listener inside the container with port >= 3000 is
-#    auto-exposed on 127.0.0.1 of the host (Mac via Lima auto-forward).
-#    For pre-existing listeners ahjo wires this up at `ahjo shell` start.
-#    For listeners that come up later (e.g. after `docker compose up`),
-#    refresh from another terminal:
-ahjo expose checkout --sync
-#   -> auto-expose: container :3000 -> 127.0.0.1:10042
-#      auto-expose: container :5432 -> 127.0.0.1:10043
-#
-# Or manually pin a single port (no threshold check, allocation persisted):
-ahjo expose checkout 3000
-#   -> container :3000 -> 127.0.0.1:10042
-
-# 6. See what is running.
-ahjo ls
-
-# 7. Done with a branch. Tear down the container, the worktree,
-#    and free the ports.
-ahjo rm acme/api@pr-482-rate-limit
-
-# 8. Sweep up anything older than a week.
-ahjo gc --older-than 168h --prune
-```
-
-State lives under `~/.ahjo/` (registry, ports, host keys, profiles). The Mac shim reads `~/.ahjo-shared/ssh-config` on the host so `ahjo ssh` works without entering the VM first.
-
 ## Commands
 
 | Command | What it does |
@@ -408,22 +364,25 @@ State lives under `~/.ahjo/` (registry, ports, host keys, profiles). The Mac shi
 | `ahjo init [-y]` | One-time setup. Mac: Lima + VM, then drop `ahjo-linux-<arch>` into the VM and relay the in-VM bring-up. In VM (or directly on Linux): Incus + `ahjo-base` image (built from `images:ubuntu/24.04` by applying the embedded `ahjo-runtime` devcontainer Feature) + `~/.ahjo/` skeleton. Resumable. |
 | `ahjo update [-y]` | Refresh in-place. Mac: push the current `ahjo-linux-<arch>` into the VM (no-op if the version already matches). VM: rebuild the `ahjo-base` image by force-replaying the `ahjo-runtime` Feature on top of the local `ahjo-osbase` mirror of upstream Ubuntu. Run after editing the host binary or the embedded Feature. |
 | `ahjo doctor` | Read-only host check. Reports anything `init` would fix. |
-| `ahjo repo add <git-url> [--as <alias>] [--default-base <branch>]` | Register a repo and bare-clone it under `~/.ahjo/repos/`. Auto alias is `<owner>/<repo>` from the URL; `--as` adds a second alias. On collision (e.g. github vs gitlab `acme/api`), ahjo suffixes `-2`/`-3`/… |
+| `ahjo repo add <git-url> [--as <alias>] [--default-base <branch>] [--container-config <stack\|path>] [-y]` | Register a repo: clone it at `/repo` inside a fresh `ahjo-base` container (the COW source for every branch container) and warm-install dependencies. Auto alias is `<owner>/<repo>` from the URL; `--as` adds a second alias. On collision (e.g. github vs gitlab `acme/api`), ahjo suffixes `-2`/`-3`/… `--container-config` picks a bundled stack (`node`/`python`/`go`/`rust`), a repo-local `.ahjo/<name>.json`, or a host path; `-y` skips the GitHub PAT prompt (set one later with `ahjo repo set-token`). |
 | `ahjo repo ls` | List registered repos with their aliases. |
-| `ahjo repo rm <alias> [--force]` | Drop a repo by any of its aliases. Refuses if worktrees still exist. |
+| `ahjo repo rm <alias> [--force]` | Drop a repo by any of its aliases: stops + deletes every branch container in the repo (including the default-branch COW source), frees ports, and removes the registry rows. Refuses if non-default branch containers exist unless `--force` (which also deletes them, losing any in-flight work). |
 | `ahjo repo set-token <alias>` | Set/rotate the GitHub PAT forwarded into containers for one repo. Hidden-input prompt; stored at `~/.ahjo/repo-env/<slug>.env` (mode 0600). Use a fine-grained PAT scoped to the repo so autonomous agents can't reach anything else. |
+| `ahjo repo pull <repo-alias>` | `git pull --ff-only` in the repo's default-branch container (the COW source new branches clone from). Starts the container if stopped, pulls fast-forward only, and leaves it running so the next `ahjo create` COWs from a base in sync with origin. |
 | `ahjo env set KEY [VALUE]` / `get` / `unset` / `list [--show]` | Read/write `~/.ahjo/.env`. Keys listed in `forward_env` (default: `CLAUDE_CODE_OAUTH_TOKEN`, `GH_TOKEN`) are forwarded into every container. Omit `VALUE` to prompt with hidden input. Per-repo `.env` (via `repo set-token`) takes precedence over the global file. |
 | `ahjo create <repo-alias> <branch> [--as <alias>] [--base <ref>] [--no-fetch]` | Create a COW branch container by copying the repo's default container (`incus copy`) and checking out `<branch>` inside it. Auto alias is `<repo-primary-alias>@<branch>`; `--as` adds a second alias. Idempotent. |
-| `ahjo shell <alias> [--update]` | Start the container if needed, wire SSH proxy + sshd, attach an interactive bash via `incus exec --force-interactive` as the in-container `ubuntu` user. `--update` shuts down and deletes the existing container first so the next attach builds a fresh one from the current `ahjo-base` image; the host keys, registry entry, and ssh port are preserved. |
-| `ahjo claude <alias> [--update]` | Same prep as `ahjo shell`, but launches `claude` inside the container instead of dropping to a shell. |
+| `ahjo shell <alias> [--update] [--force]` | Start the container if needed, wire SSH proxy + sshd, attach an interactive bash via `incus exec --force-interactive` as the in-container `ubuntu` user. `--update` shuts down and deletes the existing container first so the next attach builds a fresh one from the current `ahjo-base` image; the host keys, registry entry, and ssh port are preserved. `--force` (with `--update`) skips the `/repo` cleanliness check and recreates even when uncommitted/unpushed work is present. |
+| `ahjo claude <alias> [--update] [--force] [--container-config <stack\|path>]` | Same prep as `ahjo shell`, but launches `claude` inside the container instead of dropping to a shell. `--update`/`--force` behave as for `ahjo shell`; `--container-config` resolves the stack the same way as `ahjo repo add` on first launch. |
 | `ahjo ssh <alias>` | `exec ssh` into the container using the generated ssh-config (Mac-side or in-VM). |
 | `ahjo expose <alias> <container-port>` | Manually add an Incus proxy device exposing a container port on `127.0.0.1`. |
 | `ahjo expose <alias> --sync` | Reconcile auto-expose proxy devices to the container's current TCP loopback listeners (skipping `:22` and ports below `[auto_expose].min_port`). Run after starting docker-compose / a dev server inside the container so newly-bound ports surface to the host. Manual `ahjo expose` entries are untouched. |
+| `ahjo mirror <alias> --target <path>` (also `off` / `status` / `logs <alias>`) | One-way push from `/repo` (inside the branch container) to a Mac path via the in-container `ahjo-mirror` daemon. `--target` is sticky per-repo; `--no-skiplist` also mirrors `node_modules` etc. `mirror off` stops the active mirror, `mirror status` lists mirrors across the registry, `mirror logs <alias>` tails the daemon's journal. |
+| `ahjo top` | Open the Miller-columns TUI (repos · worktrees · details) for browsing and acting on containers interactively. |
 | `ahjo ls` | Worktrees with aliases, slug, SSH port, container state, creation time. |
-| `ahjo rm <alias>` | Stop + delete the container, remove the worktree, free ports, drop the registry entry. |
+| `ahjo rm <alias> [--force] [--force-default]` | Stop + delete the container, remove the worktree, free ports, drop the registry entry. `--force` skips the `/repo` cleanliness check and removes even with uncommitted/unpushed work; `--force-default` permits removing a repo's default-branch container (after which the repo can't spawn new branches until re-added). |
 | `ahjo gc [--older-than DUR] [--prune] [--dry-run]` | Report (and optionally remove) stale worktrees. Defaults to dry-run. |
 | `ahjo nuke [-y]` | Tear down everything `init` built so it can be rebuilt: containers, `ahjo-base` + `ahjo-osbase` images (and any leftover `coi-default` from a pre-Phase-1 install), host keys, port allocations. On macOS this also stops + deletes the Lima VM. Keeps `~/.ahjo/{config.toml,profiles}` and registered repos. |
-| `ahjo version` | Print the version baked into the binary. |
+| `ahjo --version` | Print the version baked into the binary. (`ahjo version` also works on macOS; on Linux use the `--version` flag.) |
 
 Global config: `~/.ahjo/config.toml` (optional). See [`internal/config/config.go`](internal/config/config.go) for fields — currently `forward_env`, `port_range`, and `auto_expose`.
 
@@ -539,4 +498,3 @@ That points `core.hooksPath` at `.githooks/`. Idempotent; safe to re-run.
 - **Inside an ahjo container**: nothing to do — `.ahjo/ahjocontainer.json` installs Go and golangci-lint on container create via the upstream Feature and `postCreateCommand`.
 
 Bypass when you need to: `SKIP_HOOKS=1 git commit ...` (graceful, prints a notice) or `git commit --no-verify` (hard skip).
-
