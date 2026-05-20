@@ -41,13 +41,13 @@ func TestListContainsDocker(t *testing.T) {
 	}
 }
 
-func TestLookupPreCommit(t *testing.T) {
-	m, ok := Lookup("pre-commit")
+func TestLookupPrek(t *testing.T) {
+	m, ok := Lookup("prek")
 	if !ok {
-		t.Fatal("Lookup(pre-commit) returned !ok")
+		t.Fatal("Lookup(prek) returned !ok")
 	}
 	if m == nil {
-		t.Fatal("Lookup(pre-commit) returned nil materializer")
+		t.Fatal("Lookup(prek) returned nil materializer")
 	}
 	dst := t.TempDir()
 	if err := m(dst); err != nil {
@@ -60,9 +60,9 @@ func TestLookupPreCommit(t *testing.T) {
 	}
 }
 
-func TestListContainsPreCommit(t *testing.T) {
+func TestListContainsPrek(t *testing.T) {
 	got := List()
-	if !strings.Contains(got, "pre-commit") {
-		t.Fatalf("List() = %q; expected to include pre-commit", got)
+	if !strings.Contains(got, "prek") {
+		t.Fatalf("List() = %q; expected to include prek", got)
 	}
 }
