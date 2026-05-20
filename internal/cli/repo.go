@@ -326,10 +326,28 @@ func repoAddSetup(slug, primary string, aliases []string, url, defaultBase strin
 		return wrapCloneErr(err)
 	}
 
+	// A plain `git clone` checks out the remote's HEAD branch. When the user
+	// passes an explicit --default-base that differs, the working tree is on
+	// the wrong branch: the clone fetched origin/<default-base> as a
+	// remote-tracking ref, but never checked it out. Detection (empty
+	// defaultBase) reads that same HEAD, so the tree already matches and the
+	// checkout below is a no-op; an explicit override must be checked out so
+	// container-config detection, Features, warm-install, the lifecycle
+	// hooks, and `ahjo shell <repo>@<default-base>` all operate on the
+	// recorded base branch. (Feature containers re-checkout origin/<base> on
+	// their own — see cli/create.go — but the base container is itself the
+	// default-branch container.)
+	explicitBase := defaultBase != ""
 	if defaultBase == "" {
 		defaultBase, err = detectContainerDefaultBranch(containerName)
 		if err != nil {
 			return fmt.Errorf("detect default branch (pass --default-base to override): %w", err)
+		}
+	}
+	if explicitBase {
+		fmt.Printf("→ git checkout -B %s origin/%s (in container)\n", defaultBase, defaultBase)
+		if err := incus.ExecAs(containerName, 1000, nil, paths.RepoMountPath, "git", "checkout", "-B", defaultBase, "origin/"+defaultBase); err != nil {
+			return fmt.Errorf("checkout --default-base %q (does the branch exist on the remote?): %w", defaultBase, err)
 		}
 	}
 
