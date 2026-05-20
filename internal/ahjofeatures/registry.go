@@ -27,7 +27,7 @@ import (
 	"strings"
 
 	"github.com/lasselaakkonen/ahjo/internal/ahjofeature_docker"
-	"github.com/lasselaakkonen/ahjo/internal/ahjofeature_pre_commit"
+	"github.com/lasselaakkonen/ahjo/internal/ahjofeature_prek"
 )
 
 // Materializer copies an embedded Feature dir into dst. Signature
@@ -41,8 +41,8 @@ type Materializer func(dst string) error
 // lowercase ASCII; users get `ahjo/<name>` echoed back verbatim in
 // errors so the case must match what the docs show.
 var table = map[string]Materializer{
-	ahjofeature_docker.FeatureID:     ahjofeature_docker.Materialize,
-	ahjofeature_pre_commit.FeatureID: ahjofeature_pre_commit.Materialize,
+	ahjofeature_docker.FeatureID: ahjofeature_docker.Materialize,
+	ahjofeature_prek.FeatureID:   ahjofeature_prek.Materialize,
 }
 
 // Lookup returns the materializer for name and true, or nil/false if no

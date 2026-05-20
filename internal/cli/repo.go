@@ -781,7 +781,7 @@ func detectContainerDefaultBranch(containerName string) (string, error) {
 // so a workspace repo (go.work + go.sum) runs `go work sync` once
 // instead of also running `go mod download` after, and a repo carrying
 // both pnpm-lock and package-lock warms pnpm only. Rows without a
-// warm-install command (Docker, pre-commit — the Feature install IS
+// warm-install command (Docker, prek — the Feature install IS
 // the warm-up) are skipped silently. Branch containers (cloned via
 // `incus copy` with btrfs/zfs reflinks) inherit the hot dependency
 // cache. hostEnv is forwarded into each installer (NPM_TOKEN etc.).
