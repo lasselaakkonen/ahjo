@@ -50,6 +50,7 @@ func createVMStep(yes bool) initflow.Step {
 			}
 			cmd := []string{
 				"limactl", "start",
+				"--tty=false",
 				"--name=" + vmName,
 				fmt.Sprintf("--cpus=%d", cpus),
 				fmt.Sprintf("--memory=%d", mem),
@@ -59,7 +60,7 @@ func createVMStep(yes bool) initflow.Step {
 				"--set=.ssh.forwardAgent=true",
 				"template:ubuntu-lts",
 			}
-			fmt.Fprintf(out, "  > limactl start \\\n"+
+			fmt.Fprintf(out, "  > limactl start --tty=false \\\n"+
 				"  --name=%s --cpus=%d --memory=%d --disk=%d \\\n"+
 				"  --vm-type=vz --rosetta --mount-writable --network=vzNAT \\\n"+
 				"  --set='.ssh.forwardAgent=true' \\\n"+
