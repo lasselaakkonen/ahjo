@@ -57,13 +57,13 @@ func createVMStep(yes bool) initflow.Step {
 				"--vm-type=vz", "--rosetta",
 				"--mount-writable", "--network=vzNAT",
 				"--set=.ssh.forwardAgent=true",
-				"template://ubuntu-lts",
+				"template:ubuntu-lts",
 			}
 			fmt.Fprintf(out, "  > limactl start \\\n"+
 				"  --name=%s --cpus=%d --memory=%d --disk=%d \\\n"+
 				"  --vm-type=vz --rosetta --mount-writable --network=vzNAT \\\n"+
 				"  --set='.ssh.forwardAgent=true' \\\n"+
-				"  template://ubuntu-lts\n",
+				"  template:ubuntu-lts\n",
 				vmName, cpus, mem, disk)
 			return initflow.RunShellEnv(out, lima.Env(), "", cmd...)
 		},
