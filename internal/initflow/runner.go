@@ -36,6 +36,10 @@ type Step struct {
 	// may carry their own interactive prompt). The global --yes flag already
 	// skips all prompts; this opts a single step out unconditionally.
 	NoConfirm bool
+	// DefaultYes makes the confirmation prompt default to yes, so a bare
+	// Enter accepts. Shown as "[Y/n]" instead of "[y/N]". Ignored when
+	// NoConfirm is set or --yes is passed.
+	DefaultYes bool
 }
 
 type Runner struct {
@@ -68,7 +72,7 @@ func (r Runner) Execute(steps []Step) error {
 			}
 		}
 		if !r.Yes && !s.NoConfirm {
-			ok, err := r.confirm()
+			ok, err := r.confirm(s.DefaultYes)
 			if err != nil {
 				return err
 			}
@@ -91,13 +95,20 @@ func (r Runner) Execute(steps []Step) error {
 	return nil
 }
 
-func (r Runner) confirm() (bool, error) {
-	fmt.Fprint(r.Out, "  Run? [y/N] ")
+func (r Runner) confirm(defaultYes bool) (bool, error) {
+	prompt := "  Run? [y/N] "
+	if defaultYes {
+		prompt = "  Run? [Y/n] "
+	}
+	fmt.Fprint(r.Out, prompt)
 	sc := bufio.NewScanner(r.In)
 	if !sc.Scan() {
 		return false, sc.Err()
 	}
 	ans := strings.ToLower(strings.TrimSpace(sc.Text()))
+	if ans == "" {
+		return defaultYes, nil
+	}
 	return ans == "y" || ans == "yes", nil
 }
 
