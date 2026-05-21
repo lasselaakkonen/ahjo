@@ -4,17 +4,23 @@
 #
 # Usage:
 #   curl -fsSL https://raw.githubusercontent.com/lasselaakkonen/ahjo/master/install.sh | sh
+#   curl -fsSL https://raw.githubusercontent.com/lasselaakkonen/ahjo/master/install.sh | sh -s -- --install-dir <dir>
+#
+# Options:
+#   --install-dir <dir>  install location; default: /usr/local/bin
 #
 # Env:
 #   AHJO_VERSION  pin a tag (e.g. v0.0.1); default: latest release
-#   INSTALL_DIR   install location;        default: /usr/local/bin
+#   INSTALL_DIR   same as --install-dir   (the flag takes precedence)
 
 set -eu
 
 REPO="lasselaakkonen/ahjo"
-INSTALL_DIR="${INSTALL_DIR:-/usr/local/bin}"
+INSTALL_DIR="${INSTALL_DIR:-}"   # from env if set; --install-dir overrides; default applied after parse
 
 main() {
+    parse_args "$@"
+    : "${INSTALL_DIR:=/usr/local/bin}"
     require curl
     platform=$(detect_platform)
     tag=$(resolve_tag "${AHJO_VERSION:-}")
@@ -36,6 +42,40 @@ main() {
 
     "${INSTALL_DIR}/ahjo" --version
     say "next: run 'ahjo init'"
+}
+
+parse_args() {
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --install-dir)
+                [ $# -ge 2 ] || die "--install-dir requires a directory"
+                INSTALL_DIR=$2; shift 2 ;;
+            --install-dir=*)
+                INSTALL_DIR=${1#*=}; shift ;;
+            -h|--help)
+                usage; exit 0 ;;
+            *)
+                die "unknown argument: $1 (see --help)" ;;
+        esac
+    done
+}
+
+usage() {
+    cat >&2 <<EOF
+install.sh — install the ahjo binary for this platform
+
+Usage:
+  curl -fsSL https://raw.githubusercontent.com/${REPO}/master/install.sh | sh
+  curl -fsSL https://raw.githubusercontent.com/${REPO}/master/install.sh | sh -s -- --install-dir <dir>
+
+Options:
+  --install-dir <dir>   install location (default: /usr/local/bin)
+  -h, --help            show this help
+
+Env:
+  AHJO_VERSION   pin a release tag (e.g. v0.0.1); default: latest
+  INSTALL_DIR    same as --install-dir (the flag takes precedence)
+EOF
 }
 
 detect_platform() {
@@ -92,15 +132,34 @@ verify() {
 install_binary() {
     src=$1
     dst=$2
-    chmod 0755 "$src"
     dir=$(dirname "$dst")
-    if [ -w "$dir" ]; then
+    chmod 0755 "$src"
+
+    # Unprivileged path: create the dir (if missing) and move into place.
+    if mkdir -p "$dir" 2>/dev/null && [ -w "$dir" ]; then
         mv -f "$src" "$dst"
-    elif command -v sudo >/dev/null 2>&1; then
-        sudo install -m 0755 "$src" "$dst"
-    else
-        die "no write access to ${dir} and no sudo on PATH; set INSTALL_DIR=<writable dir> and retry"
+        return
     fi
+
+    # Needs root to create or write the directory.
+    command -v sudo >/dev/null 2>&1 \
+        || die "no write access to ${dir} and no sudo on PATH; re-run with --install-dir=<writable dir>, e.g. --install-dir=\"\$HOME/.local/bin\""
+
+    explain_sudo "$dir"
+    sudo mkdir -p "$dir"
+    sudo install -m 0755 "$src" "$dst"
+}
+
+# Printed ABOVE the sudo password prompt so the user knows the escape hatch.
+explain_sudo() {
+    dir=$1
+    {
+        printf '\n'
+        printf '  %s needs administrator rights; you will be prompted for your password.\n' "$dir"
+        printf '  to install without sudo, pass a writable directory instead, e.g.:\n'
+        printf '    curl -fsSL https://raw.githubusercontent.com/%s/master/install.sh | sh -s -- --install-dir "$HOME/.local/bin"\n' "$REPO"
+        printf '\n'
+    } >&2
 }
 
 require() {
