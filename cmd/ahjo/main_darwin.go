@@ -97,7 +97,18 @@ func main() {
 		macFail := runMacDoctor(os.Stdout, fix)
 		vmFail := false
 		if vmRunning() {
-			cmd := lima.Cmd("shell", vmName, "ahjo", "doctor")
+			// Carry the same host-identity/home bridge the generic relay
+			// path uses (see below). Without it the in-VM `checkGitIdentity`
+			// resolves against the VM's empty `git config --global` and
+			// reports a false "no host git identity" failure, even though
+			// `ahjo repo add` — which *does* bridge — would succeed.
+			shellArgs := []string{"shell", vmName}
+			if env := hostBridgeEnv(); len(env) > 0 {
+				shellArgs = append(shellArgs, "env")
+				shellArgs = append(shellArgs, env...)
+			}
+			shellArgs = append(shellArgs, "ahjo", "doctor")
+			cmd := lima.Cmd(shellArgs...)
 			cmd.Stdout = os.Stdout
 			cmd.Stderr = os.Stderr
 			if err := cmd.Run(); err != nil {
@@ -167,36 +178,8 @@ func main() {
 	if err := paste.EnsureRunning(); err != nil {
 		fmt.Fprintln(os.Stderr, "warn: paste-daemon:", err)
 	}
-	// Bridge the host's git identity into the VM. The in-VM ahjo's
-	// `git config --global` and `gh auth status` see a clean Linux user
-	// home that nothing else maintains, so VM-side identity-resolution
-	// would always come up empty. Resolving here (where `git` and `gh`
-	// actually live) and stuffing the result into env vars on the relay
-	// command lets `ahjo repo add`'s in-container `git config user.*`
-	// seed succeed without nagging the user to dual-maintain identity in
-	// the VM. ResolveHost errors are non-fatal at this stage: the
-	// in-VM path still falls back to its own resolution and surfaces
-	// the same friendly error message if it also comes up empty.
 	relayPrefix := []string{"shell", vmName}
-	envPairs := []string{}
-	if id, err := git.ResolveHost(); err == nil {
-		nameKey, emailKey, sourceKey := git.EnvKeys()
-		envPairs = append(envPairs,
-			nameKey+"="+id.Name,
-			emailKey+"="+id.Email,
-			sourceKey+"="+id.Source,
-		)
-	}
-	// Bridge the Mac home so in-VM code paths that copy host-side dotfiles
-	// (e.g. pushClaudeConfig sourcing ~/.claude/CLAUDE.md, skills/, agents/)
-	// read from the user's actual Mac config rather than the sparse VM
-	// home. /Users is reverse-mounted into the VM by Lima's default
-	// template, so the same path resolves on both sides without
-	// translation. Unset on Linux bare-metal, where os.UserHomeDir() is
-	// already the right answer.
-	if home, err := os.UserHomeDir(); err == nil {
-		envPairs = append(envPairs, "AHJO_HOST_HOME="+home)
-	}
+	envPairs := hostBridgeEnv()
 	envPairs = append(envPairs, repoEnv...)
 	if len(envPairs) > 0 {
 		relayPrefix = append(relayPrefix, "env")
@@ -230,6 +213,41 @@ func main() {
 		fmt.Fprintln(os.Stderr, "ahjo: exec limactl:", err)
 		os.Exit(1)
 	}
+}
+
+// hostBridgeEnv returns the KEY=VALUE pairs the shim prepends to a
+// `limactl shell <vm> env … ahjo …` relay so the in-VM ahjo resolves the
+// user's *Mac* identity and home instead of the VM's sparse ubuntu home.
+// Both the generic relay path and the dedicated `doctor` relay use it, so
+// a doctor green reflects what `ahjo repo add` will actually see.
+//
+//   - AHJO_HOST_GIT_*: the in-VM `git config --global` and `gh auth status`
+//     see a clean Linux home that nothing else maintains, so VM-side
+//     identity-resolution would always come up empty. Resolving here (where
+//     `git` and `gh` actually live) lets `ahjo repo add`'s in-container
+//     `git config user.*` seed succeed without nagging the user to
+//     dual-maintain identity in the VM. ResolveHost errors are non-fatal:
+//     the in-VM path still falls back to its own resolution and surfaces
+//     the same friendly error if it too comes up empty.
+//   - AHJO_HOST_HOME: in-VM code paths that copy host-side dotfiles (e.g.
+//     pushClaudeConfig sourcing ~/.claude/CLAUDE.md, skills/, agents/) read
+//     from the user's actual Mac config. /Users is reverse-mounted into the
+//     VM by Lima's default template, so the same path resolves on both
+//     sides without translation.
+func hostBridgeEnv() []string {
+	pairs := []string{}
+	if id, err := git.ResolveHost(); err == nil {
+		nameKey, emailKey, sourceKey := git.EnvKeys()
+		pairs = append(pairs,
+			nameKey+"="+id.Name,
+			emailKey+"="+id.Email,
+			sourceKey+"="+id.Source,
+		)
+	}
+	if home, err := os.UserHomeDir(); err == nil {
+		pairs = append(pairs, "AHJO_HOST_HOME="+home)
+	}
+	return pairs
 }
 
 // needsKeychainSweep reports whether the relay must run as a child (so the
