@@ -22,6 +22,20 @@ import (
 	"github.com/lasselaakkonen/ahjo/internal/tokenstore"
 )
 
+// initEpilogue is the closing "what next" block printed once at the end of a
+// successful in-VM init. `ahjo repo add` builds a *repository base container*
+// (the default-branch clone at /repo); `ahjo create` COW-clones a *feature
+// container* off that base for one branch; `ahjo claude` / `ahjo ide` attach
+// to a feature container by its alias.
+const initEpilogue = `
+Done. Try:
+  ahjo doctor                       # green check
+  ahjo repo add <git-url>           # clone into a repository base container
+  ahjo create <repo-alias> <branch> # COW-clone a feature container off the base
+  ahjo claude <alias>               # launch claude in the feature container
+  ahjo ide <alias>                  # open an SSH-capable IDE on the feature container
+`
+
 func newInitCmd() *cobra.Command {
 	var yes bool
 	cmd := &cobra.Command{
@@ -66,6 +80,13 @@ the init pipeline.`,
 				fmt.Fprintln(os.Stdout, "Before running other ahjo subcommands in this shell, either re-login or run:")
 				fmt.Fprintln(os.Stdout, "  exec sg incus-admin -c $SHELL")
 			}
+			// The epilogue lives here, not on the last step's Post, for two
+			// reasons: (1) skipped steps `continue` past Post, so on a re-run
+			// (onboarding already marked) the Post would never fire; (2) on
+			// macOS the Mac flow runs this in-VM init as its final step, so
+			// printing here means both platforms see the instructions exactly
+			// once — the Mac shim deliberately carries no epilogue of its own.
+			fmt.Fprint(os.Stdout, initEpilogue)
 			return nil
 		},
 	}
@@ -316,7 +337,6 @@ Signed-By: /etc/apt/keyrings/zabbly.asc
 				fmt.Fprintln(out, "  → merged hasCompletedOnboarding=true into "+p)
 				return nil
 			},
-			Post: "\nDone. Try:\n  ahjo doctor                              # green check\n  ahjo repo add <git-url>                  # clone into a default container\n  ahjo create <repo-alias> <branch>        # create a COW branch container",
 		},
 	}...)
 	return steps
