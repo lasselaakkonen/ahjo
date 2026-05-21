@@ -700,7 +700,9 @@ func macInitSteps(yes bool) []initflow.Step {
 				}
 				return nil
 			},
-			Post: "\nDone. Try:\n  ahjo doctor\n  ahjo repo add <git-url>           # alias derived from URL, or pass --as <alias>\n  ahjo create <repo-alias> <branch> # auto-aliased <repo-alias>@<branch>, or pass --as <alias>",
+			// No Post here on purpose: this step runs the in-VM `ahjo init`,
+			// which prints the shared epilogue itself (see initEpilogue in
+			// internal/cli/init.go). Adding one here would double it on macOS.
 		},
 	}
 }
