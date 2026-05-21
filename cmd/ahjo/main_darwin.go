@@ -578,31 +578,7 @@ func macInitSteps(yes bool) []initflow.Step {
 			},
 		},
 		pickAgentStep(yes),
-		{
-			Title: fmt.Sprintf("Create %q VM (vz + rosetta + writable mount + vzNAT)", vmName),
-			Skip: func() (bool, string, error) {
-				if vmExists() {
-					return true, "VM already exists", nil
-				}
-				return false, "", nil
-			},
-			Show: fmt.Sprintf(`limactl start \
-  --name=%s --cpus=4 --memory=8 --disk=50 \
-  --vm-type=vz --rosetta --mount-writable --network=vzNAT \
-  --set='.ssh.forwardAgent=true' \
-  template://ubuntu-lts`, vmName),
-			Action: func(out io.Writer) error {
-				return initflow.RunShellEnv(out, lima.Env(), "",
-					"limactl", "start",
-					"--name="+vmName,
-					"--cpus=4", "--memory=8", "--disk=50",
-					"--vm-type=vz", "--rosetta",
-					"--mount-writable", "--network=vzNAT",
-					"--set=.ssh.forwardAgent=true",
-					"template://ubuntu-lts",
-				)
-			},
-		},
+		createVMStep(yes),
 		{
 			Title: fmt.Sprintf("Ensure VM %q is running", vmName),
 			Skip: func() (bool, string, error) {
