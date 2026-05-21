@@ -345,7 +345,19 @@ One line, any supported platform (macOS x86_64/arm64, Linux x86_64/arm64) — de
 curl -fsSL https://raw.githubusercontent.com/lasselaakkonen/ahjo/master/install.sh | sh
 ```
 
-Pin a specific tag with `AHJO_VERSION=v0.0.1`, or install somewhere other than `/usr/local/bin` with `INSTALL_DIR="$HOME/.local/bin"`.
+The default install dir is `/usr/local/bin` (already on `PATH` on macOS and most
+Linux), so the installer uses `sudo` to create/write it when needed — it prints
+the `--install-dir` escape hatch right before prompting for your password.
+
+To install somewhere writable without `sudo`, pass `--install-dir` (note the
+`-s --`, which forwards arguments to the piped script):
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/lasselaakkonen/ahjo/master/install.sh | sh -s -- --install-dir "$HOME/.local/bin"
+```
+
+`INSTALL_DIR="$HOME/.local/bin"` works too (the flag takes precedence). Pin a
+specific tag with `AHJO_VERSION=v0.0.1`.
 
 Or build from source:
 
