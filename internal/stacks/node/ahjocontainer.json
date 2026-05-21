@@ -2,12 +2,18 @@
   // ahjo built-in "node" stack. Loaded when ahjo is invoked with
   // --stack=node against a repo that has no .ahjo/ahjocontainer.json.
   //
-  // Pins Node LTS via the upstream Feature, which also installs pnpm so
-  // ahjo's lockfile-detected warm-install (pnpm install --frozen-lockfile)
-  // works before postCreateCommand runs. The postCreateCommand then picks
-  // up .nvmrc if the repo carries one — purely a convenience for the user's
-  // future shells; warm-install already ran against the LTS the Feature
-  // installed.
+  // Pins Node LTS via the upstream Feature, which also installs pnpm (global
+  // to that one Node version) so ahjo's lockfile-detected warm-install
+  // (pnpm install --frozen-lockfile) works before postCreateCommand runs.
+  //
+  // postCreateCommand then picks up .nvmrc if the repo carries one. Switching
+  // the default Node version orphans the Feature's per-version pnpm — the new
+  // version has its own empty global dir, so node/npm/corepack are present but
+  // pnpm is not. We corepack-enable pnpm against whatever version ends up
+  // current; corepack ships with every Node, so the shim survives the switch
+  // and honors the repo's packageManager pin. Scoped to pnpm so we don't
+  // shadow the apt-installed yarn with a corepack shim that errors when no
+  // packageManager is declared.
   "name": "ahjo-stack-node",
   "features": {
     "ghcr.io/devcontainers/features/node:1": {
@@ -17,5 +23,5 @@
       "installYarnUsingApt": true
     }
   },
-  "postCreateCommand": "set -e; export NVM_DIR=${NVM_DIR:-/usr/local/share/nvm}; if [ -f /repo/.nvmrc ] && [ -s \"$NVM_DIR/nvm.sh\" ]; then . \"$NVM_DIR/nvm.sh\"; nvm install && nvm alias default \"$(nvm current)\"; fi"
+  "postCreateCommand": "set -e; export NVM_DIR=${NVM_DIR:-/usr/local/share/nvm}; if [ -s \"$NVM_DIR/nvm.sh\" ]; then . \"$NVM_DIR/nvm.sh\"; if [ -f /repo/.nvmrc ]; then nvm install && nvm alias default \"$(nvm current)\"; fi; corepack enable pnpm || true; fi"
 }
