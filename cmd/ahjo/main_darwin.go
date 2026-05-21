@@ -481,7 +481,8 @@ func macUpdateSteps() []initflow.Step {
 			},
 		},
 		{
-			Title: fmt.Sprintf("Resolve ahjo-linux-%s for the VM", runtime.GOARCH),
+			Title:     fmt.Sprintf("Resolve ahjo-linux-%s for the VM", runtime.GOARCH),
+			NoConfirm: true, // download into ahjo's own cache, SHA-verified, reversible
 			Skip: func() (bool, string, error) {
 				if p := resolveLinuxBinaryLocal(version, runtime.GOARCH); p != "" {
 					linuxBin = p
@@ -500,7 +501,8 @@ func macUpdateSteps() []initflow.Step {
 			},
 		},
 		{
-			Title: "Install ahjo into VM at " + vmAhjoPath,
+			Title:     "Install ahjo into VM at " + vmAhjoPath,
+			NoConfirm: true, // installs into the ahjo-managed VM, idempotent on version match
 			Skip: func() (bool, string, error) {
 				// dev/dirty builds always re-install (see init for rationale).
 				if version == "dev" || version == "" || strings.HasSuffix(version, "-dirty") {
@@ -593,7 +595,8 @@ func macInitSteps(yes bool) []initflow.Step {
 			},
 		},
 		{
-			Title: fmt.Sprintf("Resolve ahjo-linux-%s for the VM", runtime.GOARCH),
+			Title:     fmt.Sprintf("Resolve ahjo-linux-%s for the VM", runtime.GOARCH),
+			NoConfirm: true, // download into ahjo's own cache, SHA-verified, reversible
 			Skip: func() (bool, string, error) {
 				if p := resolveLinuxBinaryLocal(version, runtime.GOARCH); p != "" {
 					linuxBin = p
@@ -612,7 +615,8 @@ func macInitSteps(yes bool) []initflow.Step {
 			},
 		},
 		{
-			Title: "Install ahjo into VM at " + vmAhjoPath,
+			Title:     "Install ahjo into VM at " + vmAhjoPath,
+			NoConfirm: true, // installs into the ahjo-managed VM, idempotent on version match
 			Skip: func() (bool, string, error) {
 				// dev/dirty builds always re-install: same version string can
 				// cover different bytes (two builds on the same dirty commit
@@ -649,7 +653,8 @@ func macInitSteps(yes bool) []initflow.Step {
 			},
 		},
 		{
-			Title: "Add Include directive for ahjo aliases to ~/.ssh/config",
+			Title:      "Add Include directive for ahjo aliases to ~/.ssh/config",
+			DefaultYes: true, // touches a user-owned file, so still confirm — but default to yes
 			Skip: func() (bool, string, error) {
 				st, err := sshIncludeStatus()
 				if err != nil {
@@ -676,9 +681,10 @@ func macInitSteps(yes bool) []initflow.Step {
 			},
 		},
 		{
-			Title: "Run in-VM bring-up (Incus + ahjo-base via the devcontainer Feature pipeline + claude setup-token)",
-			Note:  "interactive only for claude setup-token: it prints a URL — open it in this Mac's browser, complete the flow, paste the code back, then paste the resulting sk-ant-oat01-… token when ahjo asks. After usermod the in-VM init re-execs itself under `sg incus-admin` so everything runs end-to-end in a single call.",
-			Show:  fmt.Sprintf("limactl shell %s ahjo init -y", vmName),
+			Title:     "Run in-VM bring-up (Incus + ahjo-base via the devcontainer Feature pipeline + claude setup-token)",
+			NoConfirm: true, // operates inside the ahjo VM; the claude setup-token flow is interactive on its own
+			Note:      "interactive only for claude setup-token: it prints a URL — open it in this Mac's browser, complete the flow, paste the code back, then paste the resulting sk-ant-oat01-… token when ahjo asks. After usermod the in-VM init re-execs itself under `sg incus-admin` so everything runs end-to-end in a single call.",
+			Show:      fmt.Sprintf("limactl shell %s ahjo init -y", vmName),
 			Action: func(out io.Writer) error {
 				argv := []string{"limactl", "shell", vmName, "ahjo", "init", "-y"}
 				if err := initflow.RunShellEnv(out, lima.Env(), "", argv...); err != nil {
