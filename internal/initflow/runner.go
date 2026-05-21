@@ -31,6 +31,11 @@ type Step struct {
 	Post string
 	// Halt stops the run after this step (e.g. usermod requires re-shell).
 	Halt bool
+	// NoConfirm skips the per-step "Run? [y/N]" prompt. Use for steps whose
+	// Action is read-only or writes only local, reversible state (and which
+	// may carry their own interactive prompt). The global --yes flag already
+	// skips all prompts; this opts a single step out unconditionally.
+	NoConfirm bool
 }
 
 type Runner struct {
@@ -62,7 +67,7 @@ func (r Runner) Execute(steps []Step) error {
 				fmt.Fprintf(out, "  > %s\n", line)
 			}
 		}
-		if !r.Yes {
+		if !r.Yes && !s.NoConfirm {
 			ok, err := r.confirm()
 			if err != nil {
 				return err

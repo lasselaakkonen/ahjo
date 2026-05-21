@@ -28,7 +28,8 @@ import (
 // our subprocess env avoids editing the user's shell rc.
 func pickAgentStep(yes bool) initflow.Step {
 	return initflow.Step{
-		Title: "Detect ssh-agent for VM forwarding",
+		Title:     "Detect ssh-agent for VM forwarding",
+		NoConfirm: true,
 		Skip: func() (bool, string, error) {
 			cfg, err := config.Load()
 			if err != nil || cfg.Mac.SSHAuthSock == "" {
