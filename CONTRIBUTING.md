@@ -102,6 +102,86 @@ change, see the
 [Rebuilding after a change](README.md#rebuilding-after-a-change) section
 in the README.
 
+## Full nuke — start completely fresh
+
+When you want to wipe **everything** ahjo created — state, configs, the VM /
+containers, and on Linux the system packages `ahjo init` installed — so you can
+test `install.sh` and `ahjo init` from zero.
+
+`ahjo nuke -y` is the first move, but it intentionally **keeps** your configs
+and tokens (`~/.ahjo/{config.toml,registry.toml,profiles,repos,.env}` and all of
+`~/.ahjo-shared/`). A full nuke removes those too.
+
+### macOS
+
+Deleting the `ahjo` Lima VM takes all in-VM state with it — incus, images,
+containers, the in-VM `ahjo`, the zabbly repo, sysctl, subuid/subgid, and the
+`incus-admin` group all live inside the disposable VM. Only the host side is
+left to clean.
+
+```sh
+ahjo nuke -y                    # deletes the "ahjo" Lima VM, ~/.ahjo/cache, the
+                                # paste-daemon launchd agent, and the
+                                # ~/.ssh/config Include block
+rm -rf ~/.ahjo ~/.ahjo-shared   # the configs + tokens nuke keeps
+```
+
+If `ahjo nuke` can't run (broken build, half-applied change), do it by hand:
+
+```sh
+limactl stop -f ahjo && limactl delete -f ahjo
+launchctl bootout gui/$(id -u)/net.ahjo.paste-daemon 2>/dev/null || true
+rm -f ~/Library/LaunchAgents/net.ahjo.paste-daemon.plist
+# in ~/.ssh/config, delete the block between
+#   # >>> ahjo-managed >>>   and   # <<< ahjo-managed <<<
+rm -rf ~/.ahjo ~/.ahjo-shared
+```
+
+Optionally drop the binary too (skip if you dev from a `make build` symlink):
+
+```sh
+sudo rm -f /usr/local/bin/ahjo
+```
+
+Verify: `limactl list` shows no `ahjo`, and `ls ~/.ahjo ~/.ahjo-shared` errors.
+
+### Linux (standalone host)
+
+incus runs directly on the host, so a full nuke must also undo the system
+bootstrap `ahjo init` performed — `ahjo nuke -y` only removes containers,
+images, and host-keys.
+
+```sh
+# 1. ahjo's own teardown: containers, ahjo-base/ahjo-osbase images, host-keys
+ahjo nuke -y
+
+# 2. ahjo state + configs/tokens in your home
+rm -rf ~/.ahjo ~/.ahjo-shared
+
+# 3. the system layer init installed
+sudo apt-get purge -y incus
+sudo apt-get autoremove --purge -y
+sudo rm -rf /var/lib/incus                         # incusbr0, storage pool, profiles
+sudo rm -f /etc/sysctl.d/99-ahjo.conf && sudo sysctl --system
+sudo rm -f /etc/apt/sources.list.d/zabbly-incus-stable.sources \
+           /etc/apt/keyrings/zabbly.asc
+sudo apt-get update
+sudo sed -i "/^root:$(id -u):1$/d" /etc/subuid     # grants init appended
+sudo sed -i "/^root:$(id -g):1$/d" /etc/subgid
+```
+
+The `incus-admin` group is created and removed with the incus package, so
+purging it drops your membership. If incus is too wedged for `ahjo nuke` to run,
+skip step 1 — `apt-get purge incus` plus `rm -rf /var/lib/incus` in step 3 takes
+every container and image with it.
+
+### Reinstall to test
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/lasselaakkonen/ahjo/master/install.sh | sh
+ahjo init
+```
+
 ## Style
 
 - Run the hooks. They reflect what CI gates.
