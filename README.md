@@ -171,9 +171,13 @@ ahjo rm myacc/repo@JIRA-123-Add-thingamajig
 ahjo rm myacc/repo@feat/twiddle-with-ui
 ```
 
-### Modify code in container, mirror code changes to host
+### Modify code in container, mirror code changes to host, forward ports from host to container
 
-You haven't yet configured ahjo containers to run your app -or- setting up the dev env is complex -or- you need some services/data from your host machine for properly running the app -or- you need to build iOS apps and can't do it in the Linux container -or- whatever else.
+- You haven't yet configured ahjo containers to run your app -or-
+- Setting up the dev env is complex -or-
+- You need some services/data from your host machine for fully running the app -or-
+- You need to build iOS apps and can't do it in the Linux container -or-
+- Whatever other scenario.
 
 You can mirror the changes from inside the repo to a dir on the host machine. You likely want to mirror the changes to a dir, which has the same git repo in it already.
 
@@ -185,6 +189,16 @@ ahjo mirror myacc/myrepo@newfangled-thing --target /Users/lasse/github/myrepo
 ```
 
 Now any changed files in `myacc/myrepo@newfangled-thing` will show up in `/Users/lasse/github/myrepo`.
+
+Then if you are running the app on your host, you can forward the ports in to the container, so the agent inside the container can validate/test/debug its own changes:
+
+```
+# Forward host's port 8000 to 127.0.0.1:8000 inside the container
+ahjo forward myacc/myrepo@newfangled-thing 8000
+
+# Forward host's port 8000 to 127.0.0.1:9090 inside the container
+ahjo forward myacc/myrepo@newfangled-thing 8000 9090
+```
 
 To turn off mirroring, run:
 
