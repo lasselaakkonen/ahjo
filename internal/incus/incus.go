@@ -103,6 +103,83 @@ func AddProxyDevice(container, device, listen, connect string) error {
 	return fmt.Errorf("incus %s: %w", strings.Join(args, " "), err)
 }
 
+// reverseProxyArgs builds the `incus config device add` argv for a
+// bind=container proxy: the listen socket lives INSIDE the container on
+// 127.0.0.1:<listenPort>, forwarding to connectIP:connectPort (resolved from
+// the host net namespace). Pure (no exec) so callers can assert the argv in
+// tests — both the paste daemon and `ahjo forward` depend on this exact shape.
+func reverseProxyArgs(container, device string, listenPort int, connectIP string, connectPort int) []string {
+	return []string{
+		"config", "device", "add", container, device, "proxy",
+		fmt.Sprintf("listen=tcp:127.0.0.1:%d", listenPort),
+		fmt.Sprintf("connect=tcp:%s:%d", connectIP, connectPort),
+		"bind=container",
+	}
+}
+
+// EnsureReverseProxy adds or refreshes the bind=container proxy described by
+// reverseProxyArgs. It diffs the existing device's connect= and only re-adds
+// when it changed, so a Lima restart that hands out a new gateway IP
+// self-corrects without churning an unchanged device on the hot path.
+// Tolerates "already exists". The container must be running — bind=container
+// needs a live namespace to create the listen socket.
+func EnsureReverseProxy(container, device string, listenPort int, connectIP string, connectPort int) error {
+	wantConnect := fmt.Sprintf("tcp:%s:%d", connectIP, connectPort)
+
+	// Diff against the existing device: if it already points at this target,
+	// leave it alone. Cheaper than strip+re-add on the common hot path.
+	if devs, err := ListProxyDevices(container); err == nil {
+		for _, d := range devs {
+			if d.Name != device {
+				continue
+			}
+			if d.Connect == wantConnect {
+				return nil
+			}
+			if err := RemoveDevice(container, device); err != nil {
+				return fmt.Errorf("strip stale %s proxy: %w", device, err)
+			}
+			break
+		}
+	}
+
+	args := reverseProxyArgs(container, device, listenPort, connectIP, connectPort)
+	out, err := exec.Command("incus", args...).CombinedOutput()
+	if err == nil {
+		return nil
+	}
+	if strings.Contains(strings.ToLower(string(out)), "already exists") {
+		return nil
+	}
+	os.Stderr.Write(out)
+	var ee *exec.ExitError
+	if errors.As(err, &ee) {
+		return fmt.Errorf("incus %s: exit %d", strings.Join(args, " "), ee.ExitCode())
+	}
+	return fmt.Errorf("incus %s: %w", strings.Join(args, " "), err)
+}
+
+// ReverseConnectIP returns the connect-side IP for a host→container reverse
+// proxy: the Lima gateway (host.lima.internal) when running inside a Lima VM
+// (macOS), or 127.0.0.1 on a native Linux host — where the proxy's connect
+// side already runs in the host net namespace and reaches host loopback
+// directly. Unlike the paste daemon (which requires Lima and deliberately
+// errors on native Linux), `ahjo forward` must work on both, hence the
+// fallback.
+func ReverseConnectIP() (string, error) {
+	return reverseConnectIP(resolveLimaHostIP)
+}
+
+// reverseConnectIP is the testable core of ReverseConnectIP: it takes the
+// Lima-gateway resolver as a parameter so the Lima-vs-native decision can be
+// exercised without DNS.
+func reverseConnectIP(resolve func() (string, error)) (string, error) {
+	if ip, err := resolve(); err == nil {
+		return ip, nil
+	}
+	return "127.0.0.1", nil
+}
+
 // AddDiskDevice adds a disk (bind-mount) device, tolerating "already exists" errors.
 func AddDiskDevice(container, device, source, path string, readonly bool) error {
 	args := []string{

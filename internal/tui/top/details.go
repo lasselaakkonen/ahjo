@@ -113,6 +113,11 @@ func renderBranchDetail(deps Deps, br registry.Branch, snap Snapshot, status *Br
 	}
 
 	row("exposed", detailValue.Render(deps.FormatExposed(snap.PortsByBranch[br.Slug])))
+	forwarded := snap.ForwardsByBranch[br.Slug]
+	if forwarded == "" {
+		forwarded = "-"
+	}
+	row("forwarded", detailValue.Render(forwarded))
 	row("path", detailValue.Render("/repo"))
 	row("created", detailValue.Render(br.CreatedAt.Format("2006-01-02 15:04")))
 	if snap.MirrorSlug == br.Slug {

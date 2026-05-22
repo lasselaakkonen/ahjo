@@ -7,7 +7,6 @@ import (
 	"net"
 	"os"
 	"os/exec"
-	"strings"
 )
 
 //go:embed paste_shim_xclip.sh
@@ -37,9 +36,13 @@ const PasteDaemonContainerPort = 18340
 // Incus's proxy device requires an IP literal for `connect=`, not a
 // hostname. We resolve host.lima.internal (Lima's pinned alias for the Mac
 // gateway) at every call so a Lima restart that hands out a new gateway IP
-// self-corrects on the next ahjo shell / ahjo claude. The resolved address
-// is checked against the cached device; if it matches, we leave it alone,
-// and otherwise the device is removed and re-added.
+// self-corrects on the next ahjo shell / ahjo claude — ensureReverseProxy
+// diffs the resolved address against the cached device and only re-adds when
+// it changed.
+//
+// This deliberately requires Lima: resolveLimaHostIP errors on a native
+// Linux host, where there is no Mac paste-daemon to reach. (Contrast
+// ReverseConnectIP, which falls back to 127.0.0.1 for `ahjo forward`.)
 //
 // Caller must invoke this AFTER `incus start` — bind=container proxy
 // devices need a live container namespace to create the listen socket.
@@ -48,45 +51,7 @@ func EnsurePasteDaemonProxy(container string) error {
 	if err != nil {
 		return fmt.Errorf("resolve host.lima.internal: %w", err)
 	}
-	wantConnect := fmt.Sprintf("tcp:%s:%d", ip, PasteDaemonContainerPort)
-
-	// Diff against the existing device: if it already points at this IP,
-	// don't churn it. Cheaper than strip+re-add on the common hot path.
-	devs, err := ListProxyDevices(container)
-	if err == nil {
-		for _, d := range devs {
-			if d.Name == pasteDaemonProxyDevice {
-				if d.Connect == wantConnect {
-					return nil
-				}
-				if err := RemoveDevice(container, pasteDaemonProxyDevice); err != nil {
-					return fmt.Errorf("strip stale paste-daemon proxy: %w", err)
-				}
-				break
-			}
-		}
-	}
-
-	args := []string{
-		"config", "device", "add", container, pasteDaemonProxyDevice, "proxy",
-		fmt.Sprintf("listen=tcp:127.0.0.1:%d", PasteDaemonContainerPort),
-		"connect=" + wantConnect,
-		"bind=container",
-	}
-	cmd := exec.Command("incus", args...)
-	out, errAdd := cmd.CombinedOutput()
-	if errAdd == nil {
-		return nil
-	}
-	if strings.Contains(strings.ToLower(string(out)), "already exists") {
-		return nil
-	}
-	os.Stderr.Write(out)
-	var ee *exec.ExitError
-	if errors.As(errAdd, &ee) {
-		return fmt.Errorf("incus config device add %s %s proxy: exit %d", container, pasteDaemonProxyDevice, ee.ExitCode())
-	}
-	return fmt.Errorf("incus config device add %s %s proxy: %w", container, pasteDaemonProxyDevice, errAdd)
+	return EnsureReverseProxy(container, pasteDaemonProxyDevice, PasteDaemonContainerPort, ip, PasteDaemonContainerPort)
 }
 
 // resolveLimaHostIP returns the IPv4 address of host.lima.internal — the
