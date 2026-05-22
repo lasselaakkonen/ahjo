@@ -67,6 +67,7 @@ func loadSnapshotInVM() (top.Snapshot, error) {
 	snap.Containers = make(map[string]bool, len(reg.Branches))
 	snap.ContainersRunning = make(map[string]bool, len(reg.Branches))
 	snap.ContainerStates = make(map[string]string, len(reg.Branches))
+	snap.ForwardsByBranch = make(map[string]string, len(reg.Branches))
 	for i := range reg.Branches {
 		br := &reg.Branches[i]
 		name, err := resolveContainerName(br)
@@ -84,6 +85,14 @@ func loadSnapshotInVM() (top.Snapshot, error) {
 		snap.ContainersRunning[br.Slug] = strings.EqualFold(status, "Running")
 		if status != "" {
 			snap.ContainerStates[br.Slug] = status
+			// Forwards live in proxy-device config (not ports.json), so read
+			// them live. Only store when present to keep the JSON lean — the
+			// details pane renders an absent entry as "-".
+			if devs, err := incus.ListProxyDevices(name); err == nil {
+				if fwd := formatForwards(devs); fwd != "-" {
+					snap.ForwardsByBranch[br.Slug] = fwd
+				}
+			}
 		}
 	}
 

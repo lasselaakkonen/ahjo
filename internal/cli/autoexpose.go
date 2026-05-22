@@ -49,15 +49,7 @@ func reconcileAutoExpose(out io.Writer, br *registry.Branch) error {
 		if err != nil {
 			return fmt.Errorf("scan listening ports: %w", err)
 		}
-		for _, p := range listening {
-			// 22 is sshd (already wired by ahjo-ssh). The paste-daemon's
-			// in-container loopback is a synthetic listener created by
-			// ahjo itself — `ss -tlnH` sees it like any other process,
-			// but it isn't a user service and must not be exposed to
-			// the host.
-			if p == 22 || p == incus.PasteDaemonContainerPort || p < minPort {
-				continue
-			}
+		for _, p := range wantedAutoExposePorts(listening, forwardDevicePorts(devices), minPort) {
 			want[p] = struct{}{}
 		}
 	}
@@ -133,6 +125,42 @@ func autoExposeSettings(gcfg *config.Config, containerName string) (enabled bool
 		}
 	}
 	return
+}
+
+// wantedAutoExposePorts filters the container's listening ports down to those
+// auto-expose should forward out to the host: at or above minPort, excluding
+// sshd (22), the synthetic paste-daemon listener, and any port piped IN by
+// `ahjo forward`. A forward creates an in-container loopback listener that
+// `ss -tlnH` reports like any other; without this exclusion auto-expose would
+// helpfully re-forward that host service back out to a host port, burning a
+// pool allocation and cluttering the device list.
+func wantedAutoExposePorts(listening []int, forwardPorts map[int]bool, minPort int) []int {
+	var out []int
+	for _, p := range listening {
+		if p == 22 || p == incus.PasteDaemonContainerPort || p < minPort {
+			continue
+		}
+		if forwardPorts[p] {
+			continue
+		}
+		out = append(out, p)
+	}
+	return out
+}
+
+// forwardDevicePorts returns the set of in-container ports that have an
+// ahjo-forward-* proxy device (read from the listen address).
+func forwardDevicePorts(devices []incus.ProxyDevice) map[int]bool {
+	out := map[int]bool{}
+	for _, d := range devices {
+		if !strings.HasPrefix(d.Name, ahjoForwardDevicePrefix) {
+			continue
+		}
+		if p, ok := portFromAddr(d.Listen); ok {
+			out[p] = true
+		}
+	}
+	return out
 }
 
 // autoDevicesByPort returns just the auto-expose proxy devices keyed by the
