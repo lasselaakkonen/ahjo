@@ -31,17 +31,24 @@ func newLsCmd() *cobra.Command {
 				return err
 			}
 			tw := tabwriter.NewWriter(cobraOut(), 0, 2, 2, ' ', 0)
-			fmt.Fprintln(tw, "ALIASES\tSLUG\tSSH PORT\tCONTAINER\tEXPOSED\tCREATED")
+			fmt.Fprintln(tw, "ALIASES\tSLUG\tSSH PORT\tCONTAINER\tEXPOSED\tFORWARDS\tCREATED")
 			for _, br := range reg.Branches {
 				state := "missing"
+				forwards := "-"
 				if name, err := resolveContainerName(&br); err == nil {
 					if exists, err := incus.ContainerExists(name); err == nil && exists {
 						state = "present"
+						// Best-effort: forwards are read live from device config
+						// (not tracked in ports.json); never fail `ls` over it.
+						if devs, err := incus.ListProxyDevices(name); err == nil {
+							forwards = formatForwards(devs)
+						}
 					}
 				}
-				fmt.Fprintf(tw, "%s\t%s\t%d\t%s\t%s\t%s\n",
+				fmt.Fprintf(tw, "%s\t%s\t%d\t%s\t%s\t%s\t%s\n",
 					strings.Join(br.Aliases, ","), br.Slug, br.SSHPort, state,
 					formatExposed(pp.AllocationsForSlug(br.Slug)),
+					forwards,
 					br.CreatedAt.Format("2006-01-02 15:04"))
 			}
 			return tw.Flush()

@@ -41,6 +41,7 @@ const (
 	inputAddRepo
 	inputNewContainer
 	inputMirrorTarget
+	inputForward
 	inputIDE
 	inputRunTarget
 )
@@ -327,6 +328,9 @@ func (m *model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m, m.execToggleExpose()
 		case key.Matches(msg, m.keys.ToggleMirror):
 			return m.handleToggleMirror()
+		case key.Matches(msg, m.keys.Forward):
+			m.startInput(inputForward)
+			return m, nil
 		case key.Matches(msg, m.keys.StartStop):
 			return m, m.execStartStop()
 		case key.Matches(msg, m.keys.CopyClaudeCmd):
@@ -401,6 +405,12 @@ func (m *model) startInput(mode inputMode) {
 			prefill = m.startCwd
 		}
 		m.input.Placeholder = "absolute Mac path (or ~/...)"
+	case inputForward:
+		if selectedBranch(m.containers) == nil {
+			m.flash = "select a branch first"
+			return
+		}
+		m.input.Placeholder = "host-port [container-port]"
 	}
 	m.inputMode = mode
 	m.input.Reset()
@@ -535,6 +545,30 @@ func (m *model) submitInput() (tea.Model, tea.Cmd) {
 		alias := w.Aliases[0]
 		m.flash = "mirroring " + alias + " → " + val + "…"
 		cmd := execAhjoCaptured("mirroring", alias, "mirror", alias, "--target", val)
+		m.cancelInput()
+		return m, cmd
+	case inputForward:
+		w := selectedBranch(m.containers)
+		if w == nil {
+			m.cancelInput()
+			return m, nil
+		}
+		// "host-port" or "host-port container-port". Port values are validated
+		// by the `ahjo forward` subprocess; its error tail surfaces on the
+		// flash line, so we only guard the field count here.
+		fields := strings.Fields(val)
+		if len(fields) > 2 {
+			m.flash = "forward: expected 'host-port [container-port]'"
+			m.cancelInput()
+			return m, nil
+		}
+		alias := w.Aliases[0]
+		dest := alias
+		if len(fields) == 2 {
+			dest = alias + " :" + fields[1]
+		}
+		m.flash = "forwarding host :" + fields[0] + " → " + dest + "…"
+		cmd := execAhjoCaptured("forward", alias, append([]string{"forward", alias}, fields...)...)
 		m.cancelInput()
 		return m, cmd
 	}
@@ -1007,6 +1041,14 @@ func (m *model) inputBlock() string {
 		}
 		title = detailTitle.Render("mirror target · " + alias)
 		hint = detailLabel.Render("enter to submit · esc to cancel")
+	case inputForward:
+		w := selectedBranch(m.containers)
+		alias := ""
+		if w != nil {
+			alias = w.Aliases[0]
+		}
+		title = detailTitle.Render("forward host port · " + alias)
+		hint = detailLabel.Render("host :port (or 'host-port container-port') · enter to submit · esc to cancel")
 	}
 	return strings.Join([]string{title, "", m.input.View(), "", hint}, "\n")
 }
@@ -1101,7 +1143,7 @@ func (m *model) renderFooter() string {
 	case focusContainers, focusDetails:
 		bindings = append(bindings, m.keys.NewContainer, m.keys.RemoveContainer)
 		if selectedBranch(m.containers) != nil {
-			bindings = append(bindings, m.keys.StartStop, m.keys.ToggleExpose, m.keys.ToggleMirror, m.keys.CopyClaudeCmd, m.keys.CopyShellCmd, m.keys.OpenIDE)
+			bindings = append(bindings, m.keys.StartStop, m.keys.ToggleExpose, m.keys.ToggleMirror, m.keys.Forward, m.keys.CopyClaudeCmd, m.keys.CopyShellCmd, m.keys.OpenIDE)
 		}
 	}
 	bindings = append(bindings, m.keys.Submit, m.keys.Refresh, m.keys.Quit)

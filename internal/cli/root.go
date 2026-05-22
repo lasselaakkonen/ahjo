@@ -23,6 +23,7 @@ func NewRoot(version string) *cobra.Command {
 		newIDECmd(),
 		newSSHCmd(),
 		newExposeCmd(),
+		newForwardCmd(),
 		newMirrorCmd(),
 		newLsCmd(),
 		newTopCmd(),

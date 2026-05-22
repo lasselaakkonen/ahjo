@@ -35,9 +35,16 @@ type Snapshot struct {
 	// details pane renders that as a red "unknown".
 	ContainerStates map[string]string             `json:"container_states,omitempty"`
 	PortsByBranch   map[string][]ports.Allocation `json:"ports_by_branch"`
-	Host            HostStatus                    `json:"-"`
-	MirrorSlug      string                        `json:"mirror_slug,omitempty"`
-	MirrorAlive     bool                          `json:"mirror_alive"`
+	// ForwardsByBranch carries the pre-formatted host→container forward
+	// summary per branch slug (e.g. ":8000<-:8000"), read live from the
+	// container's proxy devices. Forwards aren't tracked in ports.json, so
+	// they can't be derived from PortsByBranch; the cli layer formats the
+	// string so the TUI package stays free of incus/format knowledge. Absent
+	// entry means no forwards (rendered as "-").
+	ForwardsByBranch map[string]string `json:"forwards_by_branch,omitempty"`
+	Host             HostStatus        `json:"-"`
+	MirrorSlug       string            `json:"mirror_slug,omitempty"`
+	MirrorAlive      bool              `json:"mirror_alive"`
 }
 
 func tickCmd() tea.Cmd {
