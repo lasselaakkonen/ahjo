@@ -27,7 +27,7 @@ func RegenerateConfig(reg *registry.Registry) error {
 	fmt.Fprintln(&b, "# ahjo-managed: do not edit")
 	fmt.Fprintf(&b, "# Generated %s\n\n", time.Now().UTC().Format(time.RFC3339))
 	for _, br := range bs {
-		fmt.Fprintf(&b, "Host ahjo-%s\n", br.Slug)
+		fmt.Fprintf(&b, "Host %s\n", registry.ContainerName(br.Slug))
 		fmt.Fprintln(&b, "  HostName 127.0.0.1")
 		fmt.Fprintf(&b, "  Port %d\n", br.SSHPort)
 		fmt.Fprintln(&b, "  User ubuntu")

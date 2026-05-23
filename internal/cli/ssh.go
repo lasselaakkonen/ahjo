@@ -36,6 +36,6 @@ func runSSH(alias string) error {
 	if err != nil {
 		return fmt.Errorf("ssh not on PATH: %w", err)
 	}
-	host := "ahjo-" + br.Slug
+	host := registry.ContainerName(br.Slug)
 	return syscall.Exec(bin, []string{"ssh", "-F", paths.SSHConfigPath(), host}, os.Environ())
 }

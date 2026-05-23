@@ -230,7 +230,7 @@ func createReserveBranch(cfg *config.Config, repoAlias, branch, asAlias string) 
 		Slug:           slug,
 		ContainerAlias: slug,
 		SSHPort:        port,
-		IncusName:      "ahjo-" + slug,
+		IncusName:      registry.ContainerName(slug),
 		CreatedAt:      time.Now().UTC(),
 	}
 	reg.Branches = append(reg.Branches, br)

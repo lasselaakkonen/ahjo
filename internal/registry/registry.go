@@ -21,9 +21,21 @@ import (
 // re-add repos. See designdocs/no-more-worktrees.md.
 const Version = 2
 
-// maxSlugLen caps slug length so "ahjo-" + slug stays within Incus's 63-char
-// RFC 1123 hostname limit, with headroom for a `-N` collision suffix.
+// ContainerPrefix is prepended to a slug to form both the Incus container
+// name and the matching SSH `Host` alias. The two are deliberately the same
+// string: the generated ssh config routes `Host ahjo-<slug>` to the container
+// of the same name. Build names with ContainerName rather than concatenating
+// this literal, so the convention lives in one place.
+const ContainerPrefix = "ahjo-"
+
+// maxSlugLen caps slug length so ContainerName(slug) stays within Incus's
+// 63-char RFC 1123 hostname limit, with headroom for a `-N` collision suffix.
 const maxSlugLen = 55
+
+// ContainerName returns the Incus container name (and SSH host alias) for slug.
+func ContainerName(slug string) string {
+	return ContainerPrefix + slug
+}
 
 type Registry struct {
 	Version  int      `toml:"version" json:"version"`
@@ -74,7 +86,7 @@ type Branch struct {
 // the base container and is named after the repo slug only. Callers that
 // need the on-disk dir must go through this method.
 func (b Branch) HostKeysSlug() string {
-	return strings.TrimPrefix(b.IncusName, "ahjo-")
+	return strings.TrimPrefix(b.IncusName, ContainerPrefix)
 }
 
 var (
@@ -220,11 +232,22 @@ func ValidateAlias(alias string) error {
 	return nil
 }
 
-// sanitizeSlug normalizes arbitrary text into the slug charset: lowercase,
-// runs of anything outside [a-z0-9-] collapsed to a single "-", and leading/
-// trailing dashes trimmed. It does not enforce a length cap.
+// sanitizeSlug normalizes text into the Incus container / on-disk-dir slug
+// grammar [a-z0-9-]: lowercase, runs of anything else collapsed to a single
+// "-", and leading/trailing dashes trimmed. It does not enforce a length cap.
+// Distinct from sanitizeAliasSegment (repo-alias grammar, keeps "._") and
+// git.SanitizeBranchName (git-ref grammar, keeps "/._" and case).
 func sanitizeSlug(s string) string {
 	s = slugSafeRE.ReplaceAllString(strings.ToLower(s), "-")
+	return strings.Trim(s, "-")
+}
+
+// sanitizeAliasSegment normalizes one path segment (owner or repo) of a repo
+// alias into the alias grammar [a-z0-9._-]: lowercase, runs of anything else
+// collapsed to "-", and leading/trailing dashes trimmed. Unlike sanitizeSlug
+// it preserves "." and "_" so aliases can mirror upstream owner/repo names.
+func sanitizeAliasSegment(s string) string {
+	s = strings.ToLower(gitURLPathSegment.ReplaceAllString(s, "-"))
 	return strings.Trim(s, "-")
 }
 
@@ -259,10 +282,8 @@ func DeriveRepoAlias(gitURL string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	owner = strings.ToLower(gitURLPathSegment.ReplaceAllString(owner, "-"))
-	repo = strings.ToLower(gitURLPathSegment.ReplaceAllString(repo, "-"))
-	owner = strings.Trim(owner, "-")
-	repo = strings.Trim(repo, "-")
+	owner = sanitizeAliasSegment(owner)
+	repo = sanitizeAliasSegment(repo)
 	if owner == "" || repo == "" {
 		return "", fmt.Errorf("cannot derive alias from %q", gitURL)
 	}
