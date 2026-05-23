@@ -220,26 +220,36 @@ func ValidateAlias(alias string) error {
 	return nil
 }
 
+// sanitizeSlug normalizes arbitrary text into the slug charset: lowercase,
+// runs of anything outside [a-z0-9-] collapsed to a single "-", and leading/
+// trailing dashes trimmed. It does not enforce a length cap.
+func sanitizeSlug(s string) string {
+	s = slugSafeRE.ReplaceAllString(strings.ToLower(s), "-")
+	return strings.Trim(s, "-")
+}
+
+// capSlug truncates s to at most n characters, stripping any trailing "-" the
+// cut leaves behind. Incus rejects names ending in "-", so every slug that
+// gets length-capped must pass through here.
+func capSlug(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return strings.TrimRight(s[:n], "-")
+}
+
 // AliasToSlug sanitizes any alias into a slug suitable for Incus container
 // names and on-disk dirs: lowercase, [a-z0-9-] only, trimmed, capped at maxSlugLen.
 func AliasToSlug(alias string) string {
-	s := slugSafeRE.ReplaceAllString(strings.ToLower(alias), "-")
-	s = strings.Trim(s, "-")
-	if len(s) > maxSlugLen {
-		s = s[:maxSlugLen]
-	}
-	return s
+	return capSlug(sanitizeSlug(alias), maxSlugLen)
 }
 
 // withSlugSuffix returns "<base>-<n>" capped at maxSlugLen. The suffix is
-// preserved verbatim; if base + suffix would overflow, base is trimmed to
-// make room (and any trailing `-` is stripped to keep the slug well-formed).
+// preserved verbatim; if base + suffix would overflow, base is trimmed (and
+// any trailing "-" stripped) to make room.
 func withSlugSuffix(base string, n int) string {
 	suffix := fmt.Sprintf("-%d", n)
-	if room := maxSlugLen - len(suffix); len(base) > room {
-		base = strings.TrimRight(base[:room], "-")
-	}
-	return base + suffix
+	return capSlug(base, maxSlugLen-len(suffix)) + suffix
 }
 
 // DeriveRepoAlias parses a git URL (https://, ssh://, scp-like, or path) and
@@ -361,11 +371,7 @@ func MakeBranchAlias(repoAlias, branch string) string {
 
 // MakeSlug builds a unique container slug from (repoSlug, branch).
 func (r *Registry) MakeSlug(repoSlug, branch string) string {
-	base := repoSlug + "-" + slugSafeRE.ReplaceAllString(strings.ToLower(branch), "-")
-	base = strings.Trim(base, "-")
-	if len(base) > maxSlugLen {
-		base = base[:maxSlugLen]
-	}
+	base := capSlug(sanitizeSlug(repoSlug+"-"+branch), maxSlugLen)
 	if !r.slugTaken(base) {
 		return base
 	}
