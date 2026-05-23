@@ -61,7 +61,7 @@ func runIDE(alias string) error {
 		return fmt.Errorf("ide %s: no launcher", chosen.Name)
 	}
 
-	host := "ahjo-" + br.Slug
+	host := registry.ContainerName(br.Slug)
 	path := paths.RepoMountPath
 	if err := chosen.Open(host, path); err != nil {
 		return fmt.Errorf("open %s: %w", chosen.Name, err)

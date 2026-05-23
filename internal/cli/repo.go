@@ -182,7 +182,7 @@ func repoAddPlan(url, asAlias string) (slug, primary string, aliases []string, e
 		// Probe errors (incus unreachable, etc.) degrade to "not taken": the
 		// same error will surface seconds later from `incus init` with full
 		// context, which is more useful than aborting allocation here.
-		exists, _ := incus.ContainerExists("ahjo-" + s)
+		exists, _ := incus.ContainerExists(registry.ContainerName(s))
 		return exists
 	})
 	return slug, primary, aliases, nil
@@ -248,7 +248,7 @@ func repoAddSetup(slug, primary string, aliases []string, url, defaultBase strin
 		return err
 	}
 
-	containerName := "ahjo-" + slug
+	containerName := registry.ContainerName(slug)
 	fmt.Printf("→ incus init ahjo-base %s\n", containerName)
 	if err := incus.LaunchStopped(paths.AhjoBaseProfile, containerName); err != nil {
 		return err
@@ -1161,7 +1161,7 @@ func sweepRepoOrphans(reg *registry.Registry, slug string, force bool) error {
 		return nil
 	}
 	if !force {
-		fmt.Printf("found unmanaged container(s) matching ahjo-%s prefix (likely left by a past crashed `repo add`):\n", slug)
+		fmt.Printf("found unmanaged container(s) matching %s prefix (likely left by a past crashed `repo add`):\n", registry.ContainerName(slug))
 		for _, name := range orphans {
 			fmt.Printf("  %s\n", name)
 		}
@@ -1183,7 +1183,7 @@ func sweepRepoOrphans(reg *registry.Registry, slug string, force bool) error {
 // the `repo rm` tail sweep (after the registered repo is gone) and
 // `sweepUnmanagedContainers` (no repo row exists at all).
 func findOrphanContainers(reg *registry.Registry, slug string) ([]string, error) {
-	candidates, err := incus.ContainersWithPrefix("ahjo-" + slug)
+	candidates, err := incus.ContainersWithPrefix(registry.ContainerName(slug))
 	if err != nil {
 		return nil, err
 	}
