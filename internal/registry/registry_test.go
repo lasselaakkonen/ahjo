@@ -13,6 +13,35 @@ func TestAliasToSlugCaps(t *testing.T) {
 	}
 }
 
+// Regression: truncating an over-long slug at the cap must not leave a
+// trailing "-", which Incus rejects ("Name must not end with - character").
+func TestAliasToSlugNoTrailingDashAtCap(t *testing.T) {
+	// Place a dash-producing char so the cut at maxSlugLen lands on a dash.
+	alias := strings.Repeat("a", maxSlugLen-1) + "/" + strings.Repeat("b", 10)
+	got := AliasToSlug(alias)
+	if strings.HasSuffix(got, "-") {
+		t.Fatalf("AliasToSlug = %q, must not end with -", got)
+	}
+	if len(got) > maxSlugLen {
+		t.Fatalf("AliasToSlug len = %d, want <= %d", len(got), maxSlugLen)
+	}
+}
+
+func TestMakeSlugNoTrailingDashAtCap(t *testing.T) {
+	repoSlug := "repo"
+	// base = "repo-" (5) + branch; put the dash at index maxSlugLen-1 so the
+	// cut keeps it as the final char.
+	branch := strings.Repeat("a", maxSlugLen-6) + "-" + strings.Repeat("b", 10)
+	r := &Registry{}
+	got := r.MakeSlug(repoSlug, branch)
+	if strings.HasSuffix(got, "-") {
+		t.Fatalf("MakeSlug = %q, must not end with -", got)
+	}
+	if len(got) > maxSlugLen {
+		t.Fatalf("MakeSlug len = %d, want <= %d", len(got), maxSlugLen)
+	}
+}
+
 func TestWithSlugSuffix(t *testing.T) {
 	tests := []struct {
 		name string
