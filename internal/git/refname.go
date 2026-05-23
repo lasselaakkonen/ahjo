@@ -21,6 +21,10 @@ var (
 // `.lock` suffix. Case is preserved.
 //
 // Returns "" if nothing usable is left (caller should reject).
+//
+// This targets the git-ref grammar specifically; it is not interchangeable
+// with the registry's container-slug or repo-alias sanitizers, which target
+// stricter, lowercased name grammars.
 func SanitizeBranchName(s string) string {
 	s = branchInvalidRE.ReplaceAllString(s, "-")
 	s = branchSlashesRE.ReplaceAllString(s, "/")

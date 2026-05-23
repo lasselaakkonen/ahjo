@@ -18,6 +18,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	"github.com/lasselaakkonen/ahjo/internal/git"
+	"github.com/lasselaakkonen/ahjo/internal/registry"
 )
 
 // branchStatusStaleness bounds how often we'll re-run `git status` + `gh pr
@@ -456,7 +457,7 @@ func (m *model) startIDEPicker() {
 	}
 	m.idePickerIDEs = ides
 	m.idePickerIdx = 0
-	m.idePickerHost = "ahjo-" + br.Slug
+	m.idePickerHost = registry.ContainerName(br.Slug)
 	m.idePickerPath = "/repo"
 	m.inputMode = inputIDE
 	m.flash = ""

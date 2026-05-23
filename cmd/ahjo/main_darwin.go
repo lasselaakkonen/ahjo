@@ -28,6 +28,7 @@ import (
 	"github.com/lasselaakkonen/ahjo/internal/initflow"
 	"github.com/lasselaakkonen/ahjo/internal/lima"
 	"github.com/lasselaakkonen/ahjo/internal/paste"
+	"github.com/lasselaakkonen/ahjo/internal/registry"
 )
 
 const (
@@ -418,7 +419,7 @@ func execSSHFromMac(alias string) {
 		fmt.Fprintln(os.Stderr, "ahjo:", err)
 		os.Exit(1)
 	}
-	host := "ahjo-" + slug
+	host := registry.ContainerName(slug)
 	if err := syscall.Exec(bin, []string{"ssh", "-F", cfg, host}, os.Environ()); err != nil {
 		fmt.Fprintln(os.Stderr, "ahjo: exec ssh:", err)
 		os.Exit(1)
