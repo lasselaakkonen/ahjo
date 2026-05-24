@@ -644,7 +644,7 @@ func (m *model) submitInput() (tea.Model, tea.Cmd) {
 		// before clobbering a dirty/non-git target ("continue?" / "mirror without
 		// the ability to revert?"). Those prompts need a real TTY on stdin — a
 		// captured subprocess would silently cancel the activation. Suspending the
-		// TUI also surfaces the rsync bootstrap progress live on the terminal.
+		// TUI also surfaces the daemon bootstrap progress live on the terminal.
 		cmd := execAhjo("mirroring", alias, "mirror", alias, "--target", val)
 		m.cancelInput()
 		return m, cmd
@@ -832,9 +832,9 @@ func execAhjo(action, label string, args ...string) tea.Cmd {
 
 // execAhjoCaptured runs a subprocess of this binary in-process (no
 // alt-screen exit), capturing combined stdout+stderr so the result text can
-// be shown in the TUI's flash line. Use this for short-lived commands where
-// the alt-screen flash is more annoying than the loss of live progress
-// (e.g. `ahjo mirror`, where rsync output is also written to mirror.log).
+// be shown in the TUI's flash line. Use this for short-lived, non-interactive
+// commands where the alt-screen flash is more annoying than the loss of live
+// progress (e.g. `ahjo mirror off`, whose teardown/revert needs no prompt).
 func execAhjoCaptured(action, label string, args ...string) tea.Cmd {
 	self, err := os.Executable()
 	if err != nil || self == "" {
@@ -1018,9 +1018,9 @@ func (m *model) execToggleExpose() tea.Cmd {
 // handleToggleMirror runs `ahjo mirror off` if this worktree is the active
 // mirror, otherwise opens the inputMirrorTarget prompt prefilled with the
 // remembered per-repo target (or the TUI's startup cwd on first activation).
-// The activate subprocess uses tea.ExecProcess because rsync prints progress;
-// runMirrorActivate stops any other active mirror itself, so this is purely
-// the dispatch.
+// Activating while another container already holds the mirror is fine:
+// `mirror on` takes the device over (stop+revert the old mirror, then start
+// here), so the TUI can switch the mirror between containers in one gesture.
 func (m *model) handleToggleMirror() (tea.Model, tea.Cmd) {
 	w := selectedBranch(m.containers)
 	if w == nil {
@@ -1028,12 +1028,12 @@ func (m *model) handleToggleMirror() (tea.Model, tea.Cmd) {
 	}
 	if m.snap.MirrorSlug == w.Slug && m.snap.MirrorAlive {
 		m.flash = "stopping mirror…"
-		// execAhjo (tea.ExecProcess), not execAhjoCaptured: `mirror off` asks
-		// whether to revert the host target, and that prompt only runs when its
-		// stdin is a real TTY. A captured subprocess gets /dev/null on stdin, so
-		// decideRevert silently skips the revert and the user is never asked.
-		// Suspending the TUI hands over the actual terminal so the prompt works.
-		return m, execAhjo("mirror", "off", "mirror", "off")
+		// execAhjoCaptured, not execAhjo: `mirror off` no longer prompts (the
+		// revert is automatic, no confirmation), so it needs no TTY. Running it
+		// captured keeps the TUI up and lands the result line in the flash,
+		// instead of flicking through the alt-screen for a non-interactive
+		// teardown.
+		return m, execAhjoCaptured("mirror", "off", "mirror", "off")
 	}
 	m.startInput(inputMirrorTarget)
 	return m, nil

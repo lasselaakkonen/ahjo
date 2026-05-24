@@ -206,7 +206,10 @@ To turn off mirroring, run:
 ahjo mirror off
 ```
 
-⚠️ For now ahjo DOES NOT do any clean up in `/Users/lasse/github/myrepo`, you need to do it yourself, perhaps with just `git checkout .`.
+By default this reverts the Mac target to its exact pre-mirror state: tracked
+files restored, mirror-added files removed, and gitignored files like `.env`
+kept (committed work is never touched). Pass `--no-revert` to stop the mirror
+but leave the mirrored files in place.
 
 ### Use multiple versions of same app running in multiple containers
 
@@ -406,7 +409,7 @@ sudo ln -sf "$PWD/ahjo" /usr/local/bin/ahjo
 | `ahjo expose <alias> <container-port>` | Manually add an Incus proxy device exposing a container port on `127.0.0.1`. |
 | `ahjo expose <alias> --sync` | Reconcile auto-expose proxy devices to the container's current TCP loopback listeners (skipping `:22` and ports below `[auto_expose].min_port`). Run after starting docker-compose / a dev server inside the container so newly-bound ports surface to the host. Manual `ahjo expose` entries are untouched. |
 | `ahjo forward <alias> <host-port> [<container-port>]` (also `--off`) | Inbound counterpart to `ahjo expose`: pipe a service running on the host *into* the container. Adds a `bind=container` Incus proxy so the host's `127.0.0.1:<host-port>` is reachable on `127.0.0.1:<container-port>` (defaults to the same port) inside the container — letting code/configs that hardcode `localhost:<port>` reach a host app unmodified. On macOS the connect target is the Lima gateway; on Linux it's host loopback directly. Requires a running container; the forward lives until the container stops/restarts or `--off` (keyed on the container port). Also available in `ahjo top` via `f`. |
-| `ahjo mirror <alias> --target <path>` (also `off` / `status` / `logs <alias>`) | One-way push from `/repo` (inside the branch container) to a Mac path via the in-container `ahjo-mirror` daemon. `--target` is sticky per-repo; `--no-skiplist` also mirrors `node_modules` etc. `mirror off` stops the active mirror, `mirror status` lists mirrors across the registry, `mirror logs <alias>` tails the daemon's journal. |
+| `ahjo mirror <alias> --target <path>` (also `off` / `status` / `logs <alias>`) | One-way push from `/repo` (inside the branch container) to a Mac path via the in-container `ahjo-mirror` daemon. `--target` is sticky per-repo; `--no-skiplist` also mirrors `node_modules` etc. `mirror off` stops the active mirror and reverts the Mac target to its pre-mirror state (`--no-revert` to keep the files); activating on a second container takes the mirror over (off→on). `mirror status` lists mirrors across the registry, `mirror logs <alias>` tails the daemon's journal. |
 | `ahjo top` | Open the Miller-columns TUI (repos · worktrees · details) for browsing and acting on containers interactively. |
 | `ahjo ls` | Worktrees with aliases, slug, SSH port, container state, exposed + forwarded ports, creation time. |
 | `ahjo rm <alias> [--force] [--force-default]` | Stop + delete the container, remove the worktree, free ports, drop the registry entry. `--force` skips the `/repo` cleanliness check and removes even with uncommitted/unpushed work; `--force-default` permits removing a repo's default-branch container (after which the repo can't spawn new branches until re-added). |
