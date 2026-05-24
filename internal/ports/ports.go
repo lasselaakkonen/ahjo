@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"sort"
+	"strings"
 
 	"github.com/lasselaakkonen/ahjo/internal/paths"
 )
@@ -29,6 +31,43 @@ type Allocation struct {
 	Slug    string `json:"slug"`
 	Port    int    `json:"port"`
 	Purpose string `json:"purpose"`
+}
+
+// PortPair is a container-port → host-port mapping. It backs both the
+// `ahjo ls` expose column and the `top` details pane, and is reused for
+// forwards (where Container is the in-container listen port and Host the
+// loopback port it proxies to). Plain ints, no styling — display formatting
+// lives at the call site.
+type PortPair struct {
+	Container int
+	Host      int
+}
+
+// ExposedPairs extracts the (container, host) mappings from a slug's
+// allocations, keeping only expose/auto-expose purposes (ssh and unknowns are
+// skipped) and sorting by container port. Both the ls table and the TUI
+// details pane derive their expose rendering from this so the parsing lives in
+// exactly one place.
+func ExposedPairs(allocs []Allocation) []PortPair {
+	var out []PortPair
+	for _, a := range allocs {
+		var prefix string
+		switch {
+		case strings.HasPrefix(a.Purpose, AutoExposePrefix):
+			prefix = AutoExposePrefix
+		case strings.HasPrefix(a.Purpose, ExposePrefix):
+			prefix = ExposePrefix
+		default:
+			continue
+		}
+		var cport int
+		if _, err := fmt.Sscanf(strings.TrimPrefix(a.Purpose, prefix), "%d", &cport); err != nil {
+			continue
+		}
+		out = append(out, PortPair{Container: cport, Host: a.Port})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Container < out[j].Container })
+	return out
 }
 
 type Ports struct {

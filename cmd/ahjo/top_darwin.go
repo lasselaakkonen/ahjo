@@ -7,14 +7,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"os/exec"
-	"sort"
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
 
 	"github.com/lasselaakkonen/ahjo/internal/ide"
 	"github.com/lasselaakkonen/ahjo/internal/lima"
-	"github.com/lasselaakkonen/ahjo/internal/ports"
 	"github.com/lasselaakkonen/ahjo/internal/registry"
 	"github.com/lasselaakkonen/ahjo/internal/terminal"
 	"github.com/lasselaakkonen/ahjo/internal/tui/top"
@@ -33,7 +31,6 @@ func runMacTop() error {
 	}
 	deps := top.Deps{
 		ResolveContainerName: macResolveContainerName,
-		FormatExposed:        macFormatExposed,
 		HostStatus:           macHostStatusForTop,
 		ToggleExpose:         macToggleExpose,
 		StartStop:            macStartStop,
@@ -58,40 +55,6 @@ func macResolveContainerName(br *registry.Branch) (string, error) {
 		alias = br.Aliases[0]
 	}
 	return "", fmt.Errorf("registry row for %q (slug %q) has no incus_name; recreate with `ahjo rm %s && ahjo create`", alias, br.Slug, alias)
-}
-
-// macFormatExposed renders a branch's expose-/auto- allocations as the
-// same `:cport->127.0.0.1:hport` comma-list the in-VM TUI prints. Lives
-// here as a copy rather than reaching into internal/cli so the Mac shim
-// doesn't pull in the cobra+incus subtree.
-func macFormatExposed(allocs []ports.Allocation) string {
-	type row struct{ cport, hport int }
-	var rows []row
-	for _, a := range allocs {
-		var prefix string
-		switch {
-		case strings.HasPrefix(a.Purpose, ports.AutoExposePrefix):
-			prefix = ports.AutoExposePrefix
-		case strings.HasPrefix(a.Purpose, ports.ExposePrefix):
-			prefix = ports.ExposePrefix
-		default:
-			continue
-		}
-		var cport int
-		if _, err := fmt.Sscanf(strings.TrimPrefix(a.Purpose, prefix), "%d", &cport); err != nil {
-			continue
-		}
-		rows = append(rows, row{cport: cport, hport: a.Port})
-	}
-	if len(rows) == 0 {
-		return "-"
-	}
-	sort.Slice(rows, func(i, j int) bool { return rows[i].cport < rows[j].cport })
-	parts := make([]string, 0, len(rows))
-	for _, r := range rows {
-		parts = append(parts, fmt.Sprintf(":%d->127.0.0.1:%d", r.cport, r.hport))
-	}
-	return strings.Join(parts, ",")
 }
 
 // macHostStatusForTop probes Lima for the ahjo VM state. Best-effort —

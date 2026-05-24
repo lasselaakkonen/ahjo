@@ -2,7 +2,6 @@
 package top
 
 import (
-	"github.com/lasselaakkonen/ahjo/internal/ports"
 	"github.com/lasselaakkonen/ahjo/internal/registry"
 )
 
@@ -14,7 +13,6 @@ import (
 // the state of the world still lives in the VM.
 type Deps struct {
 	ResolveContainerName func(*registry.Branch) (string, error)
-	FormatExposed        func([]ports.Allocation) string
 	HostStatus           func() HostStatus
 
 	// ToggleExpose flips the branch between "all listening ports

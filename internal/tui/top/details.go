@@ -6,6 +6,7 @@ import (
 
 	"charm.land/lipgloss/v2"
 
+	"github.com/lasselaakkonen/ahjo/internal/ports"
 	"github.com/lasselaakkonen/ahjo/internal/registry"
 )
 
@@ -112,12 +113,8 @@ func renderBranchDetail(deps Deps, br registry.Branch, snap Snapshot, status *Br
 		row("container", detailValue.Render(containerState))
 	}
 
-	row("exposed", detailValue.Render(deps.FormatExposed(snap.PortsByBranch[br.Slug])))
-	forwarded := snap.ForwardsByBranch[br.Slug]
-	if forwarded == "" {
-		forwarded = "-"
-	}
-	row("forwarded", detailValue.Render(forwarded))
+	row("exposed", portLines(exposedEntries(snap.PortsByBranch[br.Slug])))
+	row("forwarded", portLines(forwardedEntries(snap.ForwardsByBranch[br.Slug])))
 	row("path", detailValue.Render("/repo"))
 	row("created", detailValue.Render(br.CreatedAt.Format("2006-01-02 15:04")))
 	if snap.MirrorSlug == br.Slug {
@@ -127,6 +124,107 @@ func renderBranchDetail(deps Deps, br registry.Branch, snap Snapshot, status *Br
 		row("default", detailValue.Render("yes"))
 	}
 	return b.String()
+}
+
+// valueIndent is the column where detail values begin: the 12-char label
+// field (`%-12s`) plus the single separating space row() writes after it.
+// Continuation lines of a multi-line value are padded to this so they sit
+// directly under the first entry.
+const valueIndent = 13
+
+// portLines turns a slice of pre-aligned entry strings into one detail value:
+// the first entry rides the label line, the rest are indented under the value
+// column so the block reads as a grid. Empty input renders as "-".
+func portLines(entries []string) string {
+	if len(entries) == 0 {
+		return detailValue.Render("-")
+	}
+	indent := strings.Repeat(" ", valueIndent)
+	var b strings.Builder
+	for i, e := range entries {
+		if i > 0 {
+			b.WriteString("\n")
+			b.WriteString(indent)
+		}
+		b.WriteString(detailValue.Render(e))
+	}
+	return b.String()
+}
+
+// exposedEntries renders each expose/auto-expose allocation as
+// ":<cport> -> <scheme>://127.0.0.1:<hport>" with the arrows aligned. The
+// scheme is guessed from the container port — that's where the service
+// actually listens — while the URL points at the loopback host port you'd
+// open to reach it.
+func exposedEntries(allocs []ports.Allocation) []string {
+	pairs := ports.ExposedPairs(allocs)
+	lefts := make([]string, len(pairs))
+	rights := make([]string, len(pairs))
+	for i, p := range pairs {
+		lefts[i] = fmt.Sprintf(":%d", p.Container)
+		rights[i] = fmt.Sprintf("%s://127.0.0.1:%d", portScheme(p.Container), p.Host)
+	}
+	return arrowAligned(lefts, rights)
+}
+
+// forwardedEntries renders each forward as
+// "<scheme>://127.0.0.1:<hport> -> :<cport>" with the arrows aligned. The
+// scheme is guessed from the host port — the service the container reaches
+// out to runs on the host — and the container side shows the in-container
+// listen port.
+func forwardedEntries(fwds []Forward) []string {
+	lefts := make([]string, len(fwds))
+	rights := make([]string, len(fwds))
+	for i, f := range fwds {
+		lefts[i] = fmt.Sprintf("%s://127.0.0.1:%d", portScheme(f.Host), f.Host)
+		rights[i] = fmt.Sprintf(":%d", f.Container)
+	}
+	return arrowAligned(lefts, rights)
+}
+
+// arrowAligned pads every left token to the widest one so the " -> " arrows
+// line up, then joins each pair into a single entry string. Tokens are plain
+// ASCII at this point, so byte length equals display width.
+func arrowAligned(lefts, rights []string) []string {
+	w := 0
+	for _, l := range lefts {
+		if len(l) > w {
+			w = len(l)
+		}
+	}
+	out := make([]string, len(lefts))
+	for i := range lefts {
+		out[i] = fmt.Sprintf("%-*s -> %s", w, lefts[i], rights[i])
+	}
+	return out
+}
+
+// portScheme maps a well-known port to the URL scheme shown beside it in the
+// details pane. Anything unrecognized falls back to http, which covers the
+// common case of dev servers on arbitrary high ports.
+func portScheme(port int) string {
+	switch port {
+	case 443, 8443:
+		return "https"
+	case 5432:
+		return "pgsql"
+	case 3306:
+		return "mysql"
+	case 6379:
+		return "redis"
+	case 27017:
+		return "mongodb"
+	case 5672:
+		return "amqp"
+	case 22:
+		return "ssh"
+	case 21:
+		return "ftp"
+	case 25, 465, 587:
+		return "smtp"
+	default:
+		return "http"
+	}
 }
 
 // formatContainerState renders the leading "● state" of the details pane.
