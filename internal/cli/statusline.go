@@ -11,7 +11,7 @@ import (
 )
 
 // statuslineScript is the bash+jq statusline ahjo installs into the container.
-// It renders branch / git-dir state / active bridges, reading live bridge state
+// It renders git-dir state / branch / active bridges, reading live bridge state
 // from ~/.ahjo/ahjo-state.json.
 //
 //go:embed statusline.sh
