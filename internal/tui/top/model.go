@@ -62,6 +62,13 @@ const (
 	containerColBreakpoint = 250
 
 	footerH = 1
+
+	// containerHeaderH is the height reserved at the top of the containers
+	// column for the blue "<owner>/<repo>" header (title line + blank
+	// spacer). The embedded list is sized to leave room for it, and View
+	// always renders the spacer so the list lines up whether or not a repo
+	// is selected.
+	containerHeaderH = 2
 )
 
 // scaledWidth interpolates linearly from min at termWidth=0 to max at
@@ -632,6 +639,22 @@ func (m *model) refreshContainers() {
 	m.containers.SetItems(containerItemsFor(m.snap, repo.Name, m.branchStatus))
 }
 
+// containerHeader returns the blue "<owner>/<repo>" title shown above the
+// containers list — the selected repo's display name, truncated to the
+// column's interior width so a long owner/repo can't wrap and break the
+// header's reserved height. Empty when no repo is selected (the list is then
+// empty too, so only the spacer shows).
+func (m *model) containerHeader(width int) string {
+	name := repoDisplayName(selectedRepo(m.repos))
+	if name == "" {
+		return ""
+	}
+	if width > 0 {
+		name = ansi.Truncate(name, width, "…")
+	}
+	return detailTitle.Render(name)
+}
+
 func (m *model) refreshDetails() {
 	var content string
 	switch m.focus {
@@ -668,7 +691,7 @@ func (m *model) applySizes() {
 	}
 	rcw, ccw, rightWidth := m.colWidths()
 	m.repos.SetSize(rcw-2, rowH-2)
-	m.containers.SetSize(ccw-2, rowH-2)
+	m.containers.SetSize(ccw-2, rowH-2-containerHeaderH)
 	m.details.SetWidth(rightWidth - 2)
 	m.details.SetHeight(rowH - 2)
 	m.input.SetWidth(rightWidth - 4)
@@ -1034,7 +1057,12 @@ func (m *model) View() tea.View {
 		strip := verticalText(repoDisplayName(selectedRepo(m.repos)), rowH-2)
 		left = paneStyle(false, rcw, rowH).Render(detailTitle.Render(strip))
 	}
-	mid := paneStyle(m.focus == focusContainers, ccw, rowH).Render(m.containers.View())
+	// The containers column leads with a blue "<owner>/<repo>" header (same
+	// style as the details title) so the repo is named even while its own
+	// column is collapsed; the "\n\n" spacer is always present so the list
+	// rows line up with the height reserved in applySizes.
+	midContent := m.containerHeader(ccw-2) + "\n\n" + m.containers.View()
+	mid := paneStyle(m.focus == focusContainers, ccw, rowH).Render(midContent)
 	right := paneStyle(m.focus == focusDetails, rightWidth, rowH).Render(rightContent)
 
 	row := lipgloss.JoinHorizontal(lipgloss.Top, left, mid, right)

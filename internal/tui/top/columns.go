@@ -85,7 +85,7 @@ func (d compactDelegate) Render(w io.Writer, m list.Model, index int, item list.
 		icons := renderReplicationIcon(v.snap, v.br.Slug) +
 			renderGitIcon(v.status, v.state) +
 			renderPRIcon(v.status, v.state)
-		line = style.Render(caret) + icons + style.Render(aliasOf(v))
+		line = style.Render(caret) + icons + style.Render(branchLabelOf(v))
 	} else {
 		line = style.Render(caret + itemLabel(item))
 	}
@@ -126,6 +126,20 @@ func aliasOf(v containerItem) string {
 		return v.br.Aliases[0]
 	}
 	return v.br.Slug
+}
+
+// branchLabelOf is the alias as shown in the containers column. Container
+// aliases are "<owner>/<repo>@<branch>" (see registry.MakeBranchAlias); the
+// "<owner>/<repo>" part is already shown once as the column header, so we
+// strip that "<owner>/<repo>@" prefix here to leave room for longer branch
+// names. The "/" guard keeps the strip scoped to that owner/repo shape — a
+// custom alias without a slash, or a bare slug, is left untouched.
+func branchLabelOf(v containerItem) string {
+	alias := aliasOf(v)
+	if at := strings.IndexByte(alias, '@'); at > 0 && strings.IndexByte(alias[:at], '/') >= 0 {
+		return alias[at+1:]
+	}
+	return alias
 }
 
 // repoDisplayName returns the same label the expanded repo list shows — first
