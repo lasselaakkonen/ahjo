@@ -640,7 +640,12 @@ func (m *model) submitInput() (tea.Model, tea.Cmd) {
 		}
 		alias := w.Aliases[0]
 		m.flash = "mirroring " + alias + " → " + val + "…"
-		cmd := execAhjoCaptured("mirroring", alias, "mirror", alias, "--target", val)
+		// execAhjo (tea.ExecProcess), not execAhjoCaptured: `mirror on` confirms
+		// before clobbering a dirty/non-git target ("continue?" / "mirror without
+		// the ability to revert?"). Those prompts need a real TTY on stdin — a
+		// captured subprocess would silently cancel the activation. Suspending the
+		// TUI also surfaces the rsync bootstrap progress live on the terminal.
+		cmd := execAhjo("mirroring", alias, "mirror", alias, "--target", val)
 		m.cancelInput()
 		return m, cmd
 	case inputForward:
@@ -1023,7 +1028,12 @@ func (m *model) handleToggleMirror() (tea.Model, tea.Cmd) {
 	}
 	if m.snap.MirrorSlug == w.Slug && m.snap.MirrorAlive {
 		m.flash = "stopping mirror…"
-		return m, execAhjoCaptured("mirror", "off", "mirror", "off")
+		// execAhjo (tea.ExecProcess), not execAhjoCaptured: `mirror off` asks
+		// whether to revert the host target, and that prompt only runs when its
+		// stdin is a real TTY. A captured subprocess gets /dev/null on stdin, so
+		// decideRevert silently skips the revert and the user is never asked.
+		// Suspending the TUI hands over the actual terminal so the prompt works.
+		return m, execAhjo("mirror", "off", "mirror", "off")
 	}
 	m.startInput(inputMirrorTarget)
 	return m, nil
