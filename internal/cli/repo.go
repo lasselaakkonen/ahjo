@@ -120,26 +120,66 @@ HTTPS credential helper to read it. ahjo does not auto-rewrite SSH ↔ HTTPS.
 }
 
 func runRepoAdd(input, asAlias, defaultBase string, yes bool, containerConfig string) error {
-	url := resolveRepoURL(input)
-	slug, primary, aliases, err := repoAddPlan(url, asAlias)
+	src := parseRepoSource(input)
+	slug, primary, aliases, err := repoAddPlan(src.canonicalURL(), asAlias)
 	if err != nil {
 		return err
 	}
-	return repoAddSetup(slug, primary, aliases, url, defaultBase, yes, containerConfig)
+	return repoAddSetup(slug, primary, aliases, src, defaultBase, yes, containerConfig)
 }
 
-// resolveRepoURL accepts either a git URL or a bare "<owner>/<repo>" alias
-// and returns a usable URL. Aliases get the same SSH-then-HTTPS GitHub
-// inference EnsureRepo uses, so `ahjo repo add lasselaakkonen/foo` works
-// the same way `ahjo create lasselaakkonen/foo bar` does.
-func resolveRepoURL(input string) string {
+// repoSource captures how a repo's clone URL should be derived. An explicit
+// URL (the user typed git@… or https://…) is used verbatim — ahjo never
+// auto-rewrites SSH↔HTTPS. A bare "<owner>/<repo>" GitHub alias defers the
+// protocol choice to cloneURL: with a per-repo PAT in hand it clones over
+// HTTPS so the token authenticates the clone and every later fetch/push;
+// without one it keeps the historical SSH-then-HTTPS probe. Deferring is
+// what lets `ahjo create owner/repo branch` honor a PAT the user only pastes
+// at the prompt that runs *after* the alias is parsed.
+type repoSource struct {
+	explicitURL string // non-empty → used verbatim
+	owner, name string // set when explicitURL == "" → protocol picked later
+}
+
+// parseRepoSource classifies raw `repo add` / `create` input. Anything
+// containing "://" or "@" is an explicit URL; a bare "<owner>/<repo>" is a
+// GitHub alias; anything else passes through verbatim (a local path, etc.).
+func parseRepoSource(input string) repoSource {
 	if strings.Contains(input, "://") || strings.Contains(input, "@") {
-		return input
+		return repoSource{explicitURL: input}
 	}
 	if owner, name, ok := splitRepoAlias(input); ok {
-		return pickGitHubURL(owner, name)
+		return repoSource{owner: owner, name: name}
 	}
-	return input
+	return repoSource{explicitURL: input}
+}
+
+func (s repoSource) httpsURL() string {
+	return fmt.Sprintf("https://github.com/%s/%s.git", s.owner, s.name)
+}
+
+// canonicalURL returns a protocol-independent URL for alias/slug
+// allocation, which only cares about owner/repo. Never used to clone.
+func (s repoSource) canonicalURL() string {
+	if s.explicitURL != "" {
+		return s.explicitURL
+	}
+	return s.httpsURL()
+}
+
+// cloneURL resolves the URL ahjo actually clones (and records as the repo's
+// remote). Explicit URLs are verbatim. An inferred GitHub alias prefers
+// HTTPS when a PAT is available so the clone — and every later fetch/push —
+// authenticates via the token instead of silently falling onto the host's
+// SSH key; with no token it keeps the SSH-then-HTTPS probe.
+func (s repoSource) cloneURL(hasToken bool) string {
+	if s.explicitURL != "" {
+		return s.explicitURL
+	}
+	if hasToken {
+		return s.httpsURL()
+	}
+	return pickGitHubURL(s.owner, s.name)
 }
 
 // repoAddPlan validates the alias/slug allocation under the lockfile but
@@ -197,7 +237,7 @@ func repoAddPlan(url, asAlias string) (slug, primary string, aliases []string, e
 // Lockfile is acquired only for the final registry write; the long
 // container/network operations run unlocked so concurrent ahjo invocations
 // (e.g. `ahjo top` refresh) aren't starved.
-func repoAddSetup(slug, primary string, aliases []string, url, defaultBase string, yes bool, containerConfig string) error {
+func repoAddSetup(slug, primary string, aliases []string, src repoSource, defaultBase string, yes bool, containerConfig string) error {
 	cfg, err := config.Load()
 	if err != nil {
 		return err
@@ -285,21 +325,23 @@ func repoAddSetup(slug, primary string, aliases []string, url, defaultBase strin
 
 	// Per-repo GitHub token prompt. Non-fatal: skipped on --yes / non-TTY /
 	// already-set / empty paste. See `ahjo repo set-token` to add later.
-	// Runs before `git clone` so HTTPS remotes authenticate via the credential
-	// helper rather than landing on git's interactive `Username:` prompt.
+	// Resolved before the clone URL is chosen so an inferred GitHub alias can
+	// clone over HTTPS (and use the PAT) instead of falling onto the SSH key.
 	if err := promptRepoGHToken(slug, primary, yes); err != nil {
 		return err
 	}
-	// If a token landed (either from this prompt, the Mac shim's pre-relay
-	// Keychain read, or a prior repo-set-token run), promote it onto the
-	// container as environment.GH_TOKEN/GITHUB_TOKEN and configure git's
-	// HTTPS credential helper. Both are no-ops when the token is absent —
-	// users who skipped the prompt keep the existing ssh-agent/public-clone
-	// paths exactly. `incus copy` carries environment.* and the in-$HOME
-	// .gitconfig into every branch container, so this runs once.
-	if tok, found, err := repoToken(slug); err != nil {
+	// repoToken sees this prompt's paste, the Mac shim's pre-relay Keychain
+	// inject, a global `ahjo env set GH_TOKEN`, or a prior repo-set-token run.
+	tok, hasToken, err := repoToken(slug)
+	if err != nil {
 		return err
-	} else if found && tok != "" {
+	}
+	hasToken = hasToken && tok != ""
+	if hasToken {
+		// Promote the token onto the container as environment.GH_TOKEN/
+		// GITHUB_TOKEN and configure git's HTTPS credential helper. `incus
+		// copy` carries environment.* and the in-$HOME .gitconfig into every
+		// branch container, so this runs once.
 		if err := installRepoToken(func(k, v string) error { return incus.ConfigSet(containerName, k, v) }, tok); err != nil {
 			return fmt.Errorf("forward GH_TOKEN to container: %w", err)
 		}
@@ -312,6 +354,13 @@ func repoAddSetup(slug, primary string, aliases []string, url, defaultBase strin
 			return fmt.Errorf("gh auth setup-git: %w", err)
 		}
 	}
+
+	// Pick the clone URL now that we know whether a PAT is in hand. An
+	// explicit URL is used verbatim; an inferred GitHub alias clones over
+	// HTTPS when a token exists (so the PAT authenticates the clone and every
+	// later fetch/push) and otherwise keeps the SSH-then-HTTPS probe. The
+	// chosen URL is recorded as the repo's remote (registry row below).
+	url := src.cloneURL(hasToken)
 
 	// /repo is at the container root, where uid 1000 can't `mkdir`. Create
 	// it as ubuntu:ubuntu first so `git clone` runs unprivileged.
@@ -1547,8 +1596,9 @@ func runRepoPull(repoAlias string) error {
 
 // EnsureRepo returns the repo registered under repoAlias. If the repo
 // isn't registered and the alias has the canonical "<owner>/<repo>"
-// shape, it auto-adds the repo by deriving a GitHub URL (SSH if
-// reachable, else HTTPS) and running the standard `repo add` flow.
+// shape, it auto-adds the repo by running the standard `repo add` flow,
+// which derives a GitHub URL once the per-repo PAT is resolved (HTTPS
+// when a token is available so the clone uses it, else SSH-if-reachable).
 // Idempotent: a second call on a registered repo just returns it.
 //
 // containerConfig is the value of --container-config (a built-in stack
@@ -1566,14 +1616,17 @@ func EnsureRepo(repoAlias, containerConfig string) (*registry.Repo, error) {
 		return r, nil
 	}
 
-	owner, name, ok := splitRepoAlias(repoAlias)
-	if !ok {
+	if _, _, ok := splitRepoAlias(repoAlias); !ok {
 		return nil, fmt.Errorf("no repo with alias %q (try `ahjo repo add` or `ahjo repo ls`)", repoAlias)
 	}
 
-	url := pickGitHubURL(owner, name)
-	fmt.Printf("repo %q not registered; adding from %s...\n", repoAlias, url)
-	if err := runRepoAdd(url, "", "", false, containerConfig); err != nil {
+	// Pass the bare alias through; runRepoAdd re-parses it via
+	// parseRepoSource and repoAddSetup picks the protocol once the PAT is
+	// resolved — HTTPS when a token exists, else SSH-then-HTTPS. Deferring
+	// here is what stops `ahjo create owner/repo branch` from grabbing the
+	// host SSH key when a PAT is available.
+	fmt.Printf("repo %q not registered; adding from GitHub...\n", repoAlias)
+	if err := runRepoAdd(repoAlias, "", "", false, containerConfig); err != nil {
 		return nil, err
 	}
 

@@ -200,6 +200,64 @@ func TestPickGitHubURL_FormatsBothSchemes(t *testing.T) {
 	}
 }
 
+func TestParseRepoSource(t *testing.T) {
+	cases := []struct {
+		in          string
+		wantExplict string // "" means inferred GitHub alias
+		wantOwner   string
+		wantName    string
+	}{
+		{"acme/widget", "", "acme", "widget"},
+		{"git@github.com:acme/widget.git", "git@github.com:acme/widget.git", "", ""},
+		{"https://github.com/acme/widget.git", "https://github.com/acme/widget.git", "", ""},
+		{"ssh://git@github.com/acme/widget.git", "ssh://git@github.com/acme/widget.git", "", ""},
+		{"/path/to/local/repo", "/path/to/local/repo", "", ""},
+	}
+	for _, c := range cases {
+		got := parseRepoSource(c.in)
+		if got.explicitURL != c.wantExplict || got.owner != c.wantOwner || got.name != c.wantName {
+			t.Errorf("parseRepoSource(%q) = %+v, want explicit=%q owner=%q name=%q",
+				c.in, got, c.wantExplict, c.wantOwner, c.wantName)
+		}
+	}
+}
+
+func TestRepoSourceCloneURL(t *testing.T) {
+	// An explicit URL is verbatim regardless of token state — ahjo never
+	// rewrites SSH↔HTTPS for a URL the user typed.
+	ssh := repoSource{explicitURL: "git@github.com:acme/widget.git"}
+	if got := ssh.cloneURL(true); got != "git@github.com:acme/widget.git" {
+		t.Errorf("explicit SSH with token: cloneURL = %q, want verbatim", got)
+	}
+	if got := ssh.cloneURL(false); got != "git@github.com:acme/widget.git" {
+		t.Errorf("explicit SSH without token: cloneURL = %q, want verbatim", got)
+	}
+
+	// An inferred alias with a PAT in hand clones over HTTPS so the token
+	// authenticates the clone and every later fetch/push — this is the
+	// regression target for `ahjo create owner/repo branch`.
+	alias := repoSource{owner: "acme", name: "widget"}
+	if got := alias.cloneURL(true); got != "https://github.com/acme/widget.git" {
+		t.Errorf("inferred alias with token: cloneURL = %q, want HTTPS", got)
+	}
+
+	// canonicalURL (used only for alias/slug allocation) is protocol-
+	// independent and never depends on token state.
+	if got := alias.canonicalURL(); got != "https://github.com/acme/widget.git" {
+		t.Errorf("inferred alias canonicalURL = %q, want HTTPS", got)
+	}
+
+	// Without a token an inferred alias falls back to the SSH-then-HTTPS
+	// probe — assert only that it yields a well-formed shape, since the
+	// scheme depends on the host's SSH reachability to github.com.
+	got := alias.cloneURL(false)
+	wantSSH := "git@github.com:acme/widget.git"
+	wantHTTPS := "https://github.com/acme/widget.git"
+	if got != wantSSH && got != wantHTTPS {
+		t.Errorf("inferred alias without token: cloneURL = %q, want one of %q or %q", got, wantSSH, wantHTTPS)
+	}
+}
+
 // TestRunWarmInstallWith_SkipsWhenBinaryAbsent covers the polyglot-repo
 // case: detection produced a match but the installer binary isn't on
 // PATH inside the container. The precheck must short-circuit, log a
