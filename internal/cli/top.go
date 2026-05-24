@@ -23,7 +23,6 @@ func newTopCmd() *cobra.Command {
 		RunE: func(_ *cobra.Command, _ []string) error {
 			deps := top.Deps{
 				ResolveContainerName: resolveContainerName,
-				FormatExposed:        formatExposed,
 				HostStatus:           hostStatusForTop,
 				ToggleExpose:         toggleExposeForTop,
 				StartStop:            startStopForTop,
@@ -67,7 +66,7 @@ func loadSnapshotInVM() (top.Snapshot, error) {
 	snap.Containers = make(map[string]bool, len(reg.Branches))
 	snap.ContainersRunning = make(map[string]bool, len(reg.Branches))
 	snap.ContainerStates = make(map[string]string, len(reg.Branches))
-	snap.ForwardsByBranch = make(map[string]string, len(reg.Branches))
+	snap.ForwardsByBranch = make(map[string][]top.Forward, len(reg.Branches))
 	for i := range reg.Branches {
 		br := &reg.Branches[i]
 		name, err := resolveContainerName(br)
@@ -89,8 +88,12 @@ func loadSnapshotInVM() (top.Snapshot, error) {
 			// them live. Only store when present to keep the JSON lean — the
 			// details pane renders an absent entry as "-".
 			if devs, err := incus.ListProxyDevices(name); err == nil {
-				if fwd := formatForwards(devs); fwd != "-" {
-					snap.ForwardsByBranch[br.Slug] = fwd
+				if pairs := forwardPairs(devs); len(pairs) > 0 {
+					fwds := make([]top.Forward, len(pairs))
+					for i, p := range pairs {
+						fwds[i] = top.Forward{Container: p.Container, Host: p.Host}
+					}
+					snap.ForwardsByBranch[br.Slug] = fwds
 				}
 			}
 		}

@@ -35,16 +35,25 @@ type Snapshot struct {
 	// details pane renders that as a red "unknown".
 	ContainerStates map[string]string             `json:"container_states,omitempty"`
 	PortsByBranch   map[string][]ports.Allocation `json:"ports_by_branch"`
-	// ForwardsByBranch carries the pre-formatted host→container forward
-	// summary per branch slug (e.g. ":8000<-:8000"), read live from the
-	// container's proxy devices. Forwards aren't tracked in ports.json, so
-	// they can't be derived from PortsByBranch; the cli layer formats the
-	// string so the TUI package stays free of incus/format knowledge. Absent
-	// entry means no forwards (rendered as "-").
-	ForwardsByBranch map[string]string `json:"forwards_by_branch,omitempty"`
-	Host             HostStatus        `json:"-"`
-	MirrorSlug       string            `json:"mirror_slug,omitempty"`
-	MirrorAlive      bool              `json:"mirror_alive"`
+	// ForwardsByBranch carries each branch's host→container forwards, read
+	// live from the container's proxy devices. Forwards aren't tracked in
+	// ports.json, so they can't be derived from PortsByBranch; the cli loader
+	// reads them from incus and ships the structured pairs so the details pane
+	// can guess a scheme and align the arrows itself. Absent entry means no
+	// forwards (rendered as "-").
+	ForwardsByBranch map[string][]Forward `json:"forwards_by_branch,omitempty"`
+	Host             HostStatus           `json:"-"`
+	MirrorSlug       string               `json:"mirror_slug,omitempty"`
+	MirrorAlive      bool                 `json:"mirror_alive"`
+}
+
+// Forward is one host→container port forward: the container listens on
+// Container and proxies to the host's loopback Host port. Shipped structured
+// (rather than pre-formatted) so the details pane owns scheme-guessing and
+// arrow alignment, matching how exposes are rendered from PortsByBranch.
+type Forward struct {
+	Container int `json:"container"`
+	Host      int `json:"host"`
 }
 
 func tickCmd() tea.Cmd {
