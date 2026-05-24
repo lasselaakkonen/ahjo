@@ -10,34 +10,17 @@ import (
 )
 
 // formatExposed renders the worktree's expose-/auto- allocations as a
-// comma-separated list of `<container>->127.0.0.1:<host>` entries, sorted by
-// container port. Returns "-" when there are no exposes.
+// comma-separated list of `:<container>->127.0.0.1:<host>` entries, sorted by
+// container port. Returns "-" when there are no exposes. Used by `ahjo ls`;
+// the `top` details pane formats ports.ExposedPairs itself.
 func formatExposed(allocs []ports.Allocation) string {
-	type row struct{ cport, hport int }
-	var rows []row
-	for _, a := range allocs {
-		var prefix string
-		switch {
-		case strings.HasPrefix(a.Purpose, ports.AutoExposePrefix):
-			prefix = ports.AutoExposePrefix
-		case strings.HasPrefix(a.Purpose, ports.ExposePrefix):
-			prefix = ports.ExposePrefix
-		default:
-			continue
-		}
-		var cport int
-		if _, err := fmt.Sscanf(strings.TrimPrefix(a.Purpose, prefix), "%d", &cport); err != nil {
-			continue
-		}
-		rows = append(rows, row{cport: cport, hport: a.Port})
-	}
-	if len(rows) == 0 {
+	pairs := ports.ExposedPairs(allocs)
+	if len(pairs) == 0 {
 		return "-"
 	}
-	sort.Slice(rows, func(i, j int) bool { return rows[i].cport < rows[j].cport })
-	parts := make([]string, 0, len(rows))
-	for _, r := range rows {
-		parts = append(parts, fmt.Sprintf(":%d->127.0.0.1:%d", r.cport, r.hport))
+	parts := make([]string, 0, len(pairs))
+	for _, p := range pairs {
+		parts = append(parts, fmt.Sprintf(":%d->127.0.0.1:%d", p.Container, p.Host))
 	}
 	return strings.Join(parts, ",")
 }
@@ -45,11 +28,25 @@ func formatExposed(allocs []ports.Allocation) string {
 // formatForwards renders a container's ahjo-forward-* proxy devices as a
 // comma-separated list of `:<container><-:<host>` entries, sorted by container
 // port. The `<-` arrow (inbound) distinguishes these from formatExposed's `->`
-// (outbound). Returns "-" when there are no forwards. Sourced from live Incus
-// device config because forwards aren't tracked in ports.json.
+// (outbound). Returns "-" when there are no forwards. Used by `ahjo ls`.
 func formatForwards(devices []incus.ProxyDevice) string {
-	type row struct{ cport, hport int }
-	var rows []row
+	pairs := forwardPairs(devices)
+	if len(pairs) == 0 {
+		return "-"
+	}
+	parts := make([]string, 0, len(pairs))
+	for _, p := range pairs {
+		parts = append(parts, fmt.Sprintf(":%d<-:%d", p.Container, p.Host))
+	}
+	return strings.Join(parts, ",")
+}
+
+// forwardPairs extracts the (container-listen, host-connect) mappings from a
+// container's ahjo-forward-* proxy devices, sorted by container port. Sourced
+// from live Incus device config because forwards aren't tracked in ports.json.
+// Both formatForwards (ls) and the top snapshot loader build on it.
+func forwardPairs(devices []incus.ProxyDevice) []ports.PortPair {
+	var out []ports.PortPair
 	for _, d := range devices {
 		if !strings.HasPrefix(d.Name, ahjoForwardDevicePrefix) {
 			continue
@@ -62,15 +59,8 @@ func formatForwards(devices []incus.ProxyDevice) string {
 		if !ok {
 			continue
 		}
-		rows = append(rows, row{cport: cport, hport: hport})
+		out = append(out, ports.PortPair{Container: cport, Host: hport})
 	}
-	if len(rows) == 0 {
-		return "-"
-	}
-	sort.Slice(rows, func(i, j int) bool { return rows[i].cport < rows[j].cport })
-	parts := make([]string, 0, len(rows))
-	for _, r := range rows {
-		parts = append(parts, fmt.Sprintf(":%d<-:%d", r.cport, r.hport))
-	}
-	return strings.Join(parts, ",")
+	sort.Slice(out, func(i, j int) bool { return out[i].Container < out[j].Container })
+	return out
 }
