@@ -35,6 +35,28 @@ const (
 	focusDetails
 )
 
+func (f focus) String() string {
+	switch f {
+	case focusContainers:
+		return "containers"
+	case focusDetails:
+		return "details"
+	default:
+		return "repos"
+	}
+}
+
+func focusFromString(s string) focus {
+	switch s {
+	case "containers":
+		return focusContainers
+	case "details":
+		return focusDetails
+	default:
+		return focusRepos
+	}
+}
+
 type inputMode int
 
 const (
@@ -196,6 +218,11 @@ type model struct {
 	contFocused  *bool
 	focus        focus
 
+	// restored guards the one-shot restore of the persisted selection: it
+	// runs on the first snapshot (the lists are empty before then) and never
+	// again, so later refresh ticks don't clobber the user's live navigation.
+	restored bool
+
 	keys keymap
 	help help.Model
 
@@ -253,6 +280,10 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.loadErr = msg.err
 		m.snap = msg.snap
 		m.repos.SetItems(repoItemsFrom(m.snap))
+		if !m.restored {
+			m.restored = true
+			m.restoreSelection()
+		}
 		m.refreshContainers()
 		m.refreshDetails()
 		return m, m.maybeRefreshBranchStatus()
@@ -330,6 +361,7 @@ func (m *model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	// Global keys.
 	switch {
 	case key.Matches(msg, m.keys.Quit):
+		m.persistSelection()
 		return m, tea.Quit
 	case key.Matches(msg, m.keys.Refresh):
 		m.flash = ""
@@ -624,10 +656,68 @@ func (m *model) shiftFocus(delta int) {
 	if target < int(focusRepos) || target > int(focusDetails) {
 		return
 	}
-	m.focus = focus(target)
-	*m.reposFocused = m.focus == focusRepos
-	*m.contFocused = m.focus == focusContainers
+	m.setFocus(focus(target))
 	m.refreshDetails()
+}
+
+// setFocus moves keyboard focus to f and syncs the delegate styling pointers.
+// It does not refresh the details pane or persist — callers that change focus
+// in response to user input do that themselves; restore wants neither.
+func (m *model) setFocus(f focus) {
+	m.focus = f
+	*m.reposFocused = f == focusRepos
+	*m.contFocused = f == focusContainers
+}
+
+// restoreSelection applies the persisted selection on top of the freshly
+// loaded snapshot: it highlights the saved repo and branch and restores the
+// focused panel. Best-effort — a missing file or a saved repo/branch that no
+// longer exists is silently skipped, leaving the defaults (repos focused,
+// first row). Runs once, from the first snapshot, after the repo list is
+// populated.
+func (m *model) restoreSelection() {
+	sel, err := loadSelection()
+	if err != nil || sel == nil {
+		return
+	}
+	if sel.Repo != "" {
+		for i, it := range m.repos.Items() {
+			if r, ok := it.(repoItem); ok && r.kind == "repo" && r.repo.Name == sel.Repo {
+				m.repos.Select(i)
+				break
+			}
+		}
+	}
+	// Populate the containers column for the just-restored repo so the branch
+	// lookup below has rows to match against.
+	m.refreshContainers()
+	if sel.Branch != "" {
+		for i, it := range m.containers.Items() {
+			if c, ok := it.(containerItem); ok && c.kind == "container" && c.br.Slug == sel.Branch {
+				m.containers.Select(i)
+				break
+			}
+		}
+	}
+	m.setFocus(focusFromString(sel.Focus))
+}
+
+// persistSelection writes the current focus + highlighted repo/branch to disk.
+// Called once, on quit. Skipped until the first snapshot has been restored:
+// quitting before any snapshot loads would otherwise persist an empty
+// selection over a previously-saved good one. Best-effort — a write failure
+// only costs us the convenience of resuming where we left off, so the error
+// is dropped.
+func (m *model) persistSelection() {
+	if !m.restored {
+		return
+	}
+	sel := persistedSelection{
+		Focus:  m.focus.String(),
+		Repo:   selectedRepoName(m.repos),
+		Branch: selectedBranchSlug(m.containers),
+	}
+	_ = sel.save()
 }
 
 func (m *model) refreshContainers() {
