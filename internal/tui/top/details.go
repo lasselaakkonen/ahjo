@@ -15,6 +15,11 @@ var (
 	detailValue = lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
 	detailTitle = lipgloss.NewStyle().Foreground(lipgloss.Color("#238FF9")).Bold(true)
 
+	// Footer shortcut hints — keys render brighter than their labels so the
+	// buttons stand out from the descriptions.
+	footerKey   = lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
+	footerLabel = lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
+
 	// PR state palette — Primer dark-theme fg tokens so the colors match
 	// what users see on github.com. Only the dot + state label get tinted;
 	// the rest of the row (number, url) stays detailValue grey.
