@@ -30,6 +30,15 @@ var (
 	prStateClosed   = lipgloss.NewStyle().Foreground(lipgloss.Color("#f85149"))
 )
 
+// linkValue renders text in the detail value color as an OSC 8 hyperlink to url
+// (e.g. cmd+click in Ghostty). Terminals without OSC 8 support drop the escapes
+// and show text verbatim, so it degrades cleanly. The link target is the full
+// url even if text is later truncated to fit the pane, since the url lives in
+// the opening escape rather than the visible text.
+func linkValue(text, url string) string {
+	return detailValue.Hyperlink(url).Render(text)
+}
+
 func renderHostDetail(snap Snapshot) string {
 	var b strings.Builder
 	title := snap.Host.Title
@@ -106,7 +115,8 @@ func renderBranchDetail(deps Deps, br registry.Branch, snap Snapshot, status *Br
 	row("repo", detailValue.Render(br.Repo))
 	row("branch", detailValue.Render(br.Branch))
 	row("slug", detailValue.Render(br.Slug))
-	row("ssh", detailValue.Render(fmt.Sprintf("127.0.0.1:%d", br.SSHPort)))
+	sshURL := fmt.Sprintf("ssh://127.0.0.1:%d", br.SSHPort)
+	row("ssh", linkValue(sshURL, sshURL))
 
 	containerState := "missing"
 	if snap.Containers[br.Slug] {
@@ -151,7 +161,9 @@ func portLines(entries []string) string {
 			b.WriteString("\n")
 			b.WriteString(indent)
 		}
-		b.WriteString(detailValue.Render(e))
+		// Entries are pre-styled by arrowAligned (grey value text + an OSC 8
+		// link on the URL token), so they're written verbatim here.
+		b.WriteString(e)
 	}
 	return b.String()
 }
@@ -169,7 +181,7 @@ func exposedEntries(allocs []ports.Allocation) []string {
 		lefts[i] = fmt.Sprintf(":%d", p.Container)
 		rights[i] = fmt.Sprintf("%s://127.0.0.1:%d", portScheme(p.Container), p.Host)
 	}
-	return arrowAligned(lefts, rights)
+	return arrowAligned(lefts, rights, urlRight)
 }
 
 // forwardedEntries renders each forward as
@@ -184,13 +196,26 @@ func forwardedEntries(fwds []Forward) []string {
 		lefts[i] = fmt.Sprintf("%s://127.0.0.1:%d", portScheme(f.Host), f.Host)
 		rights[i] = fmt.Sprintf(":%d", f.Container)
 	}
-	return arrowAligned(lefts, rights)
+	return arrowAligned(lefts, rights, urlLeft)
 }
 
+// urlSide marks which token of an arrow-aligned port entry is the clickable
+// URL: the right side for exposed (":cport -> URL"), the left for forwarded
+// ("URL -> :cport").
+type urlSide int
+
+const (
+	urlRight urlSide = iota
+	urlLeft
+)
+
 // arrowAligned pads every left token to the widest one so the " -> " arrows
-// line up, then joins each pair into a single entry string. Tokens are plain
-// ASCII at this point, so byte length equals display width.
-func arrowAligned(lefts, rights []string) []string {
+// line up, then renders each pair into a fully-styled entry: the plain side in
+// detailValue grey and the URL side as a clickable OSC 8 hyperlink to itself.
+// Padding is measured on the plain token text (ASCII here, so byte length
+// equals display width) before any link escapes are added, so the escape bytes
+// don't skew the alignment.
+func arrowAligned(lefts, rights []string, side urlSide) []string {
 	w := 0
 	for _, l := range lefts {
 		if len(l) > w {
@@ -199,7 +224,13 @@ func arrowAligned(lefts, rights []string) []string {
 	}
 	out := make([]string, len(lefts))
 	for i := range lefts {
-		out[i] = fmt.Sprintf("%-*s -> %s", w, lefts[i], rights[i])
+		left, right := lefts[i], rights[i]
+		if side == urlLeft {
+			pad := strings.Repeat(" ", w-len(left))
+			out[i] = linkValue(left, left) + pad + detailValue.Render(" -> "+right)
+			continue
+		}
+		out[i] = detailValue.Render(fmt.Sprintf("%-*s -> ", w, left)) + linkValue(right, right)
 	}
 	return out
 }
@@ -260,8 +291,11 @@ func formatContainerState(snap Snapshot, slug string) string {
 
 // formatMirror colors the leading "active →" (or "inactive →") in the same
 // blue/red palette the containers column uses for the ← arrow, then renders
-// the target path in the normal value color. When no target is configured
-// (legacy snapshot data), the state stands alone with no arrow.
+// the target path in the normal value color. The target is a path on the host
+// the TUI runs on (unlike the container-side "path" row), so it's a clickable
+// file:// link — the full path stays the link target even when the visible text
+// is truncated to fit the pane. When no target is configured (legacy snapshot
+// data), the state stands alone with no arrow.
 func formatMirror(snap Snapshot, repoName string) string {
 	state := "active"
 	style := replicationAlive
@@ -273,7 +307,7 @@ func formatMirror(snap Snapshot, repoName string) string {
 	if target == "" {
 		return style.Render(state)
 	}
-	return style.Render(state+" →") + " " + detailValue.Render(target)
+	return style.Render(state+" →") + " " + linkValue(target, "file://"+target)
 }
 
 // FormatGitStatus turns a cached BranchStatus into the styled one-line value
@@ -330,7 +364,8 @@ func FormatPRStatus(s *BranchStatus) string {
 	}
 	glyph, label, style := prGlyphLabelStyle(s.PR)
 	head := style.Render(glyph + " " + label)
-	tail := detailValue.Render(fmt.Sprintf(" · #%d %s", s.PR.Number, s.PR.URL))
+	ref := fmt.Sprintf("#%d %s", s.PR.Number, s.PR.URL)
+	tail := detailValue.Render(" · ") + linkValue(ref, s.PR.URL)
 	return head + tail
 }
 
