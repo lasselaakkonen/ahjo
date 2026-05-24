@@ -445,7 +445,7 @@ func RemoveDevice(container, device string) error {
 		return nil
 	}
 	low := strings.ToLower(string(out))
-	if strings.Contains(low, "not found") || strings.Contains(low, "no such") {
+	if strings.Contains(low, "not found") || strings.Contains(low, "no such") || strings.Contains(low, "doesn't exist") {
 		return nil
 	}
 	var ee *exec.ExitError
