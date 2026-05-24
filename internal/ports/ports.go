@@ -39,8 +39,8 @@ type Allocation struct {
 // loopback port it proxies to). Plain ints, no styling — display formatting
 // lives at the call site.
 type PortPair struct {
-	Container int
-	Host      int
+	Container int `json:"container"`
+	Host      int `json:"host"`
 }
 
 // ExposedPairs extracts the (container, host) mappings from a slug's

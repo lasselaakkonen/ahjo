@@ -233,6 +233,7 @@ func runMirrorOn(alias, targetFlag string, noSkiplist bool, version string) erro
 		}
 	}
 
+	refreshAhjoState(alias)
 	return nil
 }
 
@@ -339,6 +340,11 @@ func runMirrorOff(revert, skipRevert bool) error {
 			fmt.Printf("mirror: reverted %s to its pre-mirror state\n", targetPath)
 		}
 		stopped = true
+		alias := b.Slug
+		if len(b.Aliases) > 0 {
+			alias = b.Aliases[0]
+		}
+		refreshAhjoStateByName(b.IncusName, b.Slug, alias, "")
 	}
 	if !stopped {
 		fmt.Println("mirror: inactive")

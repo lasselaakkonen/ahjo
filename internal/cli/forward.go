@@ -124,6 +124,7 @@ func runForwardOn(alias string, hostPort, cport int) error {
 		return err
 	}
 	fmt.Printf("forward: host 127.0.0.1:%d -> container :%d\n", hostPort, cport)
+	refreshAhjoState(alias)
 	return nil
 }
 
@@ -150,6 +151,7 @@ func runForwardOff(alias string, cport int) error {
 		return err
 	}
 	fmt.Printf("forward off: container :%d\n", cport)
+	refreshAhjoState(alias)
 	return nil
 }
 
