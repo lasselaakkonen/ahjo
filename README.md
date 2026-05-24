@@ -334,22 +334,25 @@ Nothing is written to the repo; the chosen config is applied to that repo's base
 
 ## Git / GitHub auth
 
-ahjo supports two GitHub auth paths:
+Two auth paths into a container:
 
-- **Fine-grained PAT**: repo-scoped, forwarded as `GH_TOKEN`, used by `gh` and by HTTPS git through `gh auth setup-git`. This is the recommended least-privilege path.
-- **SSH agent forwarding**: used only for `git@...` remotes. ahjo forwards the host agent socket; it does not copy keys or scope keys per container.
+- **Fine-grained PAT** (recommended, least-privilege): repo-scoped, forwarded as `GH_TOKEN`, used by `gh` and by HTTPS git via `gh auth setup-git`.
+- **SSH agent forwarding**: for `git@…` remotes only. ahjo forwards the host agent socket — it never copies keys or scopes them per container. `ahjo init` sets up the agent prerequisite.
 
-Scenarios:
+**Which remote ahjo uses** when you run `ahjo repo add` / `ahjo create`:
 
-- **HTTPS remote + fine-grained PAT**: best default. `git fetch/push` and `gh` both work with repo-scoped access.
-- **HTTPS remote + no PAT**: public read may work; private repos, push, and `gh` auth fail.
-- **SSH remote + fine-grained PAT + working SSH agent**: raw `git` uses SSH agent; `gh` uses PAT. Both work, but git access follows SSH key scope.
-- **SSH remote + no PAT + working SSH agent**: raw `git` works; `gh` does not. Access follows whatever keys the forwarded agent exposes.
-- **SSH remote + broken/missing SSH agent**: `ahjo repo add git@...` and later git operations fail, even if a PAT exists, because ahjo does not rewrite SSH remotes to HTTPS. The "working SSH agent" prerequisite is set up automatically by `ahjo init` (see [First run](#first-run)).
+- An **explicit URL** (`https://…` or `git@…`) is used verbatim — ahjo never rewrites SSH↔HTTPS.
+- A bare **`owner/repo` alias** resolves to HTTPS when a PAT is available (so the PAT authenticates the clone and every later fetch/push), otherwise to SSH if reachable, otherwise HTTPS public.
 
-Unsupported auth methods:
+What works per combination:
 
-- **GitHub Deploy Key** support is not built in. Deploy Keys would work only with `git`, Fine-grained PATs can be scoped to repos and they work with `git` and `gh`.
+- **HTTPS + PAT** — best default: `git fetch/push` and `gh` all work, repo-scoped.
+- **HTTPS, no PAT** — public read only; private access, push, and `gh` fail.
+- **SSH + PAT** — git follows the SSH key's scope; `gh` uses the PAT.
+- **SSH, no PAT** — git works via the agent; `gh` does not.
+- **SSH, broken/missing agent** — git operations fail even with a PAT, since ahjo won't rewrite the remote to HTTPS.
+
+**Not supported:** GitHub Deploy Keys — they'd cover only `git`, whereas a repo-scoped fine-grained PAT covers both `git` and `gh`.
 
 ## Installing
 
