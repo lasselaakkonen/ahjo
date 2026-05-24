@@ -26,6 +26,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/lasselaakkonen/ahjo/internal/git"
@@ -143,6 +144,41 @@ func RevertPossible(target, slug string) bool {
 		return true
 	}
 	return hasEmptyMarker(slug)
+}
+
+// ListSnapshots returns the slugs that have a worktree snapshot ref under
+// target's .git, sorted. Used by the orphan-recovery path (`ahjo mirror revert
+// <target>`) to discover which snapshot to restore when no container/branch
+// remains. A target that is not a git work tree (or has no snapshots) yields an
+// empty slice and no error.
+func ListSnapshots(target string) ([]string, error) {
+	if err := gitAvailable(); err != nil {
+		return nil, err
+	}
+	if _, ok := IsGitWorkTree(target); !ok {
+		return nil, nil
+	}
+	out, err := runGit(target, nil, "for-each-ref", "--format=%(refname)", snapshotRefPrefix)
+	if err != nil {
+		return nil, err
+	}
+	var slugs []string
+	for _, ref := range strings.Split(out, "\n") {
+		ref = strings.TrimSpace(ref)
+		rest, ok := strings.CutPrefix(ref, snapshotRefPrefix)
+		if !ok {
+			continue
+		}
+		// rest is "<slug>/<kind>"; key off the worktree ref (the capture-complete
+		// flag) so a half-written snapshot doesn't surface as recoverable.
+		slug, kind, ok := strings.Cut(rest, "/")
+		if !ok || kind != "worktree" || slug == "" {
+			continue
+		}
+		slugs = append(slugs, slug)
+	}
+	sort.Strings(slugs)
+	return slugs, nil
 }
 
 // CaptureGit snapshots the target work tree and index as separate refs in the
