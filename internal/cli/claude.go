@@ -61,6 +61,9 @@ func runClaude(alias string, update, force bool, containerConfig string) error {
 	if err := runPostAttach(containerName, dcConf, env); err != nil {
 		return err
 	}
+	// Refresh the ahjo-state snapshots so this session's first on-demand read
+	// (per AHJO.md) and the statusline's first tick reflect current bridge state.
+	refreshAhjoState(alias)
 	model := promptStartingModel(cobraOut(), os.Stdin)
 	// Launch through `bash -lc 'exec claude …'` so ~/.profile fires and
 	// ~/.local/bin lands on PATH — otherwise claude's self-check ("native

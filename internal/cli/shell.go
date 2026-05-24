@@ -62,6 +62,9 @@ func runShell(alias string, update, force bool) error {
 	if err := runPostAttach(containerName, dcConf, env); err != nil {
 		return err
 	}
+	// Refresh the ahjo-state snapshots so a claude launched from this shell
+	// starts with current bridge state for its on-demand reads and statusline.
+	refreshAhjoState(alias)
 	code, err := incus.ExecAttachWait(containerName, 1000, env, paths.RepoMountPath, "bash", "-l")
 	showPostAttachStatus(br, containerName)
 	if err != nil {

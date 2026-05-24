@@ -44,7 +44,7 @@ func formatForwards(devices []incus.ProxyDevice) string {
 // forwardPairs extracts the (container-listen, host-connect) mappings from a
 // container's ahjo-forward-* proxy devices, sorted by container port. Sourced
 // from live Incus device config because forwards aren't tracked in ports.json.
-// Both formatForwards (ls) and the top snapshot loader build on it.
+// Both formatForwards (ls) and the in-container ahjo-state snapshot build on it.
 func forwardPairs(devices []incus.ProxyDevice) []ports.PortPair {
 	var out []ports.PortPair
 	for _, d := range devices {
