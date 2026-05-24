@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/lasselaakkonen/ahjo/internal/ports"
 	"github.com/lasselaakkonen/ahjo/internal/registry"
@@ -139,6 +140,26 @@ func renderBranchDetail(deps Deps, br registry.Branch, snap Snapshot, status *Br
 		row("default", detailValue.Render("yes"))
 	}
 	return b.String()
+}
+
+// fitWidth truncates each line of a rendered detail block to width display
+// cells, marking any clipped line with a trailing "…". The viewport already
+// hard-cuts overflowing lines, but does so silently — a long URL or path just
+// stops mid-token with no sign there's more, so it reads as if that's the whole
+// value. Pre-truncating with an ellipsis keeps those values unambiguous.
+// ansi.Truncate keeps escape sequences past the cut, so the SGR reset and the
+// OSC 8 hyperlink terminator still close (styling stays balanced and a clipped
+// link still targets its full URL). width <= 0 leaves content untouched, for
+// the brief window before the pane has been sized.
+func fitWidth(content string, width int) string {
+	if width <= 0 {
+		return content
+	}
+	lines := strings.Split(content, "\n")
+	for i, line := range lines {
+		lines[i] = ansi.Truncate(line, width, "…")
+	}
+	return strings.Join(lines, "\n")
 }
 
 // valueIndent is the column where detail values begin: the 12-char label

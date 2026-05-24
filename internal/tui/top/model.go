@@ -267,6 +267,10 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
 		m.applySizes()
+		// Re-fit the detail rows to the new pane width so truncation ellipses
+		// track the resize (no-op while the details pane is focused, matching
+		// refreshDetails' own guard).
+		m.refreshDetails()
 		return m, nil
 
 	case tickMsg:
@@ -770,7 +774,7 @@ func (m *model) refreshDetails() {
 	case focusDetails:
 		return
 	}
-	m.details.SetContent(content)
+	m.details.SetContent(fitWidth(content, m.details.Width()))
 	m.details.GotoTop()
 }
 
