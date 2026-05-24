@@ -41,13 +41,13 @@ jobs:
           version: v2.11
 
       - name: govulncheck
-        # Composite action (no Node runtime of its own). Its v1 internals still
-        # pin actions/checkout@v4.1.1 + actions/setup-go@v5.0.0 (node20), so this
-        # may emit a transitive Node 20 deprecation we can't fix here until
-        # golang/govulncheck-action updates upstream.
-        uses: golang/govulncheck-action@v1
-        with:
-          go-version-file: go.mod
+        # Run govulncheck directly rather than golang/govulncheck-action@v1: that
+        # action is a composite that runs its own pinned actions/checkout@v4.1.1,
+        # which is (a) still node20 and (b) collides with the credentials our
+        # top-level actions/checkout@v6 persists, yielding a "Duplicate header:
+        # Authorization" 400 on PR fetches. Go is already set up above, so the
+        # action's internal checkout + setup-go were pure redundancy.
+        run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
 
       - name: go test -race
         run: go test -race ./...
