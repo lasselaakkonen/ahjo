@@ -14,6 +14,7 @@ import (
 	"github.com/lasselaakkonen/ahjo/internal/lockfile"
 	"github.com/lasselaakkonen/ahjo/internal/paths"
 	"github.com/lasselaakkonen/ahjo/internal/registry"
+	"github.com/lasselaakkonen/ahjo/internal/terminal"
 	"github.com/lasselaakkonen/ahjo/internal/tokenstore"
 )
 
@@ -304,7 +305,33 @@ func branchEnv(containerName string, dcConf *ahjocontainer.Config) (map[string]s
 			env[k] = v
 		}
 	}
+	forwardTerminalEnv(env)
 	return env, nil
+}
+
+// forwardTerminalEnv propagates the host terminal's identity into the attach
+// env. incus exec carries only TERM, so TERM_PROGRAM/COLORTERM are otherwise
+// absent inside the container and Claude — unable to detect the terminal across
+// the boundary — disables OSC 8 hyperlinks (clickable PR links, etc.). We
+// pass the markers through, and when the host terminal is known to render OSC 8
+// we also set FORCE_HYPERLINK=1, since Claude may not recognize the bare
+// TERM_PROGRAM value on its own. Values already set via forward_env win (the
+// loop above ran first), so this never clobbers an explicit override.
+func forwardTerminalEnv(env map[string]string) {
+	for _, k := range []string{"TERM_PROGRAM", "TERM_PROGRAM_VERSION", "COLORTERM"} {
+		if _, set := env[k]; set {
+			continue
+		}
+		if v := os.Getenv(k); v != "" {
+			env[k] = v
+		}
+	}
+	if _, set := env["FORCE_HYPERLINK"]; set {
+		return
+	}
+	if slug, ok := terminal.Current(); ok && terminal.SupportsOSC8Hyperlinks(slug) {
+		env["FORCE_HYPERLINK"] = "1"
+	}
 }
 
 // slugForContainer maps an Incus container name back to the repo slug that

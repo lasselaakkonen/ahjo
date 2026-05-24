@@ -1038,6 +1038,12 @@ func pushClaudeConfig(containerName string) error {
 			fmt.Fprintf(cobraOutErr(), "warn: chown claude config: %v\n", err)
 		}
 	}
+	// Wire ahjo's statusline unless the user brought their own. Best-effort: a
+	// statusline failure must not fail container creation. May overwrite the
+	// settings.json just pushed above (with the user's settings + our statusLine).
+	if err := installClaudeStatusline(containerName, home); err != nil {
+		fmt.Fprintf(cobraOutErr(), "warn: claude statusline: %v\n", err)
+	}
 	return nil
 }
 
