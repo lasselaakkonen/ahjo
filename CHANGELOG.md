@@ -2,6 +2,27 @@
 
 ## Unreleased — `ahjo/docker` defaults off the legacy graph driver
 
+### Changed
+
+- **`ahjo mirror off` now reverts the Mac target to its pre-mirror state by
+  default.** Previously it prompted (or required `--revert`); the prompt and
+  the `--revert`/`--skip-revert` flags are gone, replaced by a single
+  `--no-revert` opt-out that stops the mirror but leaves the mirrored files in
+  place. The revert is unchanged mechanically — tracked files restored,
+  mirror-added files removed, gitignored files (`.env`) and committed work
+  kept. The TUI's `m`-toggle off therefore always reverts.
+- **`ahjo mirror <alias>` takes over an active mirror instead of refusing.**
+  When another container already holds the single-active mirror device,
+  activation now stops and reverts that mirror first, then starts the new one
+  (off→on), rather than erroring with "run `ahjo mirror off` first". This lets
+  the TUI switch the mirror between containers in one gesture.
+- **Tearing a container down reverts its mirror too.** `ahjo rm` and
+  `ahjo shell --update` now revert the host target to its pre-mirror state
+  (same as `mirror off`) instead of leaving the mirrored files behind with a
+  kept snapshot — so a destroy/update never leaves a dirtied host dir. Mirrored
+  content originates in the container, so nothing is permanently lost; the lone
+  exception is manual host-side edits in the target, which are discarded.
+
 ### Fixed
 
 - **`ahjo/docker` no longer forces `storage-driver: overlay2` into
