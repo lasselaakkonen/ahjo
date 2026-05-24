@@ -1218,16 +1218,16 @@ func (m *model) renderFooter() string {
 			continue
 		}
 		if h.Desc == "" {
-			hints = append(hints, h.Key)
+			hints = append(hints, footerKey.Render(h.Key))
 		} else {
-			hints = append(hints, fmt.Sprintf("%s %s", h.Key, h.Desc))
+			hints = append(hints, footerKey.Render(h.Key)+" "+footerLabel.Render(h.Desc))
 		}
 	}
-	footer := strings.Join(hints, " · ")
+	footer := strings.Join(hints, footerLabel.Render(" · "))
 	if m.width > 0 {
 		footer = ansi.Truncate(footer, m.width, "…")
 	}
-	return lipgloss.NewStyle().Foreground(lipgloss.Color("245")).Render(footer)
+	return footer
 }
 
 // logMessage returns the latest action / status text, preferring a fresh
