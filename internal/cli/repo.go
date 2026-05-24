@@ -316,6 +316,13 @@ func repoAddSetup(slug, primary string, aliases []string, src repoSource, defaul
 	if err := pushClaudeConfig(containerName); err != nil {
 		return fmt.Errorf("push claude config: %w", err)
 	}
+	// Install the static AHJO.md (imported by CLAUDE.md) and seed an initial
+	// ahjo-state.md. Best-effort: a missing bridge doc must not fail repo add.
+	// COW clones inherit AHJO.md + the import; each gets its own state on attach.
+	if err := installAhjoDoc(containerName); err != nil {
+		fmt.Fprintf(cobraOutErr(), "warn: install AHJO.md: %v\n", err)
+	}
+	refreshAhjoStateByName(containerName, slug, primary, "")
 	if err := incus.ExecAs(containerName, 1000, nil, "/", "/usr/local/bin/ahjo-claude-prepare"); err != nil {
 		return fmt.Errorf("ahjo-claude-prepare: %w", err)
 	}

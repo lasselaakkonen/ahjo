@@ -60,7 +60,11 @@ func runExposeSync(alias string) error {
 	if br == nil {
 		return fmt.Errorf("no branch with alias %q", alias)
 	}
-	return reconcileAutoExpose(cobraOut(), br)
+	if err := reconcileAutoExpose(cobraOut(), br); err != nil {
+		return err
+	}
+	refreshAhjoState(alias)
+	return nil
 }
 
 func runExpose(alias string, cport int) error {
@@ -106,5 +110,6 @@ func runExpose(alias string, cport int) error {
 		return err
 	}
 	fmt.Printf("container :%d -> 127.0.0.1:%d\n", cport, hostPort)
+	refreshAhjoState(alias)
 	return nil
 }

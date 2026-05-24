@@ -260,10 +260,24 @@ func toggleExposeForTop(br *registry.Branch) (string, error) {
 		}
 	}
 
+	var msg string
 	if len(exposed) > 0 {
-		return removeAllExposed(containerName, br.Slug, exposed)
+		msg, err = removeAllExposed(containerName, br.Slug, exposed)
+	} else {
+		msg, err = forceExposeAllListening(containerName, br)
 	}
-	return forceExposeAllListening(containerName, br)
+	if err != nil {
+		return "", err
+	}
+	// Mirror the CLI expose path (expose.go): re-render the in-container
+	// ahjo-state snapshot so a top-driven toggle lands in ~/.ahjo immediately,
+	// not just on the next shell/claude attach. Best-effort by contract.
+	alias := br.Slug
+	if len(br.Aliases) > 0 {
+		alias = br.Aliases[0]
+	}
+	refreshAhjoState(alias)
+	return msg, nil
 }
 
 // removeAllExposed deletes every auto/manual expose proxy device on the
