@@ -3,7 +3,7 @@
 # internal/cli/statusline.go, unless the user already configured a statusLine of
 # their own. Renders, separated by " · ":
 #
-#   <branch> · ●<git> · ←mirroring · exposed :c -> :h · forwarding :h -> :c
+#   ●<git> · <branch> · ←mirroring · exposed :c -> :h · forwarding :h -> :c
 #
 # Colors and glyphs mirror `ahjo top` (internal/tui/top/icons.go) so the two read
 # as one tool. Live bridge state comes from ~/.ahjo/ahjo-state.json (the host
@@ -29,12 +29,6 @@ RESET=$'\033[0m'
 
 segments=()
 
-# --- branch: prefer the live checkout, fall back to the state alias, then sha ---
-branch=$(g branch --show-current 2>/dev/null)
-[[ -z "$branch" ]] && branch=$(jq -r '.alias // empty' "$STATE" 2>/dev/null)
-[[ -z "$branch" ]] && branch=$(g rev-parse --short HEAD 2>/dev/null)
-[[ -n "$branch" ]] && segments+=("$branch")
-
 # --- git dir dot: mirrors renderGitIcon — error, else dirty/ahead/stash, else clean.
 # "dirty" is the union of anything not yet on the remote; behind-only is not surfaced.
 git_dot() {
@@ -52,6 +46,12 @@ git_dot() {
   fi
 }
 segments+=("$(git_dot)")
+
+# --- branch: prefer the live checkout, fall back to the state alias, then sha ---
+branch=$(g branch --show-current 2>/dev/null)
+[[ -z "$branch" ]] && branch=$(jq -r '.alias // empty' "$STATE" 2>/dev/null)
+[[ -z "$branch" ]] && branch=$(g rev-parse --short HEAD 2>/dev/null)
+[[ -n "$branch" ]] && segments+=("$branch")
 
 # OSC 8 hyperlink (same scheme ahjo top uses): cmd/ctrl-click opens the target.
 osc8() { printf '\033]8;;%s\033\\%s\033]8;;\033\\' "$1" "$2"; }
