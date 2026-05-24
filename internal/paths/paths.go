@@ -133,10 +133,20 @@ func KeychainCleanupMarker(slug string) string {
 	return filepath.Join(KeychainCleanupDir(), slug)
 }
 
+// MirrorSnapshotsDir holds per-slug revert metadata for `ahjo mirror`. It lives
+// under AhjoDir() (VM-local), not SharedDir(): only the in-VM ahjo reads it, so
+// there is no cross-visibility requirement with the Mac shim. For git-work-tree
+// targets the actual snapshot lives as refs in the target's own (never-mirrored)
+// .git; this dir only holds the tiny ".empty" marker for fresh-empty targets.
+func MirrorSnapshotsDir() string { return filepath.Join(AhjoDir(), "mirror-snapshots") }
+
+// MirrorSnapshotDir is the per-slug subdirectory under MirrorSnapshotsDir.
+func MirrorSnapshotDir(slug string) string { return filepath.Join(MirrorSnapshotsDir(), slug) }
+
 // EnsureSkeleton creates the ~/.ahjo/ directory tree (idempotent).
 func EnsureSkeleton() error {
 	for _, d := range []string{
-		AhjoDir(), HostKeysDir(), RepoEnvDir(),
+		AhjoDir(), HostKeysDir(), RepoEnvDir(), MirrorSnapshotsDir(),
 	} {
 		if err := os.MkdirAll(d, 0o755); err != nil {
 			return fmt.Errorf("mkdir %s: %w", d, err)

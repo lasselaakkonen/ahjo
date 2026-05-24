@@ -4,10 +4,10 @@ import (
 	"bufio"
 	"fmt"
 	"os"
-	"strconv"
 	"strings"
 	"time"
 
+	"github.com/lasselaakkonen/ahjo/internal/git"
 	"github.com/lasselaakkonen/ahjo/internal/incus"
 	"github.com/lasselaakkonen/ahjo/internal/paths"
 	"github.com/lasselaakkonen/ahjo/internal/registry"
@@ -71,57 +71,7 @@ func repoDirtySummary(containerName string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	var staged, unstaged, untracked, unmerged, ahead int
-	for _, line := range strings.Split(string(out), "\n") {
-		if line == "" {
-			continue
-		}
-		switch {
-		case strings.HasPrefix(line, "# branch.ab "):
-			// "# branch.ab +<ahead> -<behind>"
-			fields := strings.Fields(line)
-			if len(fields) >= 3 {
-				if v, err := strconv.Atoi(strings.TrimPrefix(fields[2], "+")); err == nil {
-					ahead = v
-				}
-			}
-		case strings.HasPrefix(line, "1 "), strings.HasPrefix(line, "2 "):
-			// "1 XY ..." or "2 XY ..."; XY is the third token (after the
-			// leading "1"/"2" and a space). X = staged, Y = unstaged; "."
-			// means unchanged for that half.
-			fields := strings.Fields(line)
-			if len(fields) < 2 || len(fields[1]) < 2 {
-				continue
-			}
-			if fields[1][0] != '.' {
-				staged++
-			}
-			if fields[1][1] != '.' {
-				unstaged++
-			}
-		case strings.HasPrefix(line, "u "):
-			unmerged++
-		case strings.HasPrefix(line, "? "):
-			untracked++
-		}
-	}
-	var parts []string
-	if staged > 0 {
-		parts = append(parts, fmt.Sprintf("%d staged", staged))
-	}
-	if unstaged > 0 {
-		parts = append(parts, fmt.Sprintf("%d unstaged", unstaged))
-	}
-	if untracked > 0 {
-		parts = append(parts, fmt.Sprintf("%d untracked", untracked))
-	}
-	if unmerged > 0 {
-		parts = append(parts, fmt.Sprintf("%d unmerged", unmerged))
-	}
-	if ahead > 0 {
-		parts = append(parts, fmt.Sprintf("%d unpushed commit(s)", ahead))
-	}
-	return strings.Join(parts, ", "), nil
+	return git.ParseStatusV2(string(out)).Summary(), nil
 }
 
 func promptYesNo(question string) bool {
