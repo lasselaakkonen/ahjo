@@ -48,7 +48,7 @@ func newMirrorCmd() *cobra.Command {
 	var skipRevert bool
 
 	cmd := &cobra.Command{
-		Use:   "mirror [<alias> | off | status | logs <alias>]",
+		Use:   "mirror [<alias> | off | revert <target> | status | logs <alias>]",
 		Short: "Mirror /repo to a Mac path via the in-container ahjo-mirror daemon",
 		Long: `Activate a one-way push from /repo (inside the branch container) to a
 Mac-side directory you choose with --target. The mirror runs as a systemd
@@ -62,6 +62,7 @@ the Mac.
   ahjo mirror off                               — stop the active mirror (prompts to revert)
   ahjo mirror off --revert                      — stop and restore the Mac target to its pre-mirror state
   ahjo mirror off --skip-revert                 — stop and leave the mirrored files in place
+  ahjo mirror revert <target>                   — restore a target from its kept snapshot (no container needed)
   ahjo mirror status                            — list mirrors across the registry
   ahjo mirror logs <alias>                      — tail the daemon's journal
 
@@ -82,6 +83,15 @@ full design.`,
 				return runMirrorStatus()
 			case args[0] == "off":
 				return runMirrorOff(revert, skipRevert)
+			case args[0] == "revert":
+				if len(args) < 2 || len(args) > 3 {
+					return fmt.Errorf("usage: ahjo mirror revert <target> [<slug>]")
+				}
+				slugArg := ""
+				if len(args) == 3 {
+					slugArg = args[2]
+				}
+				return runMirrorRevert(args[1], slugArg)
 			case args[0] == "logs":
 				if len(args) != 2 {
 					return fmt.Errorf("usage: ahjo mirror logs <alias>")
@@ -310,25 +320,10 @@ func runMirrorOff(revert, skipRevert bool) error {
 			targetPath = paths.Expand(repo.MacMirrorTarget)
 		}
 
-		// Disable+stop only matters when the container is running. If it
-		// isn't, the unit can't be active, so removing the device is enough.
-		// When it is running, confirm the daemon is fully inactive before we
-		// touch the target — a live daemon would re-copy files mid-restore.
-		status, _ := incus.ContainerStatus(b.IncusName)
-		if strings.EqualFold(status, "Running") {
-			if err := incus.SystemctlDisableNow(b.IncusName, mirrorUnit); err != nil {
-				fmt.Fprintf(cobraOutErr(), "warn: disable %s on %s: %v\n", mirrorUnit, b.IncusName, err)
-			}
-			if err := waitMirrorInactive(b.IncusName); err != nil {
-				return err
-			}
-		}
-
-		// Remove the device BEFORE reverting. Once the disk device is gone, no
-		// in-container write can reach the host target, so the restore runs on
-		// a quiescent tree — this closes the narrow window where the unit reads
-		// inactive but the daemon's last tempfile+rename is still in flight.
-		if err := incus.RemoveDevice(b.IncusName, mirrorDeviceName); err != nil {
+		// Stop the daemon and remove the device BEFORE reverting, so the restore
+		// runs on a quiescent tree: once the disk device is gone, no in-container
+		// write can reach the host target.
+		if err := teardownMirrorDevice(b.IncusName); err != nil {
 			return err
 		}
 
@@ -352,6 +347,99 @@ func runMirrorOff(revert, skipRevert bool) error {
 	}
 	fmt.Println("mirror: off")
 	return nil
+}
+
+// runMirrorRevert restores a host target from a kept pre-mirror snapshot when no
+// container/branch remains to drive `ahjo mirror off`. It works purely against
+// the target's own .git (where the snapshot refs live), so it stays usable after
+// the mirror container has been deleted. Refuses while a mirror is still live on
+// the target — that case must go through `ahjo mirror off` so the daemon stops
+// first and the restore runs on a quiescent tree.
+func runMirrorRevert(target, slugArg string) error {
+	release, err := lockfile.Acquire()
+	if err != nil {
+		return err
+	}
+	defer release()
+
+	target = paths.Expand(strings.TrimSpace(target))
+	if !filepath.IsAbs(target) {
+		return fmt.Errorf("target must be absolute (got %q)", target)
+	}
+
+	if name := liveMirrorContainerForTarget(target); name != "" {
+		return fmt.Errorf("mirror still active on %s for %s; run `ahjo mirror off` instead", name, target)
+	}
+
+	slug := strings.TrimSpace(slugArg)
+	if slug == "" {
+		slugs, err := mirror.ListSnapshots(target)
+		if err != nil {
+			return err
+		}
+		switch len(slugs) {
+		case 0:
+			fmt.Printf("mirror: nothing to revert for %s (no pre-mirror snapshot)\n", target)
+			return nil
+		case 1:
+			slug = slugs[0]
+		default:
+			return fmt.Errorf("multiple snapshots at %s (%s); pass one: ahjo mirror revert %s <slug>",
+				target, strings.Join(slugs, ", "), target)
+		}
+	}
+
+	if !mirror.RevertPossible(target, slug) {
+		fmt.Printf("mirror: nothing to revert for %s (no pre-mirror snapshot for %q)\n", target, slug)
+		return nil
+	}
+	if err := mirror.Revert(target, slug); err != nil {
+		return fmt.Errorf("revert %s: %w", target, err)
+	}
+	fmt.Printf("mirror: reverted %s to its pre-mirror state\n", target)
+	return nil
+}
+
+// liveMirrorContainerForTarget returns the container name of a branch that still
+// has a mirror device pointing at target, or "" when none — the guard that keeps
+// `mirror revert` from racing an active daemon.
+func liveMirrorContainerForTarget(target string) string {
+	reg, err := registry.Load()
+	if err != nil {
+		return ""
+	}
+	for i := range reg.Branches {
+		b := &reg.Branches[i]
+		if b.IncusName == "" {
+			continue
+		}
+		repo := reg.FindRepo(b.Repo)
+		if repo == nil || paths.Expand(repo.MacMirrorTarget) != target {
+			continue
+		}
+		if has, err := incus.HasDevice(b.IncusName, mirrorDeviceName); err == nil && has {
+			return b.IncusName
+		}
+	}
+	return ""
+}
+
+// teardownMirrorDevice stops the mirror daemon (only meaningful when the
+// container is running — confirming it is fully inactive before continuing, so
+// a later revert never races a still-writing daemon) and removes the disk
+// device. Shared by runMirrorOff and the pre-destroy stopAndRemoveMirror hook
+// so the daemon-quiescence ordering can't drift between them.
+func teardownMirrorDevice(containerName string) error {
+	status, _ := incus.ContainerStatus(containerName)
+	if strings.EqualFold(status, "Running") {
+		if err := incus.SystemctlDisableNow(containerName, mirrorUnit); err != nil {
+			fmt.Fprintf(cobraOutErr(), "warn: disable %s on %s: %v\n", mirrorUnit, containerName, err)
+		}
+		if err := waitMirrorInactive(containerName); err != nil {
+			return err
+		}
+	}
+	return incus.RemoveDevice(containerName, mirrorDeviceName)
 }
 
 // waitMirrorInactive polls until the mirror unit reports inactive, so a revert
@@ -659,17 +747,22 @@ func stopAndRemoveMirror(containerName string) error {
 	if err != nil || !has {
 		return nil
 	}
-	status, _ := incus.ContainerStatus(containerName)
-	if strings.EqualFold(status, "Running") {
-		_ = incus.SystemctlDisableNow(containerName, mirrorUnit)
-	}
-	if err := incus.RemoveDevice(containerName, mirrorDeviceName); err != nil {
+	if err := teardownMirrorDevice(containerName); err != nil {
 		return err
 	}
-	// Best-effort: do NOT auto-revert here — this is a teardown path (rm /
-	// recreate), often non-interactive, where a surprise destructive restore
-	// would be wrong. Just tell the user a snapshot was kept so they can
-	// restore it deliberately.
+	// Offer the host revert before the registry row is dropped — this is the
+	// last moment we can resolve the target/slug for this container. decideRevert
+	// only prompts when stdin is a TTY and a snapshot exists, so a non-interactive
+	// teardown (scripted `ahjo rm`) stays non-destructive and just keeps the
+	// snapshot, recoverable later via `ahjo mirror revert <target>`.
+	target, slug := mirrorTargetForContainer(containerName)
+	if target != "" && decideRevert(false, false, target, slug) {
+		if err := mirror.Revert(target, slug); err != nil {
+			return fmt.Errorf("revert %s: %w", target, err)
+		}
+		fmt.Printf("mirror: reverted %s to its pre-mirror state\n", target)
+		return nil
+	}
 	hintMirrorSnapshotKept(containerName)
 	return nil
 }
@@ -679,9 +772,22 @@ func stopAndRemoveMirror(containerName string) error {
 // snapshot lives in the target's own .git, independent of this container, so it
 // survives the destroy that follows.
 func hintMirrorSnapshotKept(containerName string) {
+	target, slug := mirrorTargetForContainer(containerName)
+	if target == "" || !mirror.RevertPossible(target, slug) {
+		return
+	}
+	fmt.Printf("note: a pre-mirror snapshot of %s was kept (refs %s%s/); the mirrored files were left in place.\n",
+		target, "refs/ahjo/mirror-snapshot/", slug)
+}
+
+// mirrorTargetForContainer resolves the host mirror target (expanded) and branch
+// slug for the branch whose container is containerName, or ("","") when it can't
+// be found. The git snapshot lives in the target's own .git, independent of the
+// container, so this stays valid right up until the registry row is dropped.
+func mirrorTargetForContainer(containerName string) (target, slug string) {
 	reg, err := registry.Load()
 	if err != nil {
-		return
+		return "", ""
 	}
 	for i := range reg.Branches {
 		b := &reg.Branches[i]
@@ -690,15 +796,11 @@ func hintMirrorSnapshotKept(containerName string) {
 		}
 		repo := reg.FindRepo(b.Repo)
 		if repo == nil || repo.MacMirrorTarget == "" {
-			return
+			return "", ""
 		}
-		target := paths.Expand(repo.MacMirrorTarget)
-		if mirror.RevertPossible(target, b.Slug) {
-			fmt.Printf("note: a pre-mirror snapshot of %s was kept (refs %s%s/); the mirrored files were left in place.\n",
-				target, "refs/ahjo/mirror-snapshot/", b.Slug)
-		}
-		return
+		return paths.Expand(repo.MacMirrorTarget), b.Slug
 	}
+	return "", ""
 }
 
 // quietContainerExec runs `incus exec <container> -- <argv…>` capturing

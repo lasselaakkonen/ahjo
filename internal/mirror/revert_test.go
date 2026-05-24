@@ -82,6 +82,46 @@ func exists(dir, rel string) bool {
 	return err == nil
 }
 
+func TestListSnapshots(t *testing.T) {
+	requireGit(t)
+	isolate(t)
+	dir := newGitRepo(t)
+	write(t, dir, "a", "v1")
+	gitC(t, dir, "add", "a")
+	gitC(t, dir, "commit", "-q", "-m", "init")
+
+	if slugs, err := mirror.ListSnapshots(dir); err != nil || len(slugs) != 0 {
+		t.Fatalf("ListSnapshots (none) = %v, %v; want [], nil", slugs, err)
+	}
+
+	if err := mirror.CaptureGit(dir, "b"); err != nil {
+		t.Fatal(err)
+	}
+	if err := mirror.CaptureGit(dir, "a"); err != nil {
+		t.Fatal(err)
+	}
+
+	slugs, err := mirror.ListSnapshots(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(slugs, ","); got != "a,b" {
+		t.Errorf("ListSnapshots = %q, want \"a,b\" (sorted)", got)
+	}
+}
+
+func TestListSnapshots_NonGitTarget(t *testing.T) {
+	requireGit(t)
+	isolate(t)
+	slugs, err := mirror.ListSnapshots(t.TempDir()) // not a git work tree
+	if err != nil {
+		t.Fatalf("ListSnapshots (non-git) err = %v; want nil", err)
+	}
+	if len(slugs) != 0 {
+		t.Errorf("ListSnapshots (non-git) = %v; want []", slugs)
+	}
+}
+
 // Headline: pre-mirror staged-only + unstaged edits both survive a revert.
 func TestRevertGit_PreservesStagedUnstagedSplit(t *testing.T) {
 	requireGit(t)
