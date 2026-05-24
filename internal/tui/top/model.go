@@ -79,15 +79,40 @@ func scaledWidth(termWidth, min, max, breakpoint int) int {
 
 func (m *model) repoColWidth() int {
 	// Once focus leaves the repo column it collapses to a vertical-text strip;
-	// the width it gives up flows into the (derived) details pane.
+	// the width it gives up flows into the containers column (see colWidths).
 	if m.focus != focusRepos {
 		return collapsedRepoWidth
 	}
+	return m.repoColNaturalWidth()
+}
+
+// repoColNaturalWidth is the repo column's exterior width when expanded, i.e.
+// the width it occupies while focused. colWidths anchors the details pane to
+// this value so the pane stays put when the repo column collapses.
+func (m *model) repoColNaturalWidth() int {
 	return scaledWidth(m.width, colMinWidth, repoColMax, repoColBreakpoint)
 }
 
 func (m *model) containerColWidth() int {
 	return scaledWidth(m.width, colMinWidth, containerColMax, containerColBreakpoint)
+}
+
+// colWidths returns the exterior widths of the three columns: repo, containers,
+// details. The details pane is anchored to the repo column's *natural*
+// (expanded) width rather than its current width, so collapsing the repo
+// column does not reflow details — the freed width flows into the containers
+// column, which grows to take up the slack.
+func (m *model) colWidths() (repo, container, details int) {
+	repo = m.repoColWidth()
+	details = m.width - m.repoColNaturalWidth() - m.containerColWidth()
+	if details < colMinWidth {
+		details = colMinWidth
+	}
+	container = m.width - repo - details
+	if container < colMinWidth {
+		container = colMinWidth
+	}
+	return repo, container, details
 }
 
 // stripVimKeys rebinds the bubbles/list movement bindings so single-letter
@@ -641,12 +666,7 @@ func (m *model) applySizes() {
 	if rowH < 5 {
 		rowH = 5
 	}
-	rcw := m.repoColWidth()
-	ccw := m.containerColWidth()
-	rightWidth := m.width - rcw - ccw
-	if rightWidth < colMinWidth {
-		rightWidth = colMinWidth
-	}
+	rcw, ccw, rightWidth := m.colWidths()
 	m.repos.SetSize(rcw-2, rowH-2)
 	m.containers.SetSize(ccw-2, rowH-2)
 	m.details.SetWidth(rightWidth - 2)
@@ -1003,19 +1023,14 @@ func (m *model) View() tea.View {
 	// about to render into — flash messages can appear/disappear between
 	// resizes and would otherwise leave the panes one render stale.
 	m.applySizes()
-	rcw := m.repoColWidth()
-	ccw := m.containerColWidth()
-	rightWidth := m.width - rcw - ccw
-	if rightWidth < colMinWidth {
-		rightWidth = colMinWidth
-	}
+	rcw, ccw, rightWidth := m.colWidths()
 	var left string
 	if m.focus == focusRepos {
 		left = paneStyle(true, rcw, rowH).Render(m.repos.View())
 	} else {
 		// Collapsed: a vertical-text breadcrumb of the selected repo, so the
-		// width flows into the details pane while still showing which repo
-		// the visible containers belong to.
+		// freed width flows into the containers column while still showing
+		// which repo the visible containers belong to.
 		strip := verticalText(repoDisplayName(selectedRepo(m.repos)), rowH-2)
 		left = paneStyle(false, rcw, rowH).Render(detailTitle.Render(strip))
 	}
