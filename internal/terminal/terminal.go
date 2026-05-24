@@ -100,6 +100,21 @@ func Current() (string, bool) {
 	return "", false
 }
 
+// SupportsOSC8Hyperlinks reports whether the terminal identified by slug renders
+// OSC 8 hyperlinks (clickable text). Used to decide whether to force hyperlinks
+// on for `claude` inside a container: incus exec carries only TERM across the
+// boundary, so Claude's own auto-detection can't see the host terminal and
+// disables OSC 8. Conservative — only terminals with well-established OSC 8
+// support are listed, so an unknown slug returns false and we never emit escapes
+// a terminal can't render.
+func SupportsOSC8Hyperlinks(slug string) bool {
+	switch slug {
+	case Ghostty, ITerm, WezTerm, Kitty:
+		return true
+	}
+	return false
+}
+
 // slugFromBinary maps a $TERMINAL binary name (possibly a full path) to a
 // known slug.
 func slugFromBinary(v string) (string, bool) {
