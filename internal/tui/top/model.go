@@ -50,6 +50,11 @@ const (
 const (
 	colMinWidth = 20
 
+	// collapsedRepoWidth is the exterior width of the repo column when focus
+	// has moved past it — rounded border (2) plus a 1-char content area for
+	// the vertical-text breadcrumb.
+	collapsedRepoWidth = 3
+
 	repoColMax        = 40
 	repoColBreakpoint = 200
 
@@ -73,6 +78,11 @@ func scaledWidth(termWidth, min, max, breakpoint int) int {
 }
 
 func (m *model) repoColWidth() int {
+	// Once focus leaves the repo column it collapses to a vertical-text strip;
+	// the width it gives up flows into the (derived) details pane.
+	if m.focus != focusRepos {
+		return collapsedRepoWidth
+	}
 	return scaledWidth(m.width, colMinWidth, repoColMax, repoColBreakpoint)
 }
 
@@ -999,7 +1009,16 @@ func (m *model) View() tea.View {
 	if rightWidth < colMinWidth {
 		rightWidth = colMinWidth
 	}
-	left := paneStyle(m.focus == focusRepos, rcw, rowH).Render(m.repos.View())
+	var left string
+	if m.focus == focusRepos {
+		left = paneStyle(true, rcw, rowH).Render(m.repos.View())
+	} else {
+		// Collapsed: a vertical-text breadcrumb of the selected repo, so the
+		// width flows into the details pane while still showing which repo
+		// the visible containers belong to.
+		strip := verticalText(repoDisplayName(selectedRepo(m.repos)), rowH-2)
+		left = paneStyle(false, rcw, rowH).Render(detailTitle.Render(strip))
+	}
 	mid := paneStyle(m.focus == focusContainers, ccw, rowH).Render(m.containers.View())
 	right := paneStyle(m.focus == focusDetails, rightWidth, rowH).Render(rightContent)
 

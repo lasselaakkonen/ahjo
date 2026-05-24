@@ -128,6 +128,33 @@ func aliasOf(v containerItem) string {
 	return v.br.Slug
 }
 
+// repoDisplayName returns the same label the expanded repo list shows — first
+// alias when set, otherwise the repo name — and "" for a nil repo (e.g. when
+// the "+ new repo" sentinel is highlighted).
+func repoDisplayName(r *registry.Repo) string {
+	if r == nil {
+		return ""
+	}
+	if len(r.Aliases) > 0 {
+		return r.Aliases[0]
+	}
+	return r.Name
+}
+
+// verticalText stacks s one rune per line (upright, top-down), clipped to
+// maxLines with a trailing ellipsis when it would overflow.
+func verticalText(s string, maxLines int) string {
+	rs := []rune(s)
+	if maxLines > 0 && len(rs) > maxLines {
+		rs = append(rs[:maxLines-1:maxLines-1], '…')
+	}
+	lines := make([]string, len(rs))
+	for i, r := range rs {
+		lines[i] = string(r)
+	}
+	return strings.Join(lines, "\n")
+}
+
 // repoItemsFrom builds the leftmost column's items from a snapshot, always
 // appending the "+ new repo" sentinel last.
 func repoItemsFrom(snap Snapshot) []list.Item {
