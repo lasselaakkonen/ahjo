@@ -54,6 +54,15 @@ type Deps struct {
 	// list` inside the container; on the Mac the in-VM ahjo handles
 	// both via the hidden `ahjo branch-status` subcommand.
 	LoadBranchStatus func(slug string) (BranchStatus, error)
+
+	// RefreshAhjoState re-renders and pushes one running container's
+	// ~/.ahjo snapshot (the state Claude + the statusline read). The TUI
+	// calls it when a running container is selected; it's a side-effect,
+	// so the only result the TUI cares about is "done" (errors are
+	// best-effort). In-VM runs the push directly; on the Mac the in-VM ahjo
+	// handles it via the hidden `ahjo top-refresh <slug>` subcommand. nil
+	// when the platform doesn't wire it.
+	RefreshAhjoState func(slug string) error
 }
 
 // IDE is one row in the `i` picker. Open runs the launcher non-blocking;

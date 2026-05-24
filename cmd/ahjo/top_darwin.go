@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 
@@ -29,6 +30,11 @@ func runMacTop() error {
 	if err := preflightLima(); err != nil {
 		return err
 	}
+	// Bring every running container's ~/.ahjo snapshot current at launch
+	// (best-effort) so the TUI and each statusline open against fresh state.
+	if _, stderr, err := runLima("ahjo", "top-refresh-all"); err != nil {
+		fmt.Fprintf(os.Stderr, "warn: top-refresh-all: %v (%s)\n", err, strings.TrimSpace(stderr))
+	}
 	deps := top.Deps{
 		ResolveContainerName: macResolveContainerName,
 		HostStatus:           macHostStatusForTop,
@@ -38,6 +44,7 @@ func runMacTop() error {
 		Terminals:            macTerminals,
 		LoadSnapshot:         macLoadSnapshot,
 		LoadBranchStatus:     macLoadBranchStatus,
+		RefreshAhjoState:     macRefreshAhjoState,
 	}
 	_, err := tea.NewProgram(top.New(deps)).Run()
 	return err
@@ -187,6 +194,17 @@ func macStartStop(br *registry.Branch) (string, error) {
 		return "", fmt.Errorf("%s", msg)
 	}
 	return strings.TrimSpace(string(out)), nil
+}
+
+// macRefreshAhjoState shells `ahjo top-refresh <slug>` into the VM to
+// re-render and push that running container's ~/.ahjo snapshot when it's
+// selected in the TUI. Best-effort side-effect: the error is returned for the
+// caller's discretion, but the TUI treats a failure as a no-op.
+func macRefreshAhjoState(slug string) error {
+	if _, stderr, err := runLima("ahjo", "top-refresh", slug); err != nil {
+		return fmt.Errorf("top-refresh %s: %w (%s)", slug, err, strings.TrimSpace(stderr))
+	}
+	return nil
 }
 
 // runLima runs `limactl shell <vmName> <argv...>` and returns its stdout,
