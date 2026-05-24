@@ -4,11 +4,15 @@
   //
   // Go toolchain via the upstream Feature plus golangci-lint, the
   // de-facto linter aggregator most Go projects use.
+  //
+  // Also enables the gopls-lsp Claude Code plugin so Claude gets LSP
+  // diagnostics and code navigation on Go edits. gopls itself ships
+  // with the go feature; the plugin is what wires it into Claude.
   "name": "ahjo-stack-go",
   "features": {
     "ghcr.io/devcontainers/features/go:1": {
       "version": "latest"
     }
   },
-  "postCreateCommand": "set -e; go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest"
+  "postCreateCommand": "set -e; go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest; claude plugin marketplace add https://github.com/anthropics/claude-plugins-official.git || true; claude plugin install gopls-lsp@claude-plugins-official || true"
 }
