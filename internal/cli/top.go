@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"sync"
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/spf13/cobra"
@@ -21,6 +22,10 @@ func newTopCmd() *cobra.Command {
 		Short: "Open the Miller-columns TUI: repos · worktrees · details",
 		Args:  cobra.NoArgs,
 		RunE: func(_ *cobra.Command, _ []string) error {
+			// Bring every running container's ~/.ahjo snapshot current at
+			// launch, so the TUI (and each container's statusline) opens
+			// against fresh state. Best-effort.
+			refreshAllRunningForTop()
 			deps := top.Deps{
 				ResolveContainerName: resolveContainerName,
 				HostStatus:           hostStatusForTop,
@@ -30,11 +35,106 @@ func newTopCmd() *cobra.Command {
 				Terminals:            terminalsForTop,
 				LoadSnapshot:         loadSnapshotInVM,
 				LoadBranchStatus:     fetchBranchStatusInVM,
+				RefreshAhjoState:     refreshAhjoStateForTopSlug,
 			}
 			_, err := tea.NewProgram(top.New(deps)).Run()
 			return err
 		},
 	}
+}
+
+// newTopRefreshAllCmd is the hidden `ahjo top-refresh-all` RPC the Mac TUI
+// invokes once at launch (via `limactl shell ahjo`) to bring every running
+// container's ~/.ahjo snapshot current. Bare-Linux `top` calls
+// refreshAllRunningForTop directly.
+func newTopRefreshAllCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:    "top-refresh-all",
+		Short:  "internal: refresh ahjo-state in every running container for the TUI",
+		Args:   cobra.NoArgs,
+		Hidden: true,
+		RunE: func(_ *cobra.Command, _ []string) error {
+			refreshAllRunningForTop()
+			return nil
+		},
+	}
+}
+
+// newTopRefreshCmd is the hidden `ahjo top-refresh <slug>` RPC the Mac TUI
+// invokes when a running container is selected, to re-push just that
+// container's ~/.ahjo snapshot. Bare-Linux wires refreshAhjoStateForTopSlug
+// into Deps.RefreshAhjoState directly.
+func newTopRefreshCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:    "top-refresh <slug>",
+		Short:  "internal: refresh one container's ahjo-state for the TUI",
+		Args:   cobra.ExactArgs(1),
+		Hidden: true,
+		RunE: func(_ *cobra.Command, args []string) error {
+			return refreshAhjoStateForTopSlug(args[0])
+		},
+	}
+}
+
+// refreshAhjoStateForTopSlug re-renders and pushes one branch's ~/.ahjo
+// snapshot, looked up by slug, when its container is running. Backs the
+// `top-refresh <slug>` RPC and the bare-Linux per-selection Deps hook. A
+// not-running or unknown container is a no-op, not an error.
+func refreshAhjoStateForTopSlug(slug string) error {
+	reg, err := registry.Load()
+	if err != nil {
+		return err
+	}
+	for i := range reg.Branches {
+		if reg.Branches[i].Slug == slug {
+			refreshRunningBranch(reg, &reg.Branches[i])
+			return nil
+		}
+	}
+	return nil
+}
+
+// refreshAllRunningForTop pushes a fresh ~/.ahjo snapshot to every running
+// container. Runs at `top` launch. Concurrent + best-effort: one slow or dead
+// container can't stall the others or the launch.
+func refreshAllRunningForTop() {
+	reg, err := registry.Load()
+	if err != nil {
+		fmt.Fprintf(cobraOutErr(), "warn: ahjo-state refresh-all: %v\n", err)
+		return
+	}
+	var wg sync.WaitGroup
+	for i := range reg.Branches {
+		br := &reg.Branches[i]
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			refreshRunningBranch(reg, br)
+		}()
+	}
+	wg.Wait()
+}
+
+// refreshRunningBranch refreshes one branch's snapshot iff its container is
+// running — `incus file push` needs a live instance. Shared by the launch-all
+// and per-slug top paths.
+func refreshRunningBranch(reg *registry.Registry, br *registry.Branch) {
+	name, err := resolveContainerName(br)
+	if err != nil {
+		return
+	}
+	if status, err := incus.ContainerStatus(name); err != nil || !strings.EqualFold(status, "Running") {
+		return
+	}
+	var mirrorTarget string
+	if repo := reg.FindRepo(br.Repo); repo != nil {
+		mirrorTarget = repo.MacMirrorTarget
+	}
+	alias := br.Slug
+	if len(br.Aliases) > 0 {
+		alias = br.Aliases[0]
+	}
+	refreshAhjoStateByName(name, br.Slug, alias, mirrorTarget)
 }
 
 // loadSnapshotInVM builds a TUI snapshot from in-process state — registry +

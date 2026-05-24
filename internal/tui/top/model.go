@@ -27,6 +27,13 @@ import (
 // a stampede of `gh` subprocesses.
 const branchStatusStaleness = 10 * time.Second
 
+// ahjoStateStaleness bounds how often a selection re-pushes the same
+// container's ~/.ahjo snapshot. Bridge state only changes via top's own
+// toggles (which refresh inline) or out-of-band edits, so a modest window is
+// plenty — and it stops fast back-and-forth navigation from fanning out into
+// a stampede of `incus file push` calls.
+const ahjoStateStaleness = 10 * time.Second
+
 type focus int
 
 const (
@@ -237,6 +244,12 @@ type model struct {
 	branchStatus   map[string]BranchStatus
 	inFlightStatus map[string]bool
 
+	// inFlightAhjoState / ahjoStateRefreshedAt back the on-selection
+	// ~/.ahjo push (Deps.RefreshAhjoState), with the same single-flight +
+	// staleness guards as branchStatus so fast navigation can't stampede.
+	inFlightAhjoState    map[string]bool
+	ahjoStateRefreshedAt map[string]time.Time
+
 	// idePickerIDEs / idePickerIdx back the inputIDE picker. Populated on
 	// entry from deps.IDEs() against the then-selected branch, so the
 	// launcher inside each IDE entry already knows which host/path to
@@ -290,7 +303,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.refreshContainers()
 		m.refreshDetails()
-		return m, m.maybeRefreshBranchStatus()
+		return m, tea.Batch(m.maybeRefreshBranchStatus(), m.maybeRefreshAhjoState())
 
 	case branchStatusMsg:
 		if m.branchStatus == nil {
@@ -300,6 +313,14 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		delete(m.inFlightStatus, msg.slug)
 		m.refreshContainers()
 		m.refreshDetails()
+		return m, nil
+
+	case ahjoStateRefreshedMsg:
+		if m.ahjoStateRefreshedAt == nil {
+			m.ahjoStateRefreshedAt = make(map[string]time.Time)
+		}
+		m.ahjoStateRefreshedAt[msg.slug] = time.Now()
+		delete(m.inFlightAhjoState, msg.slug)
 		return m, nil
 
 	case actionDoneMsg:
@@ -447,14 +468,10 @@ func (m *model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if selectedRepoName(m.repos) != prevRepo {
 		m.refreshContainers()
 		m.refreshDetails()
-		if c := m.maybeRefreshBranchStatus(); c != nil {
-			cmd = tea.Batch(cmd, c)
-		}
+		cmd = tea.Batch(cmd, m.maybeRefreshBranchStatus(), m.maybeRefreshAhjoState())
 	} else if selectedBranchSlug(m.containers) != prevWt {
 		m.refreshDetails()
-		if c := m.maybeRefreshBranchStatus(); c != nil {
-			cmd = tea.Batch(cmd, c)
-		}
+		cmd = tea.Batch(cmd, m.maybeRefreshBranchStatus(), m.maybeRefreshAhjoState())
 	}
 	return m, cmd
 }
@@ -1064,6 +1081,40 @@ func (m *model) maybeRefreshBranchStatus() tea.Cmd {
 		return nil
 	}
 	return tea.Batch(cmds...)
+}
+
+type ahjoStateRefreshedMsg struct{ slug string }
+
+// maybeRefreshAhjoState returns a tea.Cmd that re-pushes the in-container
+// ~/.ahjo snapshot for the currently selected, running container via
+// Deps.RefreshAhjoState. Like maybeRefreshBranchStatus it's single-flighted +
+// staleness-guarded per slug, so holding the arrow keys can't fan out into a
+// file-push stampede. Returns nil when there's nothing to do: no hook wired,
+// no branch selected, container not running, already in flight, or pushed
+// recently.
+func (m *model) maybeRefreshAhjoState() tea.Cmd {
+	if m.deps.RefreshAhjoState == nil {
+		return nil
+	}
+	w := selectedBranch(m.containers)
+	if w == nil || !m.snap.ContainersRunning[w.Slug] {
+		return nil
+	}
+	if m.inFlightAhjoState == nil {
+		m.inFlightAhjoState = make(map[string]bool)
+	}
+	if m.inFlightAhjoState[w.Slug] {
+		return nil
+	}
+	if at, ok := m.ahjoStateRefreshedAt[w.Slug]; ok && time.Since(at) < ahjoStateStaleness {
+		return nil
+	}
+	slug := w.Slug
+	m.inFlightAhjoState[slug] = true
+	return func() tea.Msg {
+		_ = m.deps.RefreshAhjoState(slug) // best-effort side-effect; nothing to render
+		return ahjoStateRefreshedMsg{slug: slug}
+	}
 }
 
 type actionDoneMsg struct {
