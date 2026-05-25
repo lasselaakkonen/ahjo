@@ -1,7 +1,7 @@
 // Package stacks ships ahjo's built-in "tech-stack" presets — curated
-// ahjocontainer.json configs (node / python / go / rust) the user can
-// apply via --stack against a repo that doesn't carry its own
-// .ahjo/ahjocontainer.json.
+// ahjocontainer.json configs (go / node / php / python / ruby / rust) the
+// user can apply via --container-config against a repo that doesn't carry
+// its own .ahjo/ahjocontainer.json.
 //
 // A stack file IS a regular ahjocontainer.json. Same parser, same schema,
 // same Feature-application pipeline. The data lives here so each stack
