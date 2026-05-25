@@ -379,8 +379,8 @@ Every subsequent `ahjo create myacc/myrepo feat-foobar` will start off with what
 
 Two auth paths into a container:
 
-- **Fine-grained PAT** (recommended, least-privilege): repo-scoped, forwarded as `GH_TOKEN`, used by `gh` and by HTTPS git via `gh auth setup-git`.
-- **SSH agent forwarding**: for `git@…` remotes only. ahjo forwards the host agent socket — it never copies keys or scopes them per container. `ahjo init` sets up the agent prerequisite.
+- **Fine-grained PAT** (recommended, least-privilege): repo-scoped, forwarded as `GH_TOKEN`, used by `gh` and by HTTPS git via `gh auth setup-git`. Prompted on the first `ahjo repo add <owner/repo>` *and* the first `ahjo create <owner/repo> <branch>` (the prompt is host-side on macOS, so the PAT lands in the Keychain, not on VM disk).
+- **SSH agent forwarding**: for `git@…` remotes only. ahjo forwards the host agent socket — it never copies keys or scopes them per container. `ahjo init` sets up the agent prerequisite. The agent is forwarded only when a repo needs it: **auto-suppressed** for an HTTPS origin already covered by a PAT (git there uses the token), and forwarded for SSH origins, PAT-less repos, and non-GitHub remotes. Override with `forward_ssh_agent` in `~/.ahjo/config.toml` (`true` = always forward — e.g. SSH commit signing or `git@` submodules; `false` = never; unset = auto).
 
 **Which remote ahjo uses** when you run `ahjo repo add` / `ahjo create`:
 

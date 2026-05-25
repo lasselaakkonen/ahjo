@@ -45,7 +45,7 @@ These are the *intentional* leaks — every other path is closed.
 | `~/.ahjo-shared/` (Lima virtiofs mount) | VM → Mac, read-write | generated `ssh-config` + `aliases` map so `ahjo ssh <alias>` works from the Mac |
 | `forward_env` | VM → container | only the names listed in `~/.ahjo/config.toml` (default: `CLAUDE_CODE_OAUTH_TOKEN` + `GH_TOKEN`, sourced from `~/.ahjo/.env`) |
 | Host keys dir | VM → container, read-only | per-branch sshd keys + `authorized_keys` (single-file bind mount at `/home/ubuntu/.ssh/authorized_keys`) |
-| SSH agent socket | Mac → VM → container | **see "GitHub credentials" below** |
+| SSH agent socket | Mac → VM → container | conditional — suppressed when an HTTPS+PAT origin covers the repo; **see "GitHub credentials" below** |
 | Per-repo GH PAT | Mac Keychain (or Linux disk) → VM → container | one `GH_TOKEN` per repo, injected on each relay; **see below** |
 | `/dev/loop-control` + `/dev/loop0..7` | host → container, read-write | opt-in per repo via `customizations.ahjo.nested_incus`; off by default. See **Elevated runtime: `nested_incus`** below. |
 
@@ -67,7 +67,7 @@ See the [Incus docs on `raw.idmap`](https://linuxcontainers.org/incus/docs/main/
 
 ## GitHub credentials
 
-ahjo handles SSH and HTTPS remotes differently. SSH leans on agent forwarding (next section). HTTPS uses a per-repo PAT prompted at `ahjo repo add` (or set later with `ahjo repo set-token <alias>`), forwarded into containers as `GH_TOKEN` / `GITHUB_TOKEN`, and wired into git via `gh auth setup-git`.
+ahjo handles SSH and HTTPS remotes differently. SSH leans on agent forwarding (next section). HTTPS uses a per-repo PAT prompted at `ahjo repo add` — and at the first `ahjo create <owner/repo> <branch>`, whose auto-add would otherwise clone before any PAT is in hand — or set later with `ahjo repo set-token <alias>`. On macOS the prompt is the host-side shim (one shared routine for `repo add` and `create`, so they can't drift), because the PAT must land in the host Keychain, not on VM disk. The token is forwarded into containers as `GH_TOKEN` / `GITHUB_TOKEN` and wired into git via `gh auth setup-git`.
 
 Where the PAT lives:
 
@@ -93,7 +93,15 @@ Inside the container, `ssh` and `git` use `$SSH_AUTH_SOCK`, the request travels 
 
 The leak: **anything that runs in the container can ask the agent to sign**, for the lifetime of the shell. A malicious dev dependency, a hostile `git` hook, or an unintended Claude action can authenticate to *any* host your agent has keys for — typically every git remote you use. The host agent's per-key authorization prompts are the only check; once you've clicked "always allow" for a key, it signs silently.
 
-If that's not acceptable for a given session, two mitigations:
+ahjo shrinks this hole by **not forwarding the agent when it isn't needed for git**. When a repo's recorded origin is HTTPS *and* a PAT covers it, git authenticates via the token, so ahjo suppresses the proxy device (and strips any inherited one) for that repo's containers — the common HTTPS+PAT case carries no agent socket at all. The agent is still forwarded for SSH origins, PAT-less repos, and non-GitHub remotes, where git genuinely needs it.
+
+You control this with `forward_ssh_agent` in `~/.ahjo/config.toml`:
+
+- *unset* (default) — auto: forward unless an HTTPS+PAT origin covers the repo.
+- `true` — always forward (you sign commits over SSH, push `git@` submodules/other remotes, or hit repos the fine-grained PAT isn't scoped to).
+- `false` — never forward.
+
+If you need to drop forwarding more bluntly for a given session, two Lima-level mitigations remain:
 
 - Disable forwarding for one shell: `limactl shell ahjo -- env -u SSH_AUTH_SOCK bash` and operate inside the VM without an agent.
 - Disable forwarding wholesale: `limactl edit ahjo --set '.ssh.forwardAgent=false'` and restart the VM. `ahjo repo add` against private SSH remotes will then fail until you supply credentials another way (HTTPS + token, deploy key inside the VM, etc.).

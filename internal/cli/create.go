@@ -97,8 +97,18 @@ func runCreate(repoAlias, branch, base, asAlias string, noFetch bool) error {
 	if err := incus.WaitReady(containerName, 30*time.Second); err != nil {
 		return err
 	}
-	if err := attachSSHAgent(containerName); err != nil {
-		return fmt.Errorf("attach ssh-agent: %w", err)
+	// Forward the ssh-agent only when the repo actually needs it: an HTTPS+PAT
+	// origin authenticates git via the token, so the agent would be pure attack
+	// surface. cloneFromBase already strips an inherited device; the else here
+	// also covers a repo that has since become PAT-covered.
+	tok, hasToken, _ := repoToken(repo.Name)
+	hasToken = hasToken && tok != ""
+	if shouldForwardAgent(repo, hasToken, cfg) {
+		if err := attachSSHAgent(containerName); err != nil {
+			return fmt.Errorf("attach ssh-agent: %w", err)
+		}
+	} else if err := incus.RemoveDevice(containerName, "ssh-agent"); err != nil {
+		fmt.Fprintf(cobraOutErr(), "warn: remove ssh-agent device: %v\n", err)
 	}
 
 	if !noFetch {
