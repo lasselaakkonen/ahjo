@@ -63,7 +63,7 @@ in `~/.claude.json`. `setup-token` does not write this. `/login` writes it as a 
 
 ## Per-container defaults (model, effort, prompt suppressors)
 
-**`ahjo-claude-prepare`** is baked into `ahjo-base` by the `ahjo-runtime` devcontainer Feature (see `internal/ahjoruntime/feature/install.sh`) and run once per container by `ahjo repo add` immediately before claude ever launches. It plants ahjo's defaults that the user *can* change later: `model: "opusplan"`, `effortLevel: "high"`, plus `skipDangerousModePermissionPrompt: true` and `projects["/repo"].hasTrustDialogAccepted: true` to silence the two first-run prompts. All settings.json fields, so `/model` and `/effort` overwrite cleanly from the TUI.
+**`ahjo-claude-prepare`** is baked into `ahjo-base` by the `ahjo-runtime` devcontainer Feature (see `internal/ahjoruntime/feature/install.sh`) and run once per container by `ahjo repo add` immediately before claude ever launches. It plants ahjo's defaults that the user *can* change later: `model: "opusplan"`, `effortLevel: "high"`, plus `skipDangerousModePermissionPrompt: true` and `projects["/repo"].hasTrustDialogAccepted: true` to silence the two first-run prompts. The first three are `~/.claude/settings.json` fields, so `/model` and `/effort` overwrite cleanly from the TUI; `hasTrustDialogAccepted` is written to `~/.claude.json` (under `projects["/repo"]`), not settings.json.
 
 The script is idempotent via `$HOME/.ahjo-claude-prepared`. It reads `HOME` from `getent` so it works even under `incus exec --user 1000` with a sparse environment, and never names a user — every path is derived from `$HOME`, so a future user rename touches only the build pipeline.
 
