@@ -676,7 +676,7 @@ func repoAddSetup(slug, primary string, aliases []string, src repoSource, defaul
 // `incus copy` propagates instance config + device definitions to branch
 // containers, so flags applied here on the default container are inherited
 // by every COW branch. raw.idmap and the ssh-agent socket path are the
-// exceptions — both must be reapplied after copy (see new.go cloneFromBase).
+// exceptions — both must be reapplied after copy (see create.go cloneFromBase).
 func wireBranchContainer(containerName, hostKeysDir string) error {
 	for _, kv := range securityConfigFlags() {
 		if err := incus.ConfigSet(containerName, kv[0], kv[1]); err != nil {
@@ -979,7 +979,7 @@ func pushClaudeConfig(containerName string) error {
 		return fmt.Errorf("mkdir /home/ubuntu/.claude: %w", err)
 	}
 	// .credentials.json is intentionally NOT copied. ahjo authenticates via
-	// the env-var OAuth token (rank 5, see CLAUDE-SETTING.md), and the
+	// the env-var OAuth token (rank 5, see CLAUDE-SETTINGS.md), and the
 	// only thing that file ever carries is subscription OAuth state with a
 	// single-use refresh token — propagating it to N containers would
 	// reintroduce the cross-container refresh race the design avoids.
