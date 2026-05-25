@@ -4,7 +4,7 @@
 // itself.
 //
 // ahjo applies raw.idmap on every container (cli/repo.go for default
-// containers, cli/new.go for COW-cloned branch containers) so the in-VM
+// containers, cli/create.go for COW-cloned branch containers) so the in-VM
 // host UID/GID maps onto the in-container `ubuntu` user. The mapping is
 // per-container and re-applied after `incus copy` because raw.idmap is one
 // of the few config keys that doesn't propagate via copy.

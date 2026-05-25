@@ -1,7 +1,7 @@
 // Package ahjodevtools embeds the ahjo-default-dev-tools devcontainer
 // Feature. ahjo bakes this into ahjo-base alongside ahjo-runtime so every
 // container ahjo creates ships with the small CLI utilities ahjo's
-// preferred workflows assume (rg, fd, eza, yq, ast-grep, httpie, make).
+// preferred workflows assume (rg, fd, eza, yq, ast-grep, httpie, make, rtk).
 // Tools that already have a curated upstream Feature (common-utils, git,
 // github-cli) are not duplicated here — they're applied as their own
 // Features ahead of this one in the build pipeline.
