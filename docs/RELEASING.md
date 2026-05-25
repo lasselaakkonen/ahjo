@@ -9,7 +9,7 @@ make clean              # removes ./ahjo and dist/
 make print-version      # what `git describe` would stamp into the binary
 ```
 
-The version string baked into the binary comes from `git describe --tags --always --dirty`, falling back to `dev` when there are no tags or no git checkout. Override it explicitly with `make build VERSION=v1.2.3-rc1`.
+The version string baked into the binary comes from `git describe --tags --always --dirty`, falling back to `dev` only when git itself can't run (no checkout, git absent, or no commits). With no tags but a valid checkout, `--always` stamps the abbreviated commit SHA instead. Override it explicitly with `make build VERSION=v1.2.3-rc1`.
 
 ## Updating the in-VM binary
 

@@ -569,6 +569,6 @@ That points `core.hooksPath` at `.githooks/`. Idempotent; safe to re-run.
 `golangci-lint` is soft-skipped if it isn't on PATH so a fresh clone can still commit; install it for the full pre-commit pass:
 
 - **Host (macOS)**: `brew install golangci-lint`
-- **Inside an ahjo container**: nothing to do — `.ahjo/ahjocontainer.json` installs Go and golangci-lint on container create via the upstream Feature and `postCreateCommand`.
+- **Inside an ahjo container**: not auto-installed — run the upstream `golangci-lint` installer if you want the full pass; otherwise the pre-commit hook soft-skips it.
 
 Bypass when you need to: `SKIP_HOOKS=1 git commit ...` (graceful, prints a notice) or `git commit --no-verify` (hard skip).
