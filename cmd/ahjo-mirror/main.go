@@ -3,8 +3,6 @@
 // of a Mac-side path). One git-faithful gitignore matcher governs every
 // decision; bootstrap and live event handling share the same per-file copy
 // routine, so the Mac side can never observe a half-written file.
-//
-// See designdocs/in-container-mirror.md for the full design.
 package main
 
 import (

@@ -1,4 +1,4 @@
-# CLAUDE-SETTING.md
+# CLAUDE-SETTINGS.md
 
 How ahjo wires Claude Code into containers, and why this exact approach.
 

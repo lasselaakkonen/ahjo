@@ -93,8 +93,8 @@ ln -sf "$_REMOTE_USER_HOME/.local/bin/claude" /usr/local/bin/claude
 
 # ahjo-mirror: in-container daemon that watches /repo and pushes per-event
 # copies into /mirror (a writable virtiofs-backed bind-mount of a Mac path).
-# See designdocs/in-container-mirror.md for the design. Both arches ship in
-# the Feature dir; we install the one matching the build container's arch.
+# Both arches ship in the Feature dir; we install the one matching the build
+# container's arch.
 arch="$(dpkg --print-architecture)"
 case "$arch" in
     arm64|amd64) ;;

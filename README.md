@@ -9,6 +9,34 @@ Blazing fast firing up of containers per feature branch.
 - **Near-instant start up of new containers** for a 'container per feature branch with multiple features in development at once' workflow
 - **SSH/AWS/etc secrets completely isolated** from the containers, minimally only a repo scoped GitHub PAT is exposed to whatever is running in the container
 
+- [Quick start](#quick-start)
+  - [1. Installation](#1-installation)
+  - [2. Starting a feature container from CLI](#2-starting-a-feature-container-from-cli)
+    - [Quickest - Let ahjo try auto detect your tech stack](#quickest---let-ahjo-try-auto-detect-your-tech-stack)
+    - [Quick - Define tech stack in CLI params](#quick---define-tech-stack-in-cli-params)
+    - [Long term - Add `.ahjo/ahjocontainer.json` to your repo](#long-term---add-ahjoahjocontainerjson-to-your-repo)
+  - [3. Starting a feature container from TUI](#3-starting-a-feature-container-from-tui)
+  - [4. Edit code with VS Code / Cursor / etc](#4-edit-code-with-vs-code--cursor--etc)
+  - [5. Access feature container with SSH](#5-access-feature-container-with-ssh)
+- [Domain concepts](#domain-concepts)
+- [Use cases](#use-cases)
+  - [Work on two PRs simultaneously in a single repo](#work-on-two-prs-simultaneously-in-a-single-repo)
+  - [Modify code in container, mirror code changes to host, forward ports from host to container](#modify-code-in-container-mirror-code-changes-to-host-forward-ports-from-host-to-container)
+  - [Use multiple versions of same app running in multiple containers](#use-multiple-versions-of-same-app-running-in-multiple-containers)
+  - [From a monorepo, run two different tech stacks in two different containers](#from-a-monorepo-run-two-different-tech-stacks-in-two-different-containers)
+  - [Refresh dependencies in repo base container](#refresh-dependencies-in-repo-base-container)
+  - [You do not want feature branches to branch off the default branch](#you-do-not-want-feature-branches-to-branch-off-the-default-branch)
+- [Container tech stack setup](#container-tech-stack-setup)
+  - [`.ahjo/ahjocontainer.json`](#ahjoahjocontainerjson)
+  - [How ahjo picks the container config](#how-ahjo-picks-the-container-configpicking-a-container-config)
+- [Git / GitHub auth](#git--github-auth)
+- [Installing](#installing)
+- [Commands](#commands)
+- [Per-repo config (ahjocontainer.json)](#per-repo-config-ahjocontainerjson)
+- [Rebuilding after a change](#rebuilding-after-a-change)
+- [Development](#development)
+  - [Git hooks](#git-hooks)
+
 ## Quick start
 
 #### 1. Installation
@@ -334,6 +362,18 @@ ahjo repo add myacc/myrepo --container-config=/abs/path/cfg.json
 ```
 
 Nothing is written to the repo; the chosen config is applied to that repo's base container only. The choice persists in the repo base container until `ahjo repo rm` clears it.
+
+#### Manual one off configuration
+
+Every feature container is a clone of the repository base container.
+
+After you have added a repository `myacc/myrepo` you can shell in to the repo base container and make configurations there, eg:
+
+```
+ahjo shell myacc/myrepo@main
+```
+
+Every subsequent `ahjo create myacc/myrepo feat-foobar` will start off with whatever you configured in `myacc/myrepo@main`.
 
 ## Git / GitHub auth
 

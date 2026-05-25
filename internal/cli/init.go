@@ -404,13 +404,10 @@ func subuidGrantStep() initflow.Step {
 // Incus exposes via per-container `linux.sysctl.*` (only `net.*` is), so
 // the bump must land on the kernel hosting the containers — i.e. the
 // VM/host, not the container.
-//
-// See designdocs/in-container-mirror.md "Lifecycle hazards #3" + Open
-// question 4.
 func inotifySysctlStep() initflow.Step {
 	const (
 		sysctlPath = "/etc/sysctl.d/99-ahjo.conf"
-		sysctlBody = "# managed by `ahjo init` — see designdocs/in-container-mirror.md\n" +
+		sysctlBody = "# managed by `ahjo init` — ahjo-mirror inotify limits\n" +
 			"fs.inotify.max_user_watches=1048576\n" +
 			"fs.inotify.max_queued_events=65536\n"
 	)
