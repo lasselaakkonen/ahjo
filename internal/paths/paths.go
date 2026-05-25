@@ -97,8 +97,8 @@ func SlugHostKeysDir(slug string) string { return filepath.Join(HostKeysDir(), s
 // /etc/ssh/ahjo-ancestor-pubkeys/. The child's ahjo reads from that path
 // as a third source for its own authorized_keys, so the pubkey set
 // propagates across arbitrarily-nested ahjo layers without depending on a
-// Mac-specific virtiofs window. See designdocs/ahjo-in-ahjo (or the
-// comments in internal/ssh/authkeys.go) for the recursion details.
+// Mac-specific virtiofs window. See the comments in
+// internal/ssh/authkeys.go for the recursion details.
 func SlugAncestorPubkeysDir(slug string) string {
 	return filepath.Join(SlugHostKeysDir(slug), "ancestor-pubkeys")
 }

@@ -22,8 +22,8 @@ import (
 )
 
 // SkipDirNames is the bounded skiplist used to keep inotify watch counts
-// reasonable on real-world repos. Per the v3 design (designdocs/in-container-mirror.md):
-// only directories that are categorically never source code AND reliably blow
+// reasonable on real-world repos. The list is deliberately narrow: only
+// directories that are categorically never source code AND reliably blow
 // past inotify watch limits when populated. Things like dist/build/target/vendor
 // were dropped — gitignore handles them in the typical case, and they collide
 // too often with real source dirs.
@@ -52,7 +52,7 @@ var ErrUnsupportedFileType = errors.New("unsupported file type")
 //
 // Library: github.com/go-git/go-git/v5/plumbing/format/gitignore — validated
 // against `git check-ignore` on six fixtures + the live ahjo repo (0%
-// disagreement, see designdocs/in-container-mirror.md "Spike: gitignore parity").
+// disagreement); gitignore_parity_test.go pins that parity as a regression check.
 func LoadIgnoreMatcher(root string, skipNoSkiplist bool) (gitignore.Matcher, error) {
 	var patterns []gitignore.Pattern
 	patterns = append(patterns, parseIgnoreFile(filepath.Join(root, ".git", "info", "exclude"), nil)...)

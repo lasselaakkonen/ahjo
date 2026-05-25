@@ -7,7 +7,7 @@ package mirror_test
 // kind of failure mode that produces ghost files on the Mac without
 // announcing itself.
 //
-// The fixtures are produced by research/spike-gitignore/make-fixtures.sh,
+// The fixtures are produced by testdata/make-fixtures.sh,
 // invoked into a t.TempDir() per test run. The script needs git + bash
 // on PATH; tests skip if either is missing (CI environments always have
 // both, but a developer building offline shouldn't see a hard fail).
@@ -35,7 +35,7 @@ import (
 	"github.com/lasselaakkonen/ahjo/internal/mirror"
 )
 
-const fixtureScript = "../../research/spike-gitignore/make-fixtures.sh"
+const fixtureScript = "testdata/make-fixtures.sh"
 
 func TestGitignoreParity_SpikeFixtures(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {

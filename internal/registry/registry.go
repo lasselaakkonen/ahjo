@@ -18,7 +18,7 @@ import (
 // Version 2 (2026-05-08): worktrees → branches; bare repo and worktree paths
 // dropped (containers hold the full clone at /repo). Existing v1 registries
 // are rejected with an upgrade error; users nuke ~/.ahjo/registry.toml and
-// re-add repos. See designdocs/no-more-worktrees.md.
+// re-add repos.
 const Version = 2
 
 // ContainerPrefix is prepended to a slug to form both the Incus container
