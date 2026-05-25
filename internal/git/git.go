@@ -2,7 +2,7 @@
 // removed every helper that operated on a host-side bare repo or worktree
 // (CloneBare, AddWorktree, RemoveWorktree, Fetch, DefaultBranch, RefExists,
 // ListWorktrees) — every git operation now runs inside the branch
-// container via `incus exec` from cli/repo.go and cli/new.go.
+// container via `incus exec` from cli/repo.go and cli/create.go.
 //
 // The package now hosts host-side identity resolution (see identity.go)
 // used by `ahjo repo add` to seed `/home/ubuntu/.gitconfig` inside the

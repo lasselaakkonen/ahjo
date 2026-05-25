@@ -324,7 +324,7 @@ Signed-By: /etc/apt/keyrings/zabbly.asc
 				"overwriting whatever the ahjo-base image baked in. Without `hasCompletedOnboarding: true` " +
 				"on the host, every container greets the user with claude's first-run flow (theme + login picker). " +
 				"This step writes the marker once on the host so containers start post-onboarding. " +
-				"See CLAUDE-SETTING.md for the full picture.",
+				"See CLAUDE-SETTINGS.md for the full picture.",
 			Show: `merge {"hasCompletedOnboarding": true, "lastOnboardingVersion": "` + claudeOnboardingVersion + `"} into ~/.claude.json`,
 			Action: func(out io.Writer) error {
 				p, err := claudeJSONPath()
@@ -345,7 +345,7 @@ Signed-By: /etc/apt/keyrings/zabbly.asc
 // subuidGrantStep ensures /etc/subuid + /etc/subgid grant the Incus daemon
 // permission to delegate the in-VM host UID/GID into a container's userns.
 // Required so the per-container `raw.idmap` ahjo applies in cli/repo.go
-// (default container) and cli/new.go (COW-cloned branch containers) is
+// (default container) and cli/create.go (COW-cloned branch containers) is
 // honored at start; without these lines, `newuidmap` rejects the mapping
 // and the container fails to come up.
 //
