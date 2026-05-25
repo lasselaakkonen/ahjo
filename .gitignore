@@ -10,3 +10,5 @@
 
 # Local Claude Code harness state (per-project agent scratch).
 .claude/
+
+.private/

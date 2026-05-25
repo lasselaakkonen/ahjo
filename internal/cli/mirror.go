@@ -6,8 +6,6 @@
 // separate state file — `incus config device list` and `systemctl is-active`
 // are the source of truth, eliminating the "state file says X but daemon
 // says Y" inconsistencies of v1.
-//
-// See designdocs/in-container-mirror.md for the full design.
 package cli
 
 import (
@@ -71,8 +69,7 @@ by default (pass --no-revert to keep the files): tracked files restored,
 mirror-added files removed, and gitignored files like .env kept. Files added
 under --no-skiplist (e.g. node_modules) are not garbage-collected by the revert.
 Activating a mirror while another container holds it takes the device over —
-the old mirror is stopped and reverted first. See
-designdocs/in-container-mirror.md for the full design.`,
+the old mirror is stopped and reverted first.`,
 		Args: cobra.ArbitraryArgs,
 		RunE: func(c *cobra.Command, args []string) error {
 			ver := c.Root().Version
@@ -566,9 +563,9 @@ func validateMirrorTarget(p string) error {
 // avoids any ambiguity about replacing a running binary's text segment;
 // cost is ~1s of mirror downtime during upgrades.
 //
-// The doc's "step 4" (designdocs/in-container-mirror.md) describes pushing
-// the binary; we also push the unit because a container built before the
-// v3 Feature change won't have the unit at all, and "incus exec systemctl
+// The stale-stamp reconcile pushes the binary; we also push the unit
+// because a container built before the v3 Feature change won't have the
+// unit at all, and "incus exec systemctl
 // enable" fails before the user has any chance to run `ahjo update`. The
 // unit is ~500 bytes; pushing it unconditionally is cheap and removes a
 // sharp edge in the migration story.
