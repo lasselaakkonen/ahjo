@@ -105,6 +105,10 @@ URL handling: pass the URL you actually want to use. SSH remotes
 container). HTTPS remotes (https://github.com/…) authenticate via the
 per-repo PAT prompted for before clone — ` + "`gh auth setup-git`" + ` wires git's
 HTTPS credential helper to read it. ahjo does not auto-rewrite SSH ↔ HTTPS.
+The same per-repo PAT is also solicited on the first ` + "`ahjo create <owner/repo>`" + `
+(so its auto-add clones over HTTPS too). For an HTTPS origin covered by a PAT
+the host ssh-agent is not forwarded into the repo's containers — git uses the
+token instead; override with ` + "`forward_ssh_agent`" + ` in config.toml.
 
 ` + containerConfigHelpBlock,
 		Args: cobra.ExactArgs(1),
@@ -368,6 +372,17 @@ func repoAddSetup(slug, primary string, aliases []string, src repoSource, defaul
 	// later fetch/push) and otherwise keeps the SSH-then-HTTPS probe. The
 	// chosen URL is recorded as the repo's remote (registry row below).
 	url := src.cloneURL(hasToken)
+
+	// An inferred GitHub alias with no PAT falls onto SSH (when reachable).
+	// That's a deliberate option for SSH-key users, but it's silent — surface
+	// it so the dead-weight-PAT / agent-only-push footgun isn't a surprise.
+	// Explicit user-typed git@ URLs (explicitURL != "") are intentional and
+	// don't warn; the HTTPS-public fallback (no git@ prefix) doesn't either.
+	if src.explicitURL == "" && !hasToken && strings.HasPrefix(url, "git@") {
+		fmt.Fprintf(cobraOutErr(), "warn: cloning %s over SSH using the host ssh-agent "+
+			"(no PAT set). git push/fetch will rely on the forwarded agent and `gh` "+
+			"won't work. Set a repo-scoped PAT with `ahjo repo set-token %s`.\n", url, primary)
+	}
 
 	// /repo is at the container root, where uid 1000 can't `mkdir`. Create
 	// it as ubuntu:ubuntu first so `git clone` runs unprivileged.
@@ -732,6 +747,12 @@ func wireBranchContainer(containerName, hostKeysDir string) error {
 	}
 	// SSH_AUTH_SOCK env can be set on a stopped container; the listen
 	// socket itself can only be created post-start (see attachSSHAgent).
+	// This env value COW-propagates to branch containers, but it is harmless
+	// without the proxy device: if shouldForwardAgent suppresses the agent,
+	// /tmp/ssh-agent.sock simply never appears, so SSH_AUTH_SOCK points at a
+	// non-existent socket and ssh/git behave as if no agent is configured —
+	// it does not leak the host agent. The proxy device (attachSSHAgent /
+	// RemoveDevice at the runtime sites) is the actual control point.
 	if os.Getenv("SSH_AUTH_SOCK") != "" {
 		if err := incus.ConfigSet(containerName, "environment.SSH_AUTH_SOCK", "/tmp/ssh-agent.sock"); err != nil {
 			return err
@@ -779,6 +800,29 @@ func attachSSHAgent(containerName string) error {
 		return nil
 	}
 	return incus.EnsureSSHAgentProxy(containerName, sock)
+}
+
+// isHTTPSRemote reports whether remote is an HTTPS GitHub origin — the only
+// case where a per-repo PAT (via gh's credential helper) authenticates git on
+// its own, so the ssh-agent isn't needed for git. GitHub-strict on purpose: a
+// self-hosted HTTPS remote with different PAT semantics shouldn't be silently
+// treated as covered.
+func isHTTPSRemote(remote string) bool {
+	return strings.HasPrefix(remote, "https://github.com/")
+}
+
+// shouldForwardAgent decides whether to proxy the host ssh-agent into a repo's
+// containers. An explicit config value wins; otherwise (the nil/auto default)
+// the agent is suppressed only when an HTTPS GitHub origin is already covered
+// by a PAT — git there uses the token, so forwarding the agent would be pure
+// attack surface (the "SSH-agent hole" in docs/CONTAINER-ISOLATION.md). SSH
+// origins, no-PAT repos, and non-GitHub remotes keep the agent.
+func shouldForwardAgent(repo *registry.Repo, hasToken bool, cfg *config.Config) bool {
+	if cfg != nil && cfg.ForwardSSHAgent != nil {
+		return *cfg.ForwardSSHAgent
+	}
+	covered := repo != nil && hasToken && isHTTPSRemote(repo.Remote)
+	return !covered
 }
 
 // attachPasteShim installs the in-container half of the macOS host paste
