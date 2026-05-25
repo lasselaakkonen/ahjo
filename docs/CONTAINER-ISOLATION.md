@@ -30,11 +30,11 @@ On Linux hosts the middle layer collapses — Incus runs directly on the host, n
 
 ## What each boundary protects
 
-**Mac → Lima VM.** The VM is a separate kernel under `vz`. Container/Incus state lives only in the VM. Code running in any container can't touch your Mac filesystem, browser session, keychain, or the rest of your home directory. `vzNAT` networking means containers can't dial Bonjour services or `localhost` apps on the Mac. The VM disk is 50 GB — runaway dependencies stop there.
+**Mac → Lima VM.** The VM is a separate kernel under `vz`. Container/Incus state lives only in the VM. Code running in any container can't touch your Mac filesystem, browser session, keychain, or the rest of your home directory. `vzNAT` networking means containers can't dial Bonjour services or `localhost` apps on the Mac. The VM disk defaults to 100 GiB (set at `ahjo init`, sparse so it grows on demand) — runaway dependencies stop there.
 
-**Lima VM → Incus container.** Each branch is its own Linux container with its own filesystem, process tree, and user (`ubuntu`, the upstream cloud-image canonical user at UID 1000). Containers cannot see each other. They share only what ahjo wires in: the in-container `/repo` checkout (which lives in the container's own rootfs, not a host bind-mount), generated SSH host keys (read-only mount), and the env vars listed in `forward_env` (e.g. `ANTHROPIC_AUTH_TOKEN`). A container has no view of the VM's `~/.ahjo/`, no view of other containers, and no Incus admin privileges.
+**Lima VM → Incus container.** Each branch is its own Linux container with its own filesystem, process tree, and user (`ubuntu`, the upstream cloud-image canonical user at UID 1000). Containers cannot see each other. They share only what ahjo wires in: the in-container `/repo` checkout (which lives in the container's own rootfs, not a host bind-mount), generated SSH host keys (read-only mount), and the env vars listed in `forward_env` (e.g. `CLAUDE_CODE_OAUTH_TOKEN`). A container has no view of the VM's `~/.ahjo/`, no view of other containers, and no Incus admin privileges.
 
-**Per-branch state.** Each container has its own `127.0.0.1:<port>` exposed by Incus' proxy device, its own SSH host keys under `~/.ahjo/host-keys/<slug>/`, and its own port allocations in `~/.ahjo/ports.toml`. Two branches of the same repo cannot collide on ports, sockets, host-key fingerprints, or `node_modules`.
+**Per-branch state.** Each container has its own `127.0.0.1:<port>` exposed by Incus' proxy device, its own SSH host keys under `~/.ahjo/host-keys/<slug>/`, and its own port allocations in `~/.ahjo/ports.json`. Two branches of the same repo cannot collide on ports, sockets, host-key fingerprints, or `node_modules`.
 
 ## What crosses the boundaries
 
@@ -42,8 +42,8 @@ These are the *intentional* leaks — every other path is closed.
 
 | Path | Direction | Contents |
 | --- | --- | --- |
-| `~/.ahjo-shared/` (Lima 9p mount) | VM → Mac, read-write | generated `ssh-config` + `aliases` map so `ahjo ssh <alias>` works from the Mac |
-| `forward_env` | VM → container | only the names listed in `~/.ahjo/config.toml` (default: `ANTHROPIC_AUTH_TOKEN` from `~/.ahjo/.env`) |
+| `~/.ahjo-shared/` (Lima virtiofs mount) | VM → Mac, read-write | generated `ssh-config` + `aliases` map so `ahjo ssh <alias>` works from the Mac |
+| `forward_env` | VM → container | only the names listed in `~/.ahjo/config.toml` (default: `CLAUDE_CODE_OAUTH_TOKEN` + `GH_TOKEN`, sourced from `~/.ahjo/.env`) |
 | Host keys dir | VM → container, read-only | per-branch sshd keys + `authorized_keys` (single-file bind mount at `/home/ubuntu/.ssh/authorized_keys`) |
 | SSH agent socket | Mac → VM → container | **see "GitHub credentials" below** |
 | Per-repo GH PAT | Mac Keychain (or Linux disk) → VM → container | one `GH_TOKEN` per repo, injected on each relay; **see below** |
@@ -59,7 +59,7 @@ ahjo applies the mapping itself, with two pieces both wired into `ahjo init` / `
 
 1. **subuid/subgid grants for the Incus daemon**: a one-time idempotent append of `root:<hostUID>:1` to `/etc/subuid` and `root:<hostGID>:1` to `/etc/subgid` so the daemon (running as root) is allowed to delegate those IDs into a container's userns. Without this, `newuidmap` rejects the mapping at container start. The init/update step restarts the Incus daemon when (and only when) it actually appended a line.
 
-2. **per-container `raw.idmap`**: every container ahjo creates gets `uid <hostUID> 1000` + `gid <hostGID> 1000` set on it, mapping the host VM user onto the in-container `ubuntu` user. Applied in `internal/cli/repo.go::wireBranchContainer` (default container) and `internal/cli/new.go::cloneFromBase` (COW branch containers). Files written inside as `ubuntu` land on the VM owned by the Lima user; files owned by the Lima user on the VM appear inside as `ubuntu:ubuntu`. The boundary — Claude inside can't reach UID 0, can't touch other host files, can't escape devices — is unchanged; we widen the namespace by one user, the one we already share with the workspace by construction.
+2. **per-container `raw.idmap`**: every container ahjo creates gets `uid <hostUID> 1000` + `gid <hostGID> 1000` set on it, mapping the host VM user onto the in-container `ubuntu` user. Applied in `internal/cli/repo.go::wireBranchContainer` (default container) and `internal/cli/create.go::cloneFromBase` (COW branch containers). Files written inside as `ubuntu` land on the VM owned by the Lima user; files owned by the Lima user on the VM appear inside as `ubuntu:ubuntu`. The boundary — Claude inside can't reach UID 0, can't touch other host files, can't escape devices — is unchanged; we widen the namespace by one user, the one we already share with the workspace by construction.
 
 The two-line `uid` + `gid` form is deliberate (instead of incus's shorter `both` form): on Lima setups where macOS uid (e.g. 501) propagates into the VM but the gid stays the Lima default (1000), `both 501 1000` would also try to map gid 501 onto 1000, which `/etc/subgid` doesn't grant. Splitting uid and gid lets each map independently.
 

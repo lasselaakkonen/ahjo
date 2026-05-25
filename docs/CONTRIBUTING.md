@@ -5,9 +5,11 @@ Two ways to set up a development environment. Pick one.
 ## Option 1 — develop inside an ahjo container (recommended)
 
 If you already use ahjo, this is hands-off: the repo ships a
-`.ahjo/ahjocontainer.json` that installs Go, `golangci-lint`,
-and activates the git hooks the first time the container is created.
-Nothing to install on the host beyond ahjo itself.
+`.ahjo/ahjocontainer.json` that declares the Go toolchain and, on first
+container create, runs `make generate-mirror && make hooks` to activate the
+git hooks. The rest of the dev toolchain (CLI tools, `git`/`gh`, base
+utilities) is baked into the `ahjo-base` image. Nothing to install on the
+host beyond ahjo itself.
 
 Bootstrap once (per the [Quick start](README.md#quick-start)) so `ahjo`
 is on your PATH, then:
@@ -25,12 +27,16 @@ What's provisioned automatically:
 
 | Tool          | Source                                             |
 | ------------- | -------------------------------------------------- |
-| Go            | `ghcr.io/devcontainers/features/go:1`              |
-| golangci-lint | `postCreateCommand` (upstream installer)           |
-| git hooks     | `postCreateCommand` (runs `make hooks`)            |
-| make, rg, fd, yq, ast-grep, eza, httpie, rtk | `ahjo-default-dev-tools` Feature |
-| jq, curl, unzip, gnupg, ca-certificates | `ghcr.io/devcontainers/features/common-utils:2` |
-| git, gh       | `ghcr.io/devcontainers/features/{git,github-cli}`  |
+| Go            | `ghcr.io/devcontainers/features/go:1` (declared in `.ahjo/ahjocontainer.json`) |
+| git hooks     | `postCreateCommand` (runs `make generate-mirror && make hooks`) |
+| make, rg, fd, yq, ast-grep, eza, httpie, rtk | `ahjo-default-dev-tools` Feature (baked into `ahjo-base`) |
+| jq, curl, unzip, gnupg, ca-certificates | `ghcr.io/devcontainers/features/common-utils:2` (baked into `ahjo-base`) |
+| git, gh       | `ghcr.io/devcontainers/features/{git,github-cli}` (baked into `ahjo-base`) |
+
+`golangci-lint` is **not** auto-installed in the container — the pre-commit
+hook soft-skips it when it's missing (see [What the hooks check](#what-the-hooks-check)).
+Install it inside the container with the upstream installer (see Option 2
+below) if you want the full lint pass locally.
 
 ## Option 2 — develop on the host
 
@@ -38,7 +44,7 @@ Install the toolchain yourself.
 
 | Tool                      | macOS                              | Linux                              |
 | ------------------------- | ---------------------------------- | ---------------------------------- |
-| Go (matches `go.mod`, currently `1.26.2`) | `brew install go`      | distro package                     |
+| Go (matches `go.mod`, currently `1.26.3`) | `brew install go`      | distro package                     |
 | `golangci-lint`           | `brew install golangci-lint`       | distro package or upstream         |
 | `make`                    | preinstalled (CLT)                 | distro package                     |
 
@@ -109,8 +115,10 @@ containers, and on Linux the system packages `ahjo init` installed — so you ca
 test `install.sh` and `ahjo init` from zero.
 
 `ahjo nuke -y` is the first move, but it intentionally **keeps** your configs
-and tokens (`~/.ahjo/{config.toml,registry.toml,profiles,repos,.env}` and all of
-`~/.ahjo-shared/`). A full nuke removes those too.
+and tokens (`~/.ahjo/{config.toml,profiles,.env}` and all of
+`~/.ahjo-shared/`). It clears the branch and repo entries from
+`~/.ahjo/registry.toml` but leaves the file itself in place. A full nuke
+removes those too.
 
 ### macOS
 

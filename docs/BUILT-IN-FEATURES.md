@@ -32,7 +32,7 @@ Downstream of source resolution, **everything**. The dispatch only swaps the fet
 - `install.sh` runs as root via `incus exec`, with the spec's `_REMOTE_USER` / `_REMOTE_USER_HOME` envelope.
 - `containerEnv` (e.g. `DOCKER_BUILDKIT: "1"` for `ahjo/docker`) persists to Incus `environment.*` so every later `incus exec` inherits it.
 
-`dependsOn` on **upstream OCI Features** is unsupported in v1 — the fetcher dispatch short-circuits the OCI path for `ahjo/*` keys and a chain would need the dispatch lifted into `Resolve`. Built-in Features that need to chain on a curated OCI Feature should ship a self-contained `install.sh` instead.
+No built-in Feature declares `dependsOn` today, and the `ahjo/*` path is untested with it — built-in Features that would chain on a curated OCI Feature should ship a self-contained `install.sh` instead. (Mechanically, dependency resolution runs in `Resolve`, which re-parses each `dependsOn` ref through `parseRef` — which falls back to the OCI parser — so an OCI dependency would in principle resolve via the normal fetch path; it simply hasn't been exercised for `ahjo/*` keys.)
 
 ## Adding a new built-in Feature
 
@@ -62,7 +62,8 @@ That's the whole change — addressing, trust, dispatch, env envelope, and Incus
 
 | Name | What it installs | Options |
 | --- | --- | --- |
-| `ahjo/docker` | Docker Engine via `get.docker.com` + compose plugin. Leaves `/etc/docker/daemon.json` at dockerd's default (>=26: containerd snapshotter with overlayfs snapshotter, xattr whiteouts — covered by the profile's `setxattr` intercept). | `version` (default `latest`), `channel` (`stable`), `daemon_args` (JSON fragment merged into daemon.json; if set, dockerd is restarted to pick it up) |
+| `ahjo/docker` | Docker Engine via `get.docker.com` + compose plugin. Leaves `/etc/docker/daemon.json` at dockerd's default (>=26: containerd snapshotter using the overlayfs driver, xattr whiteouts — covered by the profile's `setxattr` intercept). | `version` (default `latest`), `channel` (`stable`), `daemon_args` (JSON fragment merged into daemon.json; if set, dockerd is restarted to pick it up) |
+| `ahjo/prek` | [`prek`](https://github.com/j178/prek) (a dependency-free, Rust-based pre-commit reimplementation) installed for the remote user, then warms the hook cache from `/repo/.pre-commit-config.yaml` via `prek prepare-hooks`. Leaves `.git/hooks` untouched — pure warm-up, not a git-hook installer. | none |
 
 ## How this relates to `ahjo-runtime` / `ahjo-default-dev-tools`
 
