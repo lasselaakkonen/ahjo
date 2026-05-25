@@ -28,7 +28,7 @@ Blazing fast firing up of containers per feature branch.
   - [You do not want feature branches to branch off the default branch](#you-do-not-want-feature-branches-to-branch-off-the-default-branch)
 - [Container tech stack setup](#container-tech-stack-setup)
   - [`.ahjo/ahjocontainer.json`](#ahjoahjocontainerjson)
-  - [How ahjo picks the container config](#how-ahjo-picks-the-container-configpicking-a-container-config)
+  - [How ahjo picks the container config](#how-ahjo-picks-the-container-config)
 - [Git / GitHub auth](#git--github-auth)
 - [Installing](#installing)
 - [Commands](#commands)
@@ -74,12 +74,12 @@ ahjo claude <account>/<repo>@<branch>
 
 ##### Quick - Define tech stack in CLI params
 
-Set `--container-config` as `node`, `python`, `go` or `rust`,  which automatically install tooling for your stack.
+Set `--container-config` as `node`, `python`, `go`, `rust`, `php` or `ruby`, which automatically install tooling for your stack.
 
-`--container-config node` is necessary only on the first 
+`--container-config` is needed only on the repo's first `ahjo repo add`; afterwards `ahjo create` and `ahjo claude` reuse the stack persisted on the repo base container.
 
 ```
-ahjo repo add <account>/<repo> --container-config <node|python|go|rust>
+ahjo repo add <account>/<repo> --container-config <node|python|go|rust|php|ruby>
 ahjo create <account>/<repo> <branch>
 ahjo claude <account>/<repo>@<branch> 
 ```
@@ -88,7 +88,7 @@ For example:
 
 ```
 ahjo repo add lasselaakkonen/ahjo --container-config go
-ahjo repo create lasselaakkonen/ahjo readme-quick-start
+ahjo create lasselaakkonen/ahjo readme-quick-start
 ahjo claude lasselaakkonen/ahjo@readme-quick-start
 ```
 
@@ -141,7 +141,7 @@ Or similarly from TUI.
   - `claude`, plus sshd-as-a-service and the `ahjo-mirror` daemon from [install.sh](internal/ahjoruntime/feature/install.sh)
   - `rg`, `fd`, `eza`, `httpie`, `make`, `yq`, `ast-grep`, `rtk` from [install.sh](internal/ahjodevtools/feature/install.sh)
 
-Language toolchains (Node, Python, Go, Rust, …) are NOT in the base image. They come from either your repo's `.ahjo/ahjocontainer.json` or `--stack=<name>` at repo-add time (see "Built-in stacks" above).
+Language toolchains (Node, Python, Go, Rust, …) are NOT in the base image. They come from either your repo's `.ahjo/ahjocontainer.json` or `--container-config <name>` at repo-add time (see [Container tech stack setup](#container-tech-stack-setup)).
 
 
 **Repo base container** is
@@ -271,8 +271,8 @@ ahjo repo add myacc/monorepoapp --as monorepoapp-frontend --container-config fro
 ```
 
 Now you have two containers running with different tech stacks, eg:
-- `monorepo-backend@main` using your backend tech stack
-- `monorepo-frontend@main` using your backend tech stack
+- `monorepoapp-backend@main` using your backend tech stack
+- `monorepoapp-frontend@main` using your frontend tech stack
 
 ```
 # Create feature containers
@@ -336,7 +336,7 @@ Primarily ahjo tries to read `.ahjo/ahjocontainer.json` from the default branch 
 }
 ```
 
-#### How ahjo picks the container configPicking a container config
+#### How ahjo picks the container config
 
 When the repo carries no `.ahjo/ahjocontainer.json` — or you want to override the one it ships — pass `--container-config=<value>` to `ahjo repo add` or `ahjo claude`. Resolution order (first match wins):
 
@@ -347,7 +347,7 @@ When the repo carries no `.ahjo/ahjocontainer.json` — or you want to override 
 
 `--container-config <value>` accepts:
 
-- A **bundled stack name**: `node`, `python`, `go`, `rust`. Each is a curated `ahjocontainer.json` shipped inside the ahjo binary — view the source under [internal/stacks/](internal/stacks/).
+- A **bundled stack name**: `node`, `python`, `go`, `rust`, `php`, `ruby`. Each is a curated `ahjocontainer.json` shipped inside the ahjo binary — view the source under [internal/stacks/](internal/stacks/).
 - A **repo-local basename**, resolved against `.ahjo/<value>.json` in the repo. Lets a repo offer multiple variants (`.ahjo/lite.json`, `.ahjo/ci.json`, …) alongside the canonical one.
 - An **absolute or relative path** to a `.json` file on the host. Resolved against the directory you ran ahjo from. On macOS, paths outside the home directory (e.g. `/tmp/foo.json`) are transparently staged into the Lima VM through the shared dir — you don't need to move the file into `~/`.
 - The literal `bare` to opt out of any container config (same as the picker's bare option).
@@ -445,6 +445,7 @@ sudo ln -sf "$PWD/ahjo" /usr/local/bin/ahjo
 | `ahjo create <repo-alias> <branch> [--as <alias>] [--base <ref>] [--no-fetch]` | Create a COW branch container by copying the repo's default container (`incus copy`) and checking out `<branch>` inside it. Auto alias is `<repo-primary-alias>@<branch>`; `--as` adds a second alias. Idempotent. |
 | `ahjo shell <alias> [--update] [--force]` | Start the container if needed, wire SSH proxy + sshd, attach an interactive bash via `incus exec --force-interactive` as the in-container `ubuntu` user. `--update` shuts down and deletes the existing container first so the next attach builds a fresh one from the current `ahjo-base` image; the host keys, registry entry, and ssh port are preserved. `--force` (with `--update`) skips the `/repo` cleanliness check and recreates even when uncommitted/unpushed work is present. |
 | `ahjo claude <alias> [--update] [--force] [--container-config <stack\|path>]` | Same prep as `ahjo shell`, but launches `claude` inside the container instead of dropping to a shell. `--update`/`--force` behave as for `ahjo shell`; `--container-config` resolves the stack the same way as `ahjo repo add` on first launch. |
+| `ahjo ide <alias>` | Open an SSH-capable IDE on the branch container. Detects the IDEs installed on the host (Cursor, VS Code, VS Code Insiders, Windsurf, Zed) and opens the chosen one over ssh-remote — the same detection + launch as the `i` picker in `ahjo top`. A lone detected IDE opens directly; with several, ahjo prompts on a TTY. The container must be running (`ahjo shell <alias>` starts it). |
 | `ahjo ssh <alias>` | `exec ssh` into the container using the generated ssh-config (Mac-side or in-VM). |
 | `ahjo expose <alias> <container-port>` | Manually add an Incus proxy device exposing a container port on `127.0.0.1`. |
 | `ahjo expose <alias> --sync` | Reconcile auto-expose proxy devices to the container's current TCP loopback listeners (skipping `:22` and ports below `[auto_expose].min_port`). Run after starting docker-compose / a dev server inside the container so newly-bound ports surface to the host. Manual `ahjo expose` entries are untouched. |
@@ -525,7 +526,7 @@ Minimal example:
 | `initializeCommand`, `updateContentCommand`, `waitFor`, `portsAttributes`, `hostRequirements`, `remoteEnv` | ignored | No matching ahjo concept; the spec field is silently dropped. |
 
 Lifecycle commands accept the spec's three forms: a string (`"pnpm install"`,
-runs via `bash -c`), an array (`["echo", "hi"]`, runs argv directly), or an
+runs via `bash -lc`), an array (`["echo", "hi"]`, runs argv directly), or an
 object map (`{"a": "...", "b": "..."}`, runs each entry sequentially in
 sorted key order). A failed step aborts the chain so half-set-up containers
 surface a clear error.
@@ -563,7 +564,7 @@ That points `core.hooksPath` at `.githooks/`. Idempotent; safe to re-run.
 | Hook | Runs | Cold time |
 | --- | --- | --- |
 | `pre-commit` | `gofmt -l`, `go vet`, `golangci-lint`, `go test ./...` | ~5s |
-| `pre-push`   | `go generate ./...` freshness check, `go test -race ./...` | ~15s |
+| `pre-push`   | `make generate-mirror` (incremental `go generate` of the embedded mirror binaries), `go test -race ./...` | ~15s |
 
 `golangci-lint` is soft-skipped if it isn't on PATH so a fresh clone can still commit; install it for the full pre-commit pass:
 
