@@ -148,9 +148,19 @@ func prepareBranchContainer(alias string, update, force bool, containerConfig st
 	}
 	// Refresh ssh-agent post-start: Lima's host SSH_AUTH_SOCK path changes
 	// per session, and bind=container proxy devices must be attached while
-	// the container is running.
-	if err := attachSSHAgent(containerName); err != nil {
-		fmt.Fprintf(cobraOutErr(), "warn: ssh-agent proxy: %v\n", err)
+	// the container is running. Skip (and strip any inherited device) when an
+	// HTTPS+PAT origin already covers the repo's git — the agent would only add
+	// attack surface there. See shouldForwardAgent.
+	repo := reg.FindRepo(br.Repo)
+	cfg, _ := config.Load()
+	tok, hasToken, _ := repoToken(br.Repo)
+	hasToken = hasToken && tok != ""
+	if shouldForwardAgent(repo, hasToken, cfg) {
+		if err := attachSSHAgent(containerName); err != nil {
+			fmt.Fprintf(cobraOutErr(), "warn: ssh-agent proxy: %v\n", err)
+		}
+	} else if err := incus.RemoveDevice(containerName, "ssh-agent"); err != nil {
+		fmt.Fprintf(cobraOutErr(), "warn: remove ssh-agent device: %v\n", err)
 	}
 	// Paste-shim wiring is also post-start (bind=container proxy + file
 	// push). Old branch containers self-heal on their next ahjo shell /

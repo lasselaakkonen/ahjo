@@ -54,6 +54,8 @@ func interceptRepoSubcommand(args []string) (newArgs []string, env []string, err
 				return interceptRepoSetToken(args)
 			}
 		}
+	case "create":
+		return interceptCreate(args)
 	case "shell", "claude":
 		return interceptShellLike(args)
 	}
@@ -66,10 +68,10 @@ func interceptRepoSubcommand(args []string) (newArgs []string, env []string, err
 // paste, already-stored, --help) returns args unchanged with no env injection
 // — the in-VM ahjo runs its normal flow.
 func interceptRepoAdd(args []string) ([]string, []string, error) {
-	yes := hasFlag(args[2:], "-y", "--yes")
 	if hasFlag(args[2:], "-h", "--help") {
 		return args, nil, nil
 	}
+	yes := hasFlag(args[2:], "-y", "--yes")
 	url := findRepoAddURL(args[2:])
 	if url == "" {
 		// No URL on the line; let the in-VM ahjo emit the usage error.
@@ -89,26 +91,89 @@ func interceptRepoAdd(args []string) ([]string, []string, error) {
 	if slug == "" {
 		return args, nil, nil
 	}
+	env, err := ensureRepoPAT(slug, ownerRepo, yes)
+	if err != nil {
+		return nil, nil, err
+	}
+	return args, env, nil
+}
+
+// interceptCreate is the `create` half of the PAT prompt. `ahjo create
+// <owner/repo> <branch>` on an UNREGISTERED repo auto-adds in-VM (EnsureRepo),
+// past the shim — so without this the in-VM clone never sees a PAT and freezes
+// an SSH origin. It reuses the exact same ensureRepoPAT routine as `repo add`
+// so the two host-side paths can't drift. Skips a branch-alias (repo@branch),
+// an already-registered alias, --help/--yes, and non-TTY — all defer to the
+// in-VM flow unchanged.
+func interceptCreate(args []string) ([]string, []string, error) {
+	if hasFlag(args[1:], "-h", "--help") {
+		return args, nil, nil
+	}
+	yes := hasFlag(args[1:], "-y", "--yes")
+	alias := findCreateAlias(args[1:])
+	if !isBareOwnerRepo(alias) {
+		// Branch alias, a non-owner/repo alias, or no positional: not a GitHub
+		// first-add. Defer to the in-VM flow.
+		return args, nil, nil
+	}
+	if _, err := lookupRepoSlug(alias); err == nil {
+		// Already registered → EnsureRepo won't add → nothing to solicit. (A
+		// case-variant miss here is caught by the Keychain hit in ensureRepoPAT.)
+		return args, nil, nil
+	}
+	ownerRepo, err := registry.DeriveRepoAlias(alias) // normalize exactly like repo add
+	if err != nil {
+		return args, nil, nil
+	}
+	slug := registry.AliasToSlug(ownerRepo)
+	if slug == "" {
+		return args, nil, nil
+	}
+	env, err := ensureRepoPAT(slug, ownerRepo, yes)
+	if err != nil {
+		return nil, nil, err
+	}
+	return args, env, nil
+}
+
+// ensureRepoPAT is the single host-side source of truth for a repo's GitHub
+// PAT, shared by `repo add` and `create`'s first-add. Given the derived slug +
+// owner/repo: a Keychain hit injects GH_TOKEN silently; a miss on a TTY (and
+// without --yes) prompts, stores in Keychain, and injects; any skip (--yes,
+// non-TTY, empty paste) returns nil env. Errors only on a Keychain read/write
+// failure the user must fix before continuing.
+func ensureRepoPAT(slug, ownerRepo string, yes bool) ([]string, error) {
 	tok, found, err := macsecret.Get(slug, ghTokenKey)
 	if err != nil {
-		return nil, nil, fmt.Errorf("read Keychain for %s: %w", slug, err)
+		return nil, fmt.Errorf("read Keychain for %s: %w", slug, err)
 	}
 	if found && tok != "" {
-		return args, []string{"GH_TOKEN=" + tok}, nil
+		return []string{"GH_TOKEN=" + tok}, nil
 	}
 	if yes || !isTerminal(os.Stdin) {
-		return args, nil, nil
+		return nil, nil
 	}
 	repoauth.PrintInstructions(os.Stdout, ownerRepo)
 	tok, err = promptStorePAT(slug, repoauth.PromptText)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	if tok == "" {
 		repoauth.PrintSkipHint(os.Stdout, ownerRepo)
-		return args, nil, nil
+		return nil, nil
 	}
-	return args, []string{"GH_TOKEN=" + tok}, nil
+	return []string{"GH_TOKEN=" + tok}, nil
+}
+
+// isBareOwnerRepo mirrors the in-VM cli.splitRepoAlias: exactly two non-empty
+// slash-separated segments and no '@' (which marks a branch alias). Replicated
+// here because the shim can't import the linux-only cli package.
+func isBareOwnerRepo(alias string) bool {
+	if alias == "" || strings.Contains(alias, "@") {
+		return false
+	}
+	parts := strings.Split(alias, "/")
+	return len(parts) == 2 && parts[0] != "" && parts[1] != ""
 }
 
 // interceptRepoSetToken resolves the alias, prompts on the Mac, and stores in
@@ -237,6 +302,33 @@ func sweepKeychainCleanup() {
 // URL is present (user typed `ahjo repo add --help`, e.g.).
 func findRepoAddURL(rest []string) string {
 	stringFlags := map[string]bool{"--default-base": true, "--as": true}
+	for i := 0; i < len(rest); i++ {
+		a := rest[i]
+		if a == "--" {
+			if i+1 < len(rest) {
+				return rest[i+1]
+			}
+			return ""
+		}
+		if stringFlags[a] {
+			i++
+			continue
+		}
+		if strings.HasPrefix(a, "-") {
+			continue
+		}
+		return a
+	}
+	return ""
+}
+
+// findCreateAlias returns the first positional from `create` args (post
+// `create`) — the repo alias — skipping flag values for `create`'s string
+// flags. Distinct from firstNonFlag because `create` uses `--base`, not
+// `--default-base`; reusing the wrong flag set would misparse
+// `ahjo create --base main owner/repo branch`.
+func findCreateAlias(rest []string) string {
+	stringFlags := map[string]bool{"--base": true, "--as": true}
 	for i := 0; i < len(rest); i++ {
 		a := rest[i]
 		if a == "--" {

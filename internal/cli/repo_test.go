@@ -7,7 +7,42 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/lasselaakkonen/ahjo/internal/config"
+	"github.com/lasselaakkonen/ahjo/internal/registry"
 )
+
+func TestShouldForwardAgent(t *testing.T) {
+	boolPtr := func(b bool) *bool { return &b }
+	https := &registry.Repo{Remote: "https://github.com/o/r.git"}
+	ssh := &registry.Repo{Remote: "git@github.com:o/r.git"}
+	local := &registry.Repo{Remote: "/srv/git/r"}
+	cases := []struct {
+		name     string
+		repo     *registry.Repo
+		hasToken bool
+		forward  *bool
+		want     bool
+	}{
+		{"https+token+auto suppresses", https, true, nil, false},
+		{"https+no-token forwards", https, false, nil, true},
+		{"ssh+token forwards", ssh, true, nil, true},
+		{"ssh+no-token forwards", ssh, false, nil, true},
+		{"local remote+token forwards", local, true, nil, true},
+		{"nil repo forwards", nil, true, nil, true},
+		{"explicit true forwards even when covered", https, true, boolPtr(true), true},
+		{"explicit false never forwards even on ssh", ssh, false, boolPtr(false), false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := shouldForwardAgent(c.repo, c.hasToken, &config.Config{ForwardSSHAgent: c.forward})
+			if got != c.want {
+				t.Fatalf("shouldForwardAgent(%+v, token=%v, forward=%v) = %v, want %v",
+					c.repo, c.hasToken, c.forward, got, c.want)
+			}
+		})
+	}
+}
 
 func TestSplitRepoAlias(t *testing.T) {
 	cases := []struct {

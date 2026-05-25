@@ -25,7 +25,18 @@ type Config struct {
 	ForwardEnv []string         `toml:"forward_env"` // unioned with binary defaults plus per-repo customizations.ahjo.forward_env
 	PortRange  Range            `toml:"port_range"`
 	AutoExpose AutoExposeConfig `toml:"auto_expose"`
-	Mac        MacConfig        `toml:"mac"` // host-only; ignored in the VM
+	// ForwardSSHAgent controls whether the host ssh-agent socket is proxied
+	// into a repo's containers. Three states:
+	//   nil   = auto: forward unless an HTTPS GitHub origin is already covered
+	//           by a per-repo PAT (that repo's git uses the token, so the agent
+	//           is pure attack surface — see docs/CONTAINER-ISOLATION.md).
+	//   true  = always forward (e.g. you sign commits over SSH, push `git@`
+	//           submodules/other remotes, or hit repos the PAT isn't scoped to).
+	//   false = never forward.
+	// A *bool so an absent key stays nil (distinct from an explicit false);
+	// Load() must NOT force a default here.
+	ForwardSSHAgent *bool     `toml:"forward_ssh_agent"`
+	Mac             MacConfig `toml:"mac"` // host-only; ignored in the VM
 }
 
 type Range struct {
