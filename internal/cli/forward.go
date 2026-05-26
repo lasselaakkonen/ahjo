@@ -9,7 +9,6 @@ import (
 
 	"github.com/lasselaakkonen/ahjo/internal/incus"
 	"github.com/lasselaakkonen/ahjo/internal/lockfile"
-	"github.com/lasselaakkonen/ahjo/internal/registry"
 )
 
 // ahjoForwardDevicePrefix names the proxy devices `ahjo forward` manages, keyed
@@ -97,15 +96,7 @@ func runForwardOn(alias string, hostPort, cport int) error {
 	}
 	defer release()
 
-	reg, err := registry.Load()
-	if err != nil {
-		return err
-	}
-	br := reg.FindBranchByAlias(alias)
-	if br == nil {
-		return fmt.Errorf("no branch with alias %q", alias)
-	}
-	containerName, err := resolveContainerName(br)
+	_, containerName, err := resolveBranchContainer(alias)
 	if err != nil {
 		return err
 	}
@@ -135,15 +126,7 @@ func runForwardOff(alias string, cport int) error {
 	}
 	defer release()
 
-	reg, err := registry.Load()
-	if err != nil {
-		return err
-	}
-	br := reg.FindBranchByAlias(alias)
-	if br == nil {
-		return fmt.Errorf("no branch with alias %q", alias)
-	}
-	containerName, err := resolveContainerName(br)
+	_, containerName, err := resolveBranchContainer(alias)
 	if err != nil {
 		return err
 	}
