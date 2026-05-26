@@ -7,12 +7,13 @@ ahjo's own stdout or `registry.toml` as proof.
 
 It exists because ahjo's automated suite is 100% unit + real-binary-integration
 with `git`/`ssh-keygen`/`bash`; **nothing in CI drives `incus` or the `ahjo`
-binary**. The container flows (`repo add`, `create`, `forward`/`expose`,
-`mirror`, `shell`, `claude`, `repo pull`, `repo rm`) and the Ctrl-C
-cancellation path therefore have no automated coverage. Those flows can't run in
-the dev container (no incus) and need inherently human auth (a GitHub PAT, a
-Claude subscription, ssh-agent/keychain), so this is the **manual host tier**:
-you run it attended on a host that has already done `ahjo init`.
+binary**. The container flows (`env`, `repo add`, `create`, `forward`/`expose`,
+`mirror`, `shell`, `ssh`, `claude`, `ide`, `rm`, `repo pull`, `repo rm`) — with
+their notable flags (`--as`, `--base`, `--default-base`, `mirror --no-revert`) —
+and the Ctrl-C cancellation path therefore have no automated coverage. Those
+flows can't run in the dev container (no incus) and need inherently human auth (a
+GitHub PAT, a Claude subscription, ssh-agent/keychain), so this is the **manual
+host tier**: you run it attended on a host that has already done `ahjo init`.
 
 ## Prerequisites
 
@@ -66,15 +67,22 @@ teardown can't poison the next one.
 
 | Step | Real command | Ground-truth assertion |
 |---|---|---|
-| 1 | `ahjo repo add <repo>` (live PAT + stack prompt) | container exists & **Stopped**; `/repo` on the default branch (read from `.git/HEAD`); `ahjo-ssh` proxy `connect=tcp:127.0.0.1:22`; `environment.GH_TOKEN` set |
-| 2 | `ahjo create <repo> <branch>` | branch container **Running**; `/repo` on the new branch; `ahjo-ssh` re-wired; the warm-install tool present (COW-inherited); `GH_TOKEN` carried by `incus copy` |
-| 3 | `ahjo forward … :<p>` then `--off` | `ahjo-forward-<p>` proxy `listen=tcp:127.0.0.1:<p>`; absent after `--off` |
-| 4 | `ahjo expose … :<p>` | `ahjo-expose-<p>` proxy `connect=tcp:127.0.0.1:<p>` |
-| 5 | `ahjo mirror … --target` then `off` | `mirror` disk device + `ahjo-mirror.service` active + host target populated; device gone after `off` |
-| 6 | `ahjo ls`, `ahjo top` | operator confirms the listing + TUI |
-| 7 | `ahjo shell <branch>` | operator confirms attach + `CLAUDE_CODE_OAUTH_TOKEN` in-shell; harness asserts `environment.GH_TOKEN` |
-| 8 | `ahjo repo pull <repo>` | default container Running and `HEAD == origin/<default>` |
-| 9 | `ahjo repo rm <repo> --force` | repo + branch containers absent |
+| 1 | `ahjo env set/get/list[--show]/unset` | host-side CRUD round-trips; `list` masks the value, `--show` reveals it; `get` fails after `unset` (no container needed) |
+| 2 | `ahjo repo add <repo> --as <alias>` (live PAT + stack prompt) | container exists & **Stopped**; `/repo` on the default branch (read from `.git/HEAD`); `ahjo-ssh` proxy `connect=tcp:127.0.0.1:22`; `environment.GH_TOKEN` set; the `--as` alias present in the generated alias map |
+| 3 | `ahjo create <repo> <branch> --as <alias>` | branch container **Running**; `/repo` on the new branch; `ahjo-ssh` re-wired; the warm-install tool present (COW-inherited); `GH_TOKEN` carried by `incus copy`; the `--as` branch alias in the alias map |
+| 4 | `ahjo forward … :<p>` then `--off` | `ahjo-forward-<p>` proxy `listen=tcp:127.0.0.1:<p>`; absent after `--off` |
+| 5 | `ahjo expose … :<p>` | `ahjo-expose-<p>` proxy `connect=tcp:127.0.0.1:<p>` |
+| 6 | `ahjo mirror … --target`, `status`, `logs`, `off --no-revert` | `mirror` disk device + `ahjo-mirror.service` active + host target populated; **a file edited inside the container appears on the host** (live watch→push); `status` reports it active; `off --no-revert` removes the device but **keeps** the mirrored file |
+| 7 | `ahjo ls`, `ahjo top` | operator confirms the listing + TUI |
+| 8 | `ahjo shell <branch>` | operator confirms attach + `CLAUDE_CODE_OAUTH_TOKEN` in-shell; harness asserts `environment.GH_TOKEN` |
+| 9 | `ahjo ssh <as-alias>` | connects over the generated ssh-config and runs `id -un` → `ubuntu` (machine-asserted; `StrictHostKeyChecking=yes` proves it reached *this* container) |
+| 10 | `ahjo claude <branch>` | operator confirms `claude` launched in the container |
+| 11 | `ahjo ide <as-alias>` | operator confirms an IDE opened over ssh-remote (or ahjo's clean "no SSH-capable IDEs" error on a headless host) |
+| 12 | `ahjo create <repo-as-alias> <branch2> --base <ref>` | second branch **Running** via the repo's `--as` alias; `/repo` HEAD == `<ref>` (defaults to `origin/<default>~1`, proving `--base` plumbs a ref through) |
+| 13 | `ahjo rm <branch2-alias>` | branch2 container absent; repo + first branch container still present (standalone single-branch teardown) |
+| 14 | `ahjo repo pull <repo>` | default container Running and `HEAD == origin/<default>` |
+| 15 | `ahjo repo rm <repo> --force` | repo + branch containers absent |
+| 16 | `ahjo repo add … --default-base <alt>` (opt-in) | repo container checked out on `<alt>`; **skipped unless `AHJO_E2E_ALT_BRANCH` is set** to a real non-default remote branch |
 
 ### `cancel.sh` — cancellation (primary check of `81fb1f5`)
 
@@ -139,6 +147,11 @@ assertion works on both hosts unchanged.
 | `AHJO_E2E_EXPOSE_PORT` | `3000` | `expose` container port |
 | `AHJO_E2E_MIRROR_DIR` | `$HOME/ahjo-e2e-mirror-<slug>` | host mirror target |
 | `AHJO_E2E_SKIP_MIRROR` | `0` | skip the mirror checkpoint |
+| `AHJO_E2E_REPO_AS` | `ahjo-e2e-sandbox-alt` | extra repo alias for `repo add --as` |
+| `AHJO_E2E_BRANCH_AS` | `e2e-branch-alt` | extra branch alias for `create --as` (also the alias `ahjo ssh`/`ahjo ide` are driven through) |
+| `AHJO_E2E_BRANCH2` | `e2e-base-branch` | second branch for the `create --base` checkpoint |
+| `AHJO_E2E_BASE_REF` | *(unset → `origin/<default>~1`)* | explicit `--base` ref; the default lands on a non-tip commit (sandbox default branch needs ≥2 commits) |
+| `AHJO_E2E_ALT_BRANCH` | *(unset)* | a real non-default remote branch; set it to run the opt-in `repo add --default-base` checkpoint (skipped otherwise) |
 | `GH_TOKEN` | *(unset)* | exporting it runs the `cancel.sh` repo-add cancel unattended |
 | `AHJO_E2E_CANCEL_DELAY` | `3` | seconds before SIGINT in the repo-add cancel |
 | `AHJO_E2E_UPDATE_CANCEL_DELAY` | `20` | seconds before SIGINT in the update cancel |
@@ -156,10 +169,31 @@ assertion works on both hosts unchanged.
   assert them via `incus config get` on any container. `CLAUDE_CODE_OAUTH_TOKEN`
   is a **`forward_env`** var injected only by the `shell`/`claude` attach — it's
   not container config and isn't visible to a plain `incus exec`, so it's
-  corroborated by the operator running `printenv` inside `ahjo shell` (step 7).
+  corroborated by the operator running `printenv` inside `ahjo shell` (step 8).
+- **`ssh` vs `ide`.** `ahjo ssh` execs `ssh` against the generated ssh-config, so
+  it *is* machine-assertable: the harness feeds a command on stdin (no TTY → ssh
+  runs it non-interactively) and checks the remote `id -un` is `ubuntu`;
+  `StrictHostKeyChecking=yes` against the pre-seeded known_hosts means a clean
+  connect already proves it reached *that* container. `ahjo ide` launches a GUI
+  editor — a side effect the harness can't observe — so it stays operator-eyeball
+  (and accepts ahjo's clean "no SSH-capable IDEs" error on a headless host).
+- **Mirror live propagation.** Beyond the activation-time bootstrap copy, step 6
+  writes a file *inside* the container and polls the host target for it, so the
+  daemon's watch→push path is exercised — not just the initial sync. `off
+  --no-revert` is then asserted to *keep* that mirror-added file (a plain `off`
+  would revert the target and remove it).
+- **`mirror logs`.** Tails `journalctl --follow` and replaces the process, so it
+  can't be cleanly attached unattended (the operator's Ctrl-C would also hit the
+  script). The harness captures a short background window and only **warns** if
+  the journal looks empty — it's a best-effort streaming check, not a hard gate.
 
 ## Out of scope
 
 - No CI integration (needs a privileged incus runner + secrets).
 - No re-testing of prompt-parsing logic (already unit-tested in
   `internal/cli/lockfile_detect_test.go`).
+- The `ahjo ide` *happy path* (an editor actually opening) is operator-confirmed,
+  not machine-asserted — it's a GUI launch.
+- Still no driver-level coverage for: `doctor`, `gc`, `nuke`, `init`,
+  `repo ls` / `repo set-token`, `expose --sync`, `mirror revert`, and the
+  `shell`/`claude --update` recreate path.
