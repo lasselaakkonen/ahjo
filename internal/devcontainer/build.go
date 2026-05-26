@@ -74,7 +74,7 @@ var embeddedBaseFeatures = []embeddedFeature{
 // publishing so a stale image doesn't shadow the new one. The osbase
 // alias stays — it's just a local mirror of upstream and re-pulling it
 // every update would slow `ahjo update` for no gain.
-func BuildAhjoBase(out io.Writer, force bool) error {
+func BuildAhjoBase(ctx context.Context, out io.Writer, force bool) error {
 	if force {
 		if err := incus.DeleteImageAlias(AhjoBaseAlias); err != nil {
 			return fmt.Errorf("clear %s alias: %w", AhjoBaseAlias, err)
@@ -83,7 +83,7 @@ func BuildAhjoBase(out io.Writer, force bool) error {
 	}
 
 	fmt.Fprintf(out, "  → ensuring %s is in local image store as alias %s\n", UpstreamRemote, OSBaseAlias)
-	if err := incus.ImageCopyRemote(UpstreamRemote, OSBaseAlias); err != nil {
+	if err := incus.ImageCopyRemote(ctx, UpstreamRemote, OSBaseAlias); err != nil {
 		return err
 	}
 
@@ -103,30 +103,30 @@ func BuildAhjoBase(out io.Writer, force bool) error {
 	}()
 
 	fmt.Fprintf(out, "  → incus launch %s %s\n", OSBaseAlias, buildName)
-	if err := incus.Launch(OSBaseAlias, buildName); err != nil {
+	if err := incus.Launch(ctx, OSBaseAlias, buildName); err != nil {
 		return err
 	}
 
 	fmt.Fprintln(out, "  → waiting for systemd to come up")
-	if err := incus.WaitReady(buildName, 60*time.Second); err != nil {
+	if err := incus.WaitReady(ctx, buildName, 60*time.Second); err != nil {
 		return err
 	}
 
 	// Harden apt before any Feature's install.sh runs apt-get. Bakes into
 	// ahjo-base, so every repo/branch container inherits it for Feature +
 	// warm installs.
-	if err := writeAptResilience(buildName, out); err != nil {
+	if err := writeAptResilience(ctx, buildName, out); err != nil {
 		return err
 	}
 
 	env := RuntimeEnv()
 
-	if err := applyUpstreamBaseFeatures(buildName, env, out); err != nil {
+	if err := applyUpstreamBaseFeatures(ctx, buildName, env, out); err != nil {
 		return err
 	}
 
 	for _, ef := range embeddedBaseFeatures {
-		if err := applyEmbedded(buildName, ef, env, out); err != nil {
+		if err := applyEmbedded(ctx, buildName, ef, env, out); err != nil {
 			return err
 		}
 	}
@@ -137,7 +137,7 @@ func BuildAhjoBase(out io.Writer, force bool) error {
 	}
 
 	fmt.Fprintf(out, "  → incus publish %s --alias %s\n", buildName, AhjoBaseAlias)
-	return incus.Publish(buildName, AhjoBaseAlias)
+	return incus.Publish(ctx, buildName, AhjoBaseAlias)
 }
 
 // aptResilienceConf hardens apt against transient ports.ubuntu.com flakes —
@@ -157,14 +157,14 @@ Acquire::https::Timeout "30";
 // apt.conf.d as root, before the upstream Features whose install.sh calls
 // apt-get update/upgrade. apt.conf.d already exists on the Ubuntu base; the
 // mkdir -p is belt-and-suspenders.
-func writeAptResilience(buildName string, out io.Writer) error {
+func writeAptResilience(ctx context.Context, buildName string, out io.Writer) error {
 	fmt.Fprintln(out, "  → writing apt retry/timeout config (/etc/apt/apt.conf.d/80-ahjo-retries)")
 	script := "set -e\n" +
 		"mkdir -p /etc/apt/apt.conf.d\n" +
 		"cat > /etc/apt/apt.conf.d/80-ahjo-retries <<'EOF'\n" +
 		aptResilienceConf +
 		"EOF\n"
-	if _, err := incus.Exec(buildName, "sh", "-c", script); err != nil {
+	if _, err := incus.ExecContext(ctx, buildName, "sh", "-c", script); err != nil {
 		return fmt.Errorf("write apt resilience config: %w", err)
 	}
 	return nil
@@ -176,9 +176,7 @@ func writeAptResilience(buildName string, out io.Writer) error {
 // differences: there's no trust prompt (every source is auto-trusted
 // under CuratedTrustedGlob), and there are no per-Feature options to
 // thread through (we pass them as empty maps).
-func applyUpstreamBaseFeatures(container string, env map[string]string, out io.Writer) error {
-	ctx := context.Background()
-
+func applyUpstreamBaseFeatures(ctx context.Context, container string, env map[string]string, out io.Writer) error {
 	tmpRoot, err := os.MkdirTemp("", "ahjo-base-upstream-")
 	if err != nil {
 		return fmt.Errorf("mktemp for upstream features: %w", err)
@@ -228,7 +226,7 @@ func applyUpstreamBaseFeatures(container string, env map[string]string, out io.W
 
 	for _, ff := range ordered {
 		fmt.Fprintf(out, "  → applying upstream feature %s\n", ff.Ref)
-		if err := Apply(container, ff.Feature, env, out); err != nil {
+		if err := Apply(ctx, container, ff.Feature, env, out); err != nil {
 			return fmt.Errorf("feature %s: %w", ff.Ref, err)
 		}
 	}
@@ -239,7 +237,7 @@ func applyUpstreamBaseFeatures(container string, env map[string]string, out io.W
 // The tmp dir is per-Feature (rather than one shared root) so a failure
 // in materialize / Apply leaves a self-contained tree that's safe to
 // `os.RemoveAll` regardless of which Feature blew up.
-func applyEmbedded(container string, ef embeddedFeature, env map[string]string, out io.Writer) error {
+func applyEmbedded(ctx context.Context, container string, ef embeddedFeature, env map[string]string, out io.Writer) error {
 	tmpDir, err := os.MkdirTemp("", "ahjo-base-embedded-"+ef.id+"-")
 	if err != nil {
 		return fmt.Errorf("mktemp for %s: %w", ef.id, err)
@@ -249,7 +247,7 @@ func applyEmbedded(container string, ef embeddedFeature, env map[string]string, 
 		return fmt.Errorf("materialize %s: %w", ef.id, err)
 	}
 	fmt.Fprintf(out, "  → applying embedded feature %s\n", ef.id)
-	return Apply(container, Feature{ID: ef.id, Dir: tmpDir}, env, out)
+	return Apply(ctx, container, Feature{ID: ef.id, Dir: tmpDir}, env, out)
 }
 
 // RuntimeEnv is the user-identity envelope every Feature gets. Kept in

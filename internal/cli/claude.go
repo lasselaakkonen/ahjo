@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -35,8 +36,8 @@ proceed; pass --force to skip the check and recreate anyway.
 
 ` + containerConfigHelpBlock,
 		Args: cobra.ExactArgs(1),
-		RunE: func(_ *cobra.Command, args []string) error {
-			return runClaude(args[0], update, force, containerConfig)
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runClaude(cmd.Context(), args[0], update, force, containerConfig)
 		},
 	}
 	cmd.Flags().BoolVar(&update, "update", false, "destroy the existing container before attaching so it picks up the current ahjo-base image")
@@ -45,8 +46,8 @@ proceed; pass --force to skip the check and recreate anyway.
 	return cmd
 }
 
-func runClaude(alias string, update, force bool, containerConfig string) error {
-	br, containerName, err := prepareBranchContainer(alias, update, force, containerConfig)
+func runClaude(ctx context.Context, alias string, update, force bool, containerConfig string) error {
+	br, containerName, err := prepareBranchContainer(ctx, alias, update, force, containerConfig)
 	if err != nil {
 		return err
 	}
@@ -58,7 +59,7 @@ func runClaude(alias string, update, force bool, containerConfig string) error {
 	if err != nil {
 		fmt.Fprintf(cobraOutErr(), "warn: collect forward env: %v\n", err)
 	}
-	if err := runPostAttach(containerName, dcConf, env); err != nil {
+	if err := runPostAttach(ctx, containerName, dcConf, env); err != nil {
 		return err
 	}
 	// Refresh the ahjo-state snapshots so this session's first on-demand read

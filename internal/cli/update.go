@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -38,19 +39,19 @@ On macOS, the host-side 'ahjo update' first pushes the new ahjo-linux-<arch>
 binary into the VM and then relays this command, so a single 'ahjo update'
 on the Mac drives the whole chain.`,
 		Args: cobra.NoArgs,
-		RunE: func(_ *cobra.Command, _ []string) error {
+		RunE: func(cmd *cobra.Command, _ []string) error {
 			if !insideLinuxVM() {
 				return fmt.Errorf("the in-VM phase of `ahjo update` only runs on Linux; on macOS the same `ahjo update` first pushes the new binary into the VM and then relays this command")
 			}
 			r := initflow.Runner{Yes: yes, In: os.Stdin, Out: os.Stdout, Err: os.Stderr}
-			return r.Execute(vmUpdateSteps())
+			return r.Execute(vmUpdateSteps(cmd.Context()))
 		},
 	}
 	cmd.Flags().BoolVarP(&yes, "yes", "y", false, "skip the per-step confirmation prompt")
 	return cmd
 }
 
-func vmUpdateSteps() []initflow.Step {
+func vmUpdateSteps(ctx context.Context) []initflow.Step {
 	return []initflow.Step{
 		subuidGrantStep(),
 		inotifySysctlStep(),
@@ -81,7 +82,7 @@ func vmUpdateSteps() []initflow.Step {
 				"incus publish ahjo-build-<rand> --alias " + devcontainer.AhjoBaseAlias + "\n" +
 				"incus delete ahjo-build-<rand>",
 			Action: func(out io.Writer) error {
-				return devcontainer.BuildAhjoBase(out, true)
+				return devcontainer.BuildAhjoBase(ctx, out, true)
 			},
 			Post: "\nDone. To pick up the new image in an existing container, recreate it:\n" +
 				"  ahjo shell <alias> --update",

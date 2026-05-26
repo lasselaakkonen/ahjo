@@ -3,6 +3,7 @@
 package incus
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -16,22 +17,37 @@ import (
 )
 
 // execCommand is the single seam through which this package shells out to the
-// host `incus` binary. Production points it at exec.Command; tests swap in a
-// fake (see incus_test.go) to assert the constructed argv and inject canned
-// output/exit codes without a real incus install. Keeping it package-level
-// leaves the 50+ wrapper signatures untouched.
+// host `incus` binary. Production points it at exec.CommandContext; tests swap
+// in a fake (see incus_test.go) to assert the constructed argv and inject
+// canned output/exit codes without a real incus install. Keeping it
+// package-level leaves the wrapper signatures untouched.
+//
+// Every wrapper threads a context: the long-running ones (image build, feature
+// install, container start, WaitReady's poll) take a caller-supplied ctx so
+// Ctrl-C / SIGTERM can cancel them; the sub-second metadata queries pass
+// context.Background() since there is nothing worth canceling.
 //
 // The process-replacement path in ExecAttach (syscall.Exec) deliberately does
 // NOT route through here: it replaces the ahjo process image outright, so
 // there is nothing left to fake or observe.
-var execCommand = exec.Command
+var execCommand = exec.CommandContext
 
-// Exec runs a one-shot command in the container via `incus exec` and returns
-// its captured stdout. Stderr is forwarded so any error context surfaces to
-// the user without the caller having to plumb it through.
+// Exec is the context.Background() shorthand for ExecContext — used for the
+// many fast, uncancelable container probes (config reads, `test -f`, small
+// `cat`s) where plumbing a context through every caller buys nothing.
 func Exec(container string, argv ...string) ([]byte, error) {
+	return ExecContext(context.Background(), container, argv...)
+}
+
+// ExecContext runs a one-shot command in the container via `incus exec` and
+// returns its captured stdout. Stderr is forwarded so any error context
+// surfaces to the user without the caller having to plumb it through. Prefer
+// this over Exec on build/setup paths (Feature install steps, repo-add wiring)
+// so a canceled ctx tears down a long-running in-container command instead of
+// letting it hang.
+func ExecContext(ctx context.Context, container string, argv ...string) ([]byte, error) {
 	args := append([]string{"exec", container, "--"}, argv...)
-	cmd := execCommand("incus", args...)
+	cmd := execCommand(ctx, "incus", args...)
 	cmd.Stderr = os.Stderr
 	out, err := cmd.Output()
 	if err != nil {
@@ -46,7 +62,7 @@ func Exec(container string, argv ...string) ([]byte, error) {
 
 // ContainerExists returns true if a container with this exact name is registered.
 func ContainerExists(name string) (bool, error) {
-	cmd := execCommand("incus", "list", "--format=json", name)
+	cmd := execCommand(context.Background(), "incus", "list", "--format=json", name)
 	out, err := cmd.Output()
 	if err != nil {
 		return false, fmt.Errorf("incus list: %w", err)
@@ -69,7 +85,7 @@ func ContainerExists(name string) (bool, error) {
 // with prefix+"-". The "-" boundary keeps unrelated names that merely share a
 // fragment (e.g. "ahjo-foobar" when prefix is "ahjo-foo") out of the result.
 func ContainersWithPrefix(prefix string) ([]string, error) {
-	cmd := execCommand("incus", "list", "--format=json")
+	cmd := execCommand(context.Background(), "incus", "list", "--format=json")
 	out, err := cmd.Output()
 	if err != nil {
 		return nil, fmt.Errorf("incus list: %w", err)
@@ -97,7 +113,7 @@ func AddProxyDevice(container, device, listen, connect string) error {
 		"listen=" + listen,
 		"connect=" + connect,
 	}
-	cmd := execCommand("incus", args...)
+	cmd := execCommand(context.Background(), "incus", args...)
 	out, err := cmd.CombinedOutput()
 	if err == nil {
 		os.Stdout.Write(out)
@@ -155,7 +171,7 @@ func EnsureReverseProxy(container, device string, listenPort int, connectIP stri
 	}
 
 	args := reverseProxyArgs(container, device, listenPort, connectIP, connectPort)
-	out, err := execCommand("incus", args...).CombinedOutput()
+	out, err := execCommand(context.Background(), "incus", args...).CombinedOutput()
 	if err == nil {
 		return nil
 	}
@@ -201,7 +217,7 @@ func AddDiskDevice(container, device, source, path string, readonly bool) error 
 	if readonly {
 		args = append(args, "readonly=true")
 	}
-	cmd := execCommand("incus", args...)
+	cmd := execCommand(context.Background(), "incus", args...)
 	out, err := cmd.CombinedOutput()
 	if err == nil {
 		os.Stdout.Write(out)
@@ -231,7 +247,7 @@ func AddUnixDevice(container, device, devType, source string) error {
 		"config", "device", "add", container, device, devType,
 		"source=" + source,
 	}
-	cmd := execCommand("incus", args...)
+	cmd := execCommand(context.Background(), "incus", args...)
 	out, err := cmd.CombinedOutput()
 	if err == nil {
 		os.Stdout.Write(out)
@@ -250,7 +266,7 @@ func AddUnixDevice(container, device, devType, source string) error {
 
 // ImageAliasExists returns true if alias resolves to an Incus image.
 func ImageAliasExists(alias string) (bool, error) {
-	cmd := execCommand("incus", "image", "alias", "list", "--format=json")
+	cmd := execCommand(context.Background(), "incus", "image", "alias", "list", "--format=json")
 	out, err := cmd.Output()
 	if err != nil {
 		return false, fmt.Errorf("incus image alias list: %w", err)
@@ -273,7 +289,7 @@ func ImageAliasExists(alias string) (bool, error) {
 // alias didn't exist (so callers can use it as a "force-clean before rebuild"
 // step without first checking).
 func DeleteImageAlias(alias string) error {
-	cmd := execCommand("incus", "image", "delete", alias)
+	cmd := execCommand(context.Background(), "incus", "image", "delete", alias)
 	out, err := cmd.CombinedOutput()
 	if err == nil {
 		return nil
@@ -286,8 +302,8 @@ func DeleteImageAlias(alias string) error {
 }
 
 // CopyContainer clones src into dst as a stateless (non-snapshot) copy.
-func CopyContainer(src, dst string) error {
-	cmd := execCommand("incus", "copy", "--stateless", src, dst)
+func CopyContainer(ctx context.Context, src, dst string) error {
+	cmd := execCommand(ctx, "incus", "copy", "--stateless", src, dst)
 	out, err := cmd.CombinedOutput()
 	if err == nil {
 		os.Stdout.Write(out)
@@ -303,7 +319,7 @@ func CopyContainer(src, dst string) error {
 
 // ContainerDeleteForce deletes a container forcefully. Tolerant of "not found".
 func ContainerDeleteForce(name string) error {
-	cmd := execCommand("incus", "delete", "--force", name)
+	cmd := execCommand(context.Background(), "incus", "delete", "--force", name)
 	out, err := cmd.CombinedOutput()
 	if err == nil {
 		return nil
@@ -323,7 +339,7 @@ func ContainerDeleteForce(name string) error {
 // ConfigGet reads a single container-level config key via `incus config get`.
 // Returns the trimmed value; an unset key surfaces as the empty string.
 func ConfigGet(container, key string) (string, error) {
-	cmd := execCommand("incus", "config", "get", container, key)
+	cmd := execCommand(context.Background(), "incus", "config", "get", container, key)
 	out, err := cmd.Output()
 	if err != nil {
 		var ee *exec.ExitError
@@ -340,7 +356,7 @@ func ConfigGet(container, key string) (string, error) {
 // set`. Uses the `<key>=<value>` argv form — the older `<key> <value>`
 // form is deprecated and prints a warning per call on recent incus.
 func ConfigSet(container, key, value string) error {
-	cmd := execCommand("incus", "config", "set", container, key+"="+value)
+	cmd := execCommand(context.Background(), "incus", "config", "set", container, key+"="+value)
 	out, err := cmd.CombinedOutput()
 	if err == nil {
 		os.Stdout.Write(out)
@@ -358,7 +374,7 @@ func ConfigSet(container, key, value string) error {
 // "instance not found" so callers can use it as a "make sure it's stopped"
 // step without first checking.
 func Stop(container string) error {
-	cmd := execCommand("incus", "stop", container)
+	cmd := execCommand(context.Background(), "incus", "stop", container)
 	out, err := cmd.CombinedOutput()
 	if err == nil {
 		os.Stdout.Write(out)
@@ -383,7 +399,7 @@ func Stop(container string) error {
 // ConfigDeviceSet updates a single key on a named device in a container.
 func ConfigDeviceSet(container, device, key, value string) error {
 	arg := key + "=" + value
-	cmd := execCommand("incus", "config", "device", "set", container, device, arg)
+	cmd := execCommand(context.Background(), "incus", "config", "device", "set", container, device, arg)
 	out, err := cmd.CombinedOutput()
 	if err == nil {
 		os.Stdout.Write(out)
@@ -409,7 +425,7 @@ type ProxyDevice struct {
 // every device with `type: proxy`. Auto-expose uses this to diff against the
 // current set of listening ports inside the container.
 func ListProxyDevices(container string) ([]ProxyDevice, error) {
-	cmd := execCommand("incus", "config", "device", "show", container)
+	cmd := execCommand(context.Background(), "incus", "config", "device", "show", container)
 	cmd.Stderr = os.Stderr
 	out, err := cmd.Output()
 	if err != nil {
@@ -450,7 +466,7 @@ func ListProxyDevices(container string) ([]ProxyDevice, error) {
 
 // RemoveDevice removes a named device from a container. Tolerant of "not found".
 func RemoveDevice(container, device string) error {
-	cmd := execCommand("incus", "config", "device", "remove", container, device)
+	cmd := execCommand(context.Background(), "incus", "config", "device", "remove", container, device)
 	out, err := cmd.CombinedOutput()
 	if err == nil {
 		return nil
@@ -481,7 +497,7 @@ func RemoveDevice(container, device string) error {
 // security.uid / security.gid are deliberately NOT set — on this incus
 // version they silently prevent the proxy from creating the listen
 // socket. uid/gid/mode are sufficient.
-func EnsureSSHAgentProxy(container, hostSocket string) error {
+func EnsureSSHAgentProxy(ctx context.Context, container, hostSocket string) error {
 	for attempt := 0; attempt < 3; attempt++ {
 		_ = RemoveDevice(container, "ssh-agent")
 		args := []string{
@@ -491,7 +507,7 @@ func EnsureSSHAgentProxy(container, hostSocket string) error {
 			"bind=container",
 			"uid=1000", "gid=1000", "mode=0600",
 		}
-		cmd := execCommand("incus", args...)
+		cmd := execCommand(ctx, "incus", args...)
 		out, err := cmd.CombinedOutput()
 		if err != nil {
 			os.Stderr.Write(out)
@@ -506,23 +522,41 @@ func EnsureSSHAgentProxy(container, hostSocket string) error {
 		// finished namespace setup, and on a freshly-started container
 		// the first attempt commonly races and silently no-ops.
 		for i := 0; i < 20; i++ {
-			if probeErr := execCommand("incus", "exec", container, "--", "test", "-S", "/tmp/ssh-agent.sock").Run(); probeErr == nil {
+			if probeErr := execCommand(ctx, "incus", "exec", container, "--", "test", "-S", "/tmp/ssh-agent.sock").Run(); probeErr == nil {
 				return nil
 			}
-			time.Sleep(100 * time.Millisecond)
+			if err := sleepCtx(ctx, 100*time.Millisecond); err != nil {
+				return err
+			}
 		}
 		// Wait progressively longer between retries so the container's
 		// init has more time to settle on each go.
-		time.Sleep(time.Duration(attempt+1) * time.Second)
+		if err := sleepCtx(ctx, time.Duration(attempt+1)*time.Second); err != nil {
+			return err
+		}
 	}
 	return fmt.Errorf("ssh-agent proxy added but listen socket /tmp/ssh-agent.sock never appeared in %s", container)
+}
+
+// sleepCtx waits d or returns early with ctx.Err() if ctx is canceled first —
+// so the ssh-agent retry/poll loops bail promptly on Ctrl-C instead of
+// sleeping out their full backoff.
+func sleepCtx(ctx context.Context, d time.Duration) error {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-t.C:
+		return nil
+	}
 }
 
 // LaunchStopped runs `incus init <image> <name>`. The instance exists after
 // this returns but is not started, letting the caller apply per-container
 // config (raw.idmap, devices) before first boot.
-func LaunchStopped(image, name string) error {
-	cmd := execCommand("incus", "init", image, name)
+func LaunchStopped(ctx context.Context, image, name string) error {
+	cmd := execCommand(ctx, "incus", "init", image, name)
 	out, err := cmd.CombinedOutput()
 	if err == nil {
 		os.Stdout.Write(out)
@@ -539,8 +573,8 @@ func LaunchStopped(image, name string) error {
 // Launch runs `incus launch <image> <name>` (init + start in one). Used by
 // the image-build pipeline because the transient build container needs
 // systemd up so apt + systemctl in the Feature install.sh work.
-func Launch(image, name string) error {
-	cmd := execCommand("incus", "launch", image, name)
+func Launch(ctx context.Context, image, name string) error {
+	cmd := execCommand(ctx, "incus", "launch", image, name)
 	out, err := cmd.CombinedOutput()
 	if err == nil {
 		os.Stdout.Write(out)
@@ -557,8 +591,8 @@ func Launch(image, name string) error {
 // ImageCopyRemote pulls remote (e.g. "images:ubuntu/24.04") into the local
 // image store and tags it with alias. Tolerant of "already exists" so
 // callers can use it as a "ensure" step without first checking.
-func ImageCopyRemote(remote, alias string) error {
-	cmd := execCommand("incus", "image", "copy", remote, "local:", "--alias", alias)
+func ImageCopyRemote(ctx context.Context, remote, alias string) error {
+	cmd := execCommand(ctx, "incus", "image", "copy", remote, "local:", "--alias", alias)
 	out, err := cmd.CombinedOutput()
 	if err == nil {
 		os.Stdout.Write(out)
@@ -579,8 +613,8 @@ func ImageCopyRemote(remote, alias string) error {
 // FilePushRecursive copies a host directory into the container at
 // containerPath via `incus file push --recursive`. The container path is
 // passed as `<name>/<path>`, matching the form `incus file push` expects.
-func FilePushRecursive(name, hostDir, containerPath string) error {
-	cmd := execCommand("incus", "file", "push", "--recursive", hostDir, name+containerPath)
+func FilePushRecursive(ctx context.Context, name, hostDir, containerPath string) error {
+	cmd := execCommand(ctx, "incus", "file", "push", "--recursive", hostDir, name+containerPath)
 	out, err := cmd.CombinedOutput()
 	if err == nil {
 		return nil
@@ -597,11 +631,11 @@ func FilePushRecursive(name, hostDir, containerPath string) error {
 // exists it is force-deleted first — `incus publish` itself errors on a
 // pre-existing alias instead of replacing it. Used by the image-build
 // pipeline to write the freshly-baked ahjo-base over the previous one.
-func Publish(name, alias string) error {
+func Publish(ctx context.Context, name, alias string) error {
 	if err := DeleteImageAlias(alias); err != nil {
 		return fmt.Errorf("clear alias %s before publish: %w", alias, err)
 	}
-	cmd := execCommand("incus", "publish", name, "--alias", alias)
+	cmd := execCommand(ctx, "incus", "publish", name, "--alias", alias)
 	out, err := cmd.CombinedOutput()
 	if err == nil {
 		os.Stdout.Write(out)
@@ -617,7 +651,7 @@ func Publish(name, alias string) error {
 
 // Start runs `incus start <name>`. Tolerant of "already running".
 func Start(name string) error {
-	cmd := execCommand("incus", "start", name)
+	cmd := execCommand(context.Background(), "incus", "start", name)
 	out, err := cmd.CombinedOutput()
 	if err == nil {
 		os.Stdout.Write(out)
@@ -638,22 +672,29 @@ func Start(name string) error {
 // WaitReady polls `incus exec <name> -- echo ready` until it succeeds or
 // timeout elapses. Used after Start to wait out PID 1 / network bring-up
 // before issuing the first real exec.
-func WaitReady(name string, timeout time.Duration) error {
-	deadline := time.Now().Add(timeout)
+//
+// The poll is bound to ctx: a canceled parent (Ctrl-C / SIGTERM) aborts the
+// wait between probes instead of spinning out the full timeout, and each probe
+// exec is itself ctx-scoped so a hung `incus exec` can't outlive the wait.
+func WaitReady(ctx context.Context, name string, timeout time.Duration) error {
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
 	var lastErr error
-	for time.Now().Before(deadline) {
-		cmd := execCommand("incus", "exec", name, "--", "echo", "ready")
-		if err := cmd.Run(); err == nil {
+	for {
+		if err := execCommand(ctx, "incus", "exec", name, "--", "echo", "ready").Run(); err == nil {
 			return nil
 		} else {
 			lastErr = err
 		}
-		time.Sleep(250 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			// Reached only after at least one failed probe, so lastErr is
+			// set. DeadlineExceeded => timeout elapsed; Canceled => the
+			// parent (Ctrl-C) bailed.
+			return fmt.Errorf("container %s not ready after %s: %w", name, timeout, lastErr)
+		case <-time.After(250 * time.Millisecond):
+		}
 	}
-	if lastErr != nil {
-		return fmt.Errorf("container %s not ready after %s: %w", name, timeout, lastErr)
-	}
-	return fmt.Errorf("container %s not ready after %s", name, timeout)
 }
 
 // envArgs renders an env map into stable `--env KEY=VAL` argv pairs (sorted
@@ -675,16 +716,22 @@ func envArgs(env map[string]string) []string {
 	return args
 }
 
-// ExecAs runs argv inside name as the given uid, with optional env + cwd,
-// inheriting the caller's stdio. Non-interactive: stdin is the parent's,
-// no force-interactive flag. Use this for one-shot setup commands where
-// the child is expected to exit on its own.
+// ExecAs is the context.Background() shorthand for ExecAsContext.
+func ExecAs(name string, uid int, env map[string]string, cwd string, argv ...string) error {
+	return ExecAsContext(context.Background(), name, uid, env, cwd, argv...)
+}
+
+// ExecAsContext runs argv inside name as the given uid, with optional env +
+// cwd, inheriting the caller's stdio. Non-interactive: stdin is the parent's,
+// no force-interactive flag. Use this for one-shot setup commands where the
+// child is expected to exit on its own; pass a cancelable ctx on build /
+// lifecycle / repo-add paths so Ctrl-C unwinds the running command.
 //
 // HOME/USER/LOGNAME/SHELL come from the container's environment.* config
 // keys (set on container creation by wireBranchContainer), the same way
 // Docker dev containers get them from the image's ENV layer. No per-call
 // env seeding here.
-func ExecAs(name string, uid int, env map[string]string, cwd string, argv ...string) error {
+func ExecAsContext(ctx context.Context, name string, uid int, env map[string]string, cwd string, argv ...string) error {
 	args := []string{"exec", name, "--user", strconv.Itoa(uid)}
 	if cwd != "" {
 		args = append(args, "--cwd", cwd)
@@ -692,7 +739,7 @@ func ExecAs(name string, uid int, env map[string]string, cwd string, argv ...str
 	args = append(args, envArgs(env)...)
 	args = append(args, "--")
 	args = append(args, argv...)
-	cmd := execCommand("incus", args...)
+	cmd := execCommand(ctx, "incus", args...)
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
@@ -749,7 +796,7 @@ func ExecAttachWait(name string, uid int, env map[string]string, cwd string, arg
 	cliArgs = append(cliArgs, envArgs(env)...)
 	cliArgs = append(cliArgs, "--")
 	cliArgs = append(cliArgs, argv...)
-	cmd := execCommand("incus", cliArgs...)
+	cmd := execCommand(context.Background(), "incus", cliArgs...)
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
@@ -774,7 +821,10 @@ func FilePush(name, hostPath, containerPath string) (pushed bool, err error) {
 		}
 		return false, statErr
 	}
-	cmd := execCommand("incus", "file", "push", hostPath, name+containerPath)
+	// A single small config file — fast, fire-and-forget; no context needed
+	// (contrast FilePushRecursive, which streams whole Feature dirs on the
+	// build path and is cancelable).
+	cmd := execCommand(context.Background(), "incus", "file", "push", hostPath, name+containerPath)
 	out, err := cmd.CombinedOutput()
 	if err == nil {
 		return true, nil
@@ -792,7 +842,7 @@ func FilePush(name, hostPath, containerPath string) (pushed bool, err error) {
 // the TUI to show which branch is currently mirroring, and by destroy paths
 // to detect a mirror that needs `mirror off` first.
 func HasDevice(container, device string) (bool, error) {
-	cmd := execCommand("incus", "config", "device", "list", container)
+	cmd := execCommand(context.Background(), "incus", "config", "device", "list", container)
 	out, err := cmd.Output()
 	if err != nil {
 		var ee *exec.ExitError
@@ -816,7 +866,7 @@ func HasDevice(container, device string) (bool, error) {
 // ContainerStatus returns the lifecycle status string from `incus list`
 // (e.g. "Running", "Stopped"). Returns ("", nil) for unknown / not-listed.
 func ContainerStatus(name string) (string, error) {
-	cmd := execCommand("incus", "list", "--format=json", name)
+	cmd := execCommand(context.Background(), "incus", "list", "--format=json", name)
 	out, err := cmd.Output()
 	if err != nil {
 		return "", fmt.Errorf("incus list %s: %w", name, err)
@@ -839,7 +889,7 @@ func ContainerStatus(name string) (string, error) {
 // SystemctlDaemonReload runs `systemctl daemon-reload` inside container.
 // Idempotent and cheap.
 func SystemctlDaemonReload(container string) error {
-	cmd := execCommand("incus", "exec", container, "--", "systemctl", "daemon-reload")
+	cmd := execCommand(context.Background(), "incus", "exec", container, "--", "systemctl", "daemon-reload")
 	out, err := cmd.CombinedOutput()
 	if err == nil {
 		return nil
@@ -850,7 +900,7 @@ func SystemctlDaemonReload(container string) error {
 
 // SystemctlEnableNow runs `systemctl enable --now <unit>` inside container.
 func SystemctlEnableNow(container, unit string) error {
-	cmd := execCommand("incus", "exec", container, "--", "systemctl", "enable", "--now", unit)
+	cmd := execCommand(context.Background(), "incus", "exec", container, "--", "systemctl", "enable", "--now", unit)
 	out, err := cmd.CombinedOutput()
 	if err == nil {
 		os.Stdout.Write(out)
@@ -863,7 +913,7 @@ func SystemctlEnableNow(container, unit string) error {
 // SystemctlDisableNow runs `systemctl disable --now <unit>` inside container.
 // Tolerates "not loaded" (unit was never installed in this container).
 func SystemctlDisableNow(container, unit string) error {
-	cmd := execCommand("incus", "exec", container, "--", "systemctl", "disable", "--now", unit)
+	cmd := execCommand(context.Background(), "incus", "exec", container, "--", "systemctl", "disable", "--now", unit)
 	out, err := cmd.CombinedOutput()
 	if err == nil {
 		return nil
@@ -879,7 +929,7 @@ func SystemctlDisableNow(container, unit string) error {
 // SystemctlStop runs `systemctl stop <unit>` inside container. Tolerates
 // "not loaded" (idempotent stop).
 func SystemctlStop(container, unit string) error {
-	cmd := execCommand("incus", "exec", container, "--", "systemctl", "stop", unit)
+	cmd := execCommand(context.Background(), "incus", "exec", container, "--", "systemctl", "stop", unit)
 	out, err := cmd.CombinedOutput()
 	if err == nil {
 		return nil
@@ -896,7 +946,7 @@ func SystemctlStop(container, unit string) error {
 // container. systemctl's documented exits: 0 = active, 3 = inactive, 4 =
 // no-such-unit, others = error. We treat 3 and 4 as benign "not active."
 func SystemctlIsActive(container, unit string) (bool, error) {
-	cmd := execCommand("incus", "exec", container, "--", "systemctl", "is-active", "--quiet", unit)
+	cmd := execCommand(context.Background(), "incus", "exec", container, "--", "systemctl", "is-active", "--quiet", unit)
 	if err := cmd.Run(); err == nil {
 		return true, nil
 	} else {
@@ -914,7 +964,7 @@ func SystemctlIsActive(container, unit string) (bool, error) {
 
 // StoragePoolDriver returns the driver of the default storage pool, e.g. "btrfs".
 func StoragePoolDriver() (string, error) {
-	cmd := execCommand("incus", "storage", "list", "--format=json")
+	cmd := execCommand(context.Background(), "incus", "storage", "list", "--format=json")
 	out, err := cmd.Output()
 	if err != nil {
 		return "", fmt.Errorf("incus storage list: %w", err)

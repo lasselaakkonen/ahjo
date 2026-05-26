@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"time"
@@ -38,8 +39,8 @@ work (starting a stopped container for the check, after prompting). If /repo
 is dirty — or the user declines the start prompt — the command refuses to
 proceed; pass --force to skip the check and recreate anyway.`,
 		Args: cobra.ExactArgs(1),
-		RunE: func(_ *cobra.Command, args []string) error {
-			return runShell(args[0], update, force)
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runShell(cmd.Context(), args[0], update, force)
 		},
 	}
 	cmd.Flags().BoolVar(&update, "update", false, "destroy the existing container before attaching so it picks up the current ahjo-base image")
@@ -47,8 +48,8 @@ proceed; pass --force to skip the check and recreate anyway.`,
 	return cmd
 }
 
-func runShell(alias string, update, force bool) error {
-	br, containerName, err := prepareBranchContainer(alias, update, force, "")
+func runShell(ctx context.Context, alias string, update, force bool) error {
+	br, containerName, err := prepareBranchContainer(ctx, alias, update, force, "")
 	if err != nil {
 		return err
 	}
@@ -60,7 +61,7 @@ func runShell(alias string, update, force bool) error {
 	if err != nil {
 		fmt.Fprintf(cobraOutErr(), "warn: collect forward env: %v\n", err)
 	}
-	if err := runPostAttach(containerName, dcConf, env); err != nil {
+	if err := runPostAttach(ctx, containerName, dcConf, env); err != nil {
 		return err
 	}
 	// Refresh the ahjo-state snapshots so a claude launched from this shell
@@ -87,8 +88,8 @@ func runShell(alias string, update, force bool) error {
 // host path / "bare"). Pass "" to fall back to the standard resolution
 // (in-repo ahjocontainer.json or interactive picker on a TTY). Ignored
 // when the repo or branch is already registered.
-func prepareBranchContainer(alias string, update, force bool, containerConfig string) (*registry.Branch, string, error) {
-	if _, err := EnsureBranch(alias, containerConfig); err != nil {
+func prepareBranchContainer(ctx context.Context, alias string, update, force bool, containerConfig string) (*registry.Branch, string, error) {
+	if _, err := EnsureBranch(ctx, alias, containerConfig); err != nil {
 		return nil, "", err
 	}
 	reg, err := registry.Load()
@@ -111,7 +112,7 @@ func prepareBranchContainer(alias string, update, force bool, containerConfig st
 	}
 	if update {
 		if exists {
-			if err := ensureRepoCleanOrForce(br, "recreate", force); err != nil {
+			if err := ensureRepoCleanOrForce(ctx, br, "recreate", force); err != nil {
 				return nil, "", err
 			}
 			if err := stopAndRemoveMirror(containerName); err != nil {
@@ -135,7 +136,7 @@ func prepareBranchContainer(alias string, update, force bool, containerConfig st
 			return nil, "", fmt.Errorf("repo %q has no base container; recreate with `ahjo rm %s && ahjo repo add`", br.Repo, alias)
 		}
 		fmt.Printf("container %q not found; recreating from base %s...\n", containerName, repo.BaseContainerName)
-		if err := cloneFromBase(repo, br); err != nil {
+		if err := cloneFromBase(ctx, repo, br); err != nil {
 			return nil, "", err
 		}
 	}
@@ -143,7 +144,7 @@ func prepareBranchContainer(alias string, update, force bool, containerConfig st
 	if err := incus.Start(containerName); err != nil {
 		return nil, "", err
 	}
-	if err := incus.WaitReady(containerName, 30*time.Second); err != nil {
+	if err := incus.WaitReady(ctx, containerName, 30*time.Second); err != nil {
 		return nil, "", err
 	}
 	// Refresh ssh-agent post-start: Lima's host SSH_AUTH_SOCK path changes
@@ -156,7 +157,7 @@ func prepareBranchContainer(alias string, update, force bool, containerConfig st
 	tok, hasToken, _ := repoToken(br.Repo)
 	hasToken = hasToken && tok != ""
 	if shouldForwardAgent(repo, hasToken, cfg) {
-		if err := attachSSHAgent(containerName); err != nil {
+		if err := attachSSHAgent(ctx, containerName); err != nil {
 			fmt.Fprintf(cobraOutErr(), "warn: ssh-agent proxy: %v\n", err)
 		}
 	} else if err := incus.RemoveDevice(containerName, "ssh-agent"); err != nil {
@@ -188,7 +189,7 @@ func prepareBranchContainer(alias string, update, force bool, containerConfig st
 	} else if dcConf != nil {
 		env, _ := branchEnv(containerName, dcConf)
 		if err := ahjocontainer.RunLifecycle(
-			containerName, ahjocontainer.StagePostStart, dcConf.PostStartCommand,
+			ctx, containerName, ahjocontainer.StagePostStart, dcConf.PostStartCommand,
 			1000, env, paths.RepoMountPath, cobraOut(),
 		); err != nil {
 			return nil, "", err
@@ -238,12 +239,12 @@ func loadDevcontainerSafe(container string) (*ahjocontainer.Config, error) {
 // the user's shell. Sequential with the rest of the prep flow; failure
 // aborts the attach so the user sees the error rather than a silent
 // half-launch.
-func runPostAttach(container string, cfg *ahjocontainer.Config, env map[string]string) error {
+func runPostAttach(ctx context.Context, container string, cfg *ahjocontainer.Config, env map[string]string) error {
 	if cfg == nil {
 		return nil
 	}
 	return ahjocontainer.RunLifecycle(
-		container, ahjocontainer.StagePostAttach, cfg.PostAttachCommand,
+		ctx, container, ahjocontainer.StagePostAttach, cfg.PostAttachCommand,
 		1000, env, paths.RepoMountPath, cobraOut(),
 	)
 }

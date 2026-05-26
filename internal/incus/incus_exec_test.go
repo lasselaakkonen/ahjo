@@ -1,12 +1,14 @@
 package incus
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
 	"reflect"
 	"strconv"
 	"testing"
+	"time"
 )
 
 // This file exercises the execCommand seam: every wrapper's argv construction,
@@ -30,14 +32,14 @@ type fakeExec struct {
 	Calls [][]string // each entry is {"incus", arg, ...}
 }
 
-func (fe *fakeExec) command(name string, args ...string) *exec.Cmd {
+func (fe *fakeExec) command(ctx context.Context, name string, args ...string) *exec.Cmd {
 	fe.Calls = append(fe.Calls, append([]string{name}, args...))
 	var r fakeRun
 	if fe.n < len(fe.runs) {
 		r = fe.runs[fe.n]
 	}
 	fe.n++
-	return helperCommand(r)
+	return helperCommand(ctx, r)
 }
 
 // withFakeExec swaps execCommand for a recording fake and restores the real
@@ -54,8 +56,8 @@ func withFakeExec(t *testing.T, runs ...fakeRun) *fakeExec {
 // helperCommand builds a *exec.Cmd that re-runs this test binary as
 // TestHelperProcess, which echoes the canned stdout/stderr and exits with the
 // canned code — standing in for a real `incus` invocation.
-func helperCommand(r fakeRun) *exec.Cmd {
-	cmd := exec.Command(os.Args[0], "-test.run=TestHelperProcess", "--")
+func helperCommand(ctx context.Context, r fakeRun) *exec.Cmd {
+	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=TestHelperProcess", "--")
 	cmd.Env = append(os.Environ(),
 		"GO_WANT_HELPER_PROCESS=1",
 		"HELPER_STDOUT="+r.stdout,
@@ -142,17 +144,17 @@ func TestArgvConstruction(t *testing.T) {
 		},
 		{
 			name: "LaunchStopped",
-			call: func() { _ = LaunchStopped("img", "c1") },
+			call: func() { _ = LaunchStopped(context.Background(), "img", "c1") },
 			want: []string{"incus", "init", "img", "c1"},
 		},
 		{
 			name: "Launch",
-			call: func() { _ = Launch("img", "c1") },
+			call: func() { _ = Launch(context.Background(), "img", "c1") },
 			want: []string{"incus", "launch", "img", "c1"},
 		},
 		{
 			name: "CopyContainer",
-			call: func() { _ = CopyContainer("src", "dst") },
+			call: func() { _ = CopyContainer(context.Background(), "src", "dst") },
 			want: []string{"incus", "copy", "--stateless", "src", "dst"},
 		},
 		{
@@ -167,12 +169,12 @@ func TestArgvConstruction(t *testing.T) {
 		},
 		{
 			name: "ImageCopyRemote",
-			call: func() { _ = ImageCopyRemote("images:ubuntu/24.04", "ahjo-base") },
+			call: func() { _ = ImageCopyRemote(context.Background(), "images:ubuntu/24.04", "ahjo-base") },
 			want: []string{"incus", "image", "copy", "images:ubuntu/24.04", "local:", "--alias", "ahjo-base"},
 		},
 		{
 			name: "FilePushRecursive",
-			call: func() { _ = FilePushRecursive("c1", "/host/dir", "/etc/x") },
+			call: func() { _ = FilePushRecursive(context.Background(), "c1", "/host/dir", "/etc/x") },
 			want: []string{"incus", "file", "push", "--recursive", "/host/dir", "c1/etc/x"},
 		},
 		{
@@ -231,7 +233,7 @@ func TestArgvConstruction(t *testing.T) {
 // before publishing, because `incus publish` errors on a pre-existing alias.
 func TestPublishArgv(t *testing.T) {
 	fe := withFakeExec(t, fakeRun{}, fakeRun{})
-	if err := Publish("c1", "ahjo-base"); err != nil {
+	if err := Publish(context.Background(), "c1", "ahjo-base"); err != nil {
 		t.Fatalf("Publish: %v", err)
 	}
 	want := [][]string{
@@ -386,7 +388,7 @@ func TestToleranceBranches(t *testing.T) {
 		{"ContainerDeleteForce tolerates not-found", fakeRun{stderr: "Error: Instance not found", exit: 1}, func() error { return ContainerDeleteForce("c1") }},
 		{"AddProxyDevice tolerates already-exists", fakeRun{stderr: "Error: device already exists", exit: 1}, func() error { return AddProxyDevice("c1", "d", "l", "c") }},
 		{"RemoveDevice tolerates not-found", fakeRun{stderr: "Error: device doesn't exist", exit: 1}, func() error { return RemoveDevice("c1", "d") }},
-		{"ImageCopyRemote tolerates already-exists", fakeRun{stderr: "Error: Alias already exists", exit: 1}, func() error { return ImageCopyRemote("r", "a") }},
+		{"ImageCopyRemote tolerates already-exists", fakeRun{stderr: "Error: Alias already exists", exit: 1}, func() error { return ImageCopyRemote(context.Background(), "r", "a") }},
 		{"SystemctlDisableNow tolerates not-loaded", fakeRun{stdout: "Failed: Unit foo.service not loaded.", exit: 1}, func() error { return SystemctlDisableNow("c1", "foo.service") }},
 		{"SystemctlStop tolerates not-loaded", fakeRun{stdout: "Failed: Unit foo.service not loaded.", exit: 1}, func() error { return SystemctlStop("c1", "foo.service") }},
 	}
@@ -407,6 +409,22 @@ func TestErrorSurfacedOnRealFailure(t *testing.T) {
 	err := AddProxyDevice("c1", "d", "l", "c")
 	if err == nil {
 		t.Fatal("expected error, got nil")
+	}
+}
+
+// TestWaitReadyRespectsCancel: a probe that never succeeds would spin WaitReady
+// to its full timeout, but an already-canceled parent ctx must abort it
+// promptly — the value the context threading buys.
+func TestWaitReadyRespectsCancel(t *testing.T) {
+	withFakeExec(t, fakeRun{exit: 1}, fakeRun{exit: 1}, fakeRun{exit: 1})
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	start := time.Now()
+	if err := WaitReady(ctx, "c1", 30*time.Second); err == nil {
+		t.Fatal("expected error from canceled WaitReady, got nil")
+	}
+	if elapsed := time.Since(start); elapsed > 5*time.Second {
+		t.Fatalf("WaitReady ignored cancellation: took %s (want prompt return)", elapsed)
 	}
 }
 

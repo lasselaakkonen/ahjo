@@ -1,6 +1,7 @@
 package ahjocontainer
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -37,14 +38,16 @@ const (
 //     no real-world Feature has needed parallelism.
 //
 // raw of zero length / null is a no-op (the field wasn't set).
-func RunLifecycle(container string, stage LifecycleStage, raw json.RawMessage, uid int, env map[string]string, cwd string, out io.Writer) error {
+func RunLifecycle(ctx context.Context, container string, stage LifecycleStage, raw json.RawMessage, uid int, env map[string]string, cwd string, out io.Writer) error {
 	steps, err := decodeLifecycle(raw)
 	if err != nil {
 		return fmt.Errorf("%s: %w", stage, err)
 	}
 	for _, s := range steps {
 		fmt.Fprintf(out, "→ %s%s: %s\n", stage, s.label, s.display())
-		if err := incus.ExecAs(container, uid, env, cwd, s.argv...); err != nil {
+		// ExecAsContext (not ExecAs): lifecycle commands are user-defined and
+		// can be long (npm install, builds), so a canceled ctx unwinds them.
+		if err := incus.ExecAsContext(ctx, container, uid, env, cwd, s.argv...); err != nil {
 			return fmt.Errorf("%s%s: %w", stage, s.label, err)
 		}
 	}

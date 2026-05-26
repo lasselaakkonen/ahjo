@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -62,12 +63,12 @@ embedded ahjo-runtime Feature — it pushes the new binary into the VM (on
 macOS) and rebuilds the ahjo-base image without re-running the rest of
 the init pipeline.`,
 		Args: cobra.NoArgs,
-		RunE: func(_ *cobra.Command, _ []string) error {
+		RunE: func(cmd *cobra.Command, _ []string) error {
 			if !insideLinuxVM() {
 				return fmt.Errorf("the in-VM phase of `ahjo init` only runs on Linux; on macOS the same `ahjo init` first brings up the Lima VM and tells you to enter it before re-running")
 			}
 			r := initflow.Runner{Yes: yes, In: os.Stdin, Out: os.Stdout, Err: os.Stderr}
-			if err := r.Execute(vmInitSteps(yes)); err != nil {
+			if err := r.Execute(vmInitSteps(cmd.Context(), yes)); err != nil {
 				return err
 			}
 			// If reExecUnderSg fired during this run, the invoking shell is
@@ -99,7 +100,7 @@ func insideLinuxVM() bool {
 	return runtimeIsLinux()
 }
 
-func vmInitSteps(yes bool) []initflow.Step {
+func vmInitSteps(ctx context.Context, yes bool) []initflow.Step {
 	username := currentUsername()
 	steps := []initflow.Step{
 		{
@@ -230,7 +231,7 @@ Signed-By: /etc/apt/keyrings/zabbly.asc
 				"incus publish ahjo-build-<rand> --alias " + devcontainer.AhjoBaseAlias + "\n" +
 				"incus delete ahjo-build-<rand>",
 			Action: func(out io.Writer) error {
-				return devcontainer.BuildAhjoBase(out, false)
+				return devcontainer.BuildAhjoBase(ctx, out, false)
 			},
 		},
 		{
