@@ -334,183 +334,14 @@ func repoAddSetup(ctx context.Context, slug, primary string, aliases []string, s
 		return fmt.Errorf("seed git identity: %w", err)
 	}
 
-	// Per-repo GitHub token prompt. Non-fatal: skipped on --yes / non-TTY /
-	// already-set / empty paste. See `ahjo repo set-token` to add later.
-	// Resolved before the clone URL is chosen so an inferred GitHub alias can
-	// clone over HTTPS (and use the PAT) instead of falling onto the SSH key.
-	if err := promptRepoGHToken(slug, primary, yes); err != nil {
-		return err
-	}
-	// repoToken sees this prompt's paste, the Mac shim's pre-relay Keychain
-	// inject, a global `ahjo env set GH_TOKEN`, or a prior repo-set-token run.
-	tok, hasToken, err := repoToken(slug)
+	url, defaultBase, err := cloneRepo(ctx, containerName, slug, primary, src, defaultBase, yes)
 	if err != nil {
 		return err
 	}
-	hasToken = hasToken && tok != ""
-	if hasToken {
-		// Promote the token onto the container as environment.GH_TOKEN/
-		// GITHUB_TOKEN and configure git's HTTPS credential helper. `incus
-		// copy` carries environment.* and the in-$HOME .gitconfig into every
-		// branch container, so this runs once.
-		if err := installRepoToken(func(k, v string) error { return incus.ConfigSet(containerName, k, v) }, tok); err != nil {
-			return fmt.Errorf("forward GH_TOKEN to container: %w", err)
-		}
-		if err := incus.ExecAs(
-			containerName, 1000,
-			map[string]string{"HOME": "/home/ubuntu", "GH_TOKEN": tok},
-			"/home/ubuntu",
-			"gh", "auth", "setup-git",
-		); err != nil {
-			return fmt.Errorf("gh auth setup-git: %w", err)
-		}
-	}
 
-	// Pick the clone URL now that we know whether a PAT is in hand. An
-	// explicit URL is used verbatim; an inferred GitHub alias clones over
-	// HTTPS when a token exists (so the PAT authenticates the clone and every
-	// later fetch/push) and otherwise keeps the SSH-then-HTTPS probe. The
-	// chosen URL is recorded as the repo's remote (registry row below).
-	url := src.cloneURL(hasToken)
-
-	// An inferred GitHub alias with no PAT falls onto SSH (when reachable).
-	// That's a deliberate option for SSH-key users, but it's silent — surface
-	// it so the dead-weight-PAT / agent-only-push footgun isn't a surprise.
-	// Explicit user-typed git@ URLs (explicitURL != "") are intentional and
-	// don't warn; the HTTPS-public fallback (no git@ prefix) doesn't either.
-	if src.explicitURL == "" && !hasToken && strings.HasPrefix(url, "git@") {
-		fmt.Fprintf(cobraOutErr(), "warn: cloning %s over SSH using the host ssh-agent "+
-			"(no PAT set). git push/fetch will rely on the forwarded agent and `gh` "+
-			"won't work. Set a repo-scoped PAT with `ahjo repo set-token %s`.\n", url, primary)
-	}
-
-	// /repo is at the container root, where uid 1000 can't `mkdir`. Create
-	// it as ubuntu:ubuntu first so `git clone` runs unprivileged.
-	if err := incus.ExecAs(containerName, 0, nil, "/", "install", "-d", "-m", "0755", "-o", "ubuntu", "-g", "ubuntu", paths.RepoMountPath); err != nil {
-		return fmt.Errorf("create %s: %w", paths.RepoMountPath, err)
-	}
-	fmt.Printf("→ git clone %s %s (in container as ubuntu)\n", url, paths.RepoMountPath)
-	// GIT_TERMINAL_PROMPT=0 turns a missing-credentials misconfig into a
-	// fast clone failure instead of a hung `Username:` prompt the user
-	// can't always see (e.g., when ahjo is invoked from a TUI surface).
-	if err := incus.ExecAs(containerName, 1000, map[string]string{"GIT_TERMINAL_PROMPT": "0"}, "/", "git", "clone", url, paths.RepoMountPath); err != nil {
-		return wrapCloneErr(err)
-	}
-
-	// A plain `git clone` checks out the remote's HEAD branch. When the user
-	// passes an explicit --default-base that differs, the working tree is on
-	// the wrong branch: the clone fetched origin/<default-base> as a
-	// remote-tracking ref, but never checked it out. Detection (empty
-	// defaultBase) reads that same HEAD, so the tree already matches and the
-	// checkout below is a no-op; an explicit override must be checked out so
-	// container-config detection, Features, warm-install, the lifecycle
-	// hooks, and `ahjo shell <repo>@<default-base>` all operate on the
-	// recorded base branch. (Feature containers re-checkout origin/<base> on
-	// their own — see cli/create.go — but the base container is itself the
-	// default-branch container.)
-	explicitBase := defaultBase != ""
-	if defaultBase == "" {
-		defaultBase, err = detectContainerDefaultBranch(containerName)
-		if err != nil {
-			return fmt.Errorf("detect default branch (pass --default-base to override): %w", err)
-		}
-	}
-	if explicitBase {
-		fmt.Printf("→ git checkout -B %s origin/%s (in container)\n", defaultBase, defaultBase)
-		if err := incus.ExecAs(containerName, 1000, nil, paths.RepoMountPath, "git", "checkout", "-B", defaultBase, "origin/"+defaultBase); err != nil {
-			return fmt.Errorf("checkout --default-base %q (does the branch exist on the remote?): %w", defaultBase, err)
-		}
-	}
-
-	// Refuse to set up against a legacy .ahjoconfig — the schema is
-	// retired entirely. Users self-migrate per ahjo's
-	// no-runtime-migration rule.
-	if has, err := ahjocontainer.HasLegacyAhjoconfig(containerName); err != nil {
-		return fmt.Errorf("probe legacy .ahjoconfig: %w", err)
-	} else if has {
-		return fmt.Errorf("/repo/.ahjoconfig is no longer supported. " +
-			"Migrate it to .ahjo/ahjocontainer.json: " +
-			"`run` → `postCreateCommand`, `forward_env` / `auto_expose` → `customizations.ahjo.*`")
-	}
-
-	// Container config resolution. Order, first match wins:
-	//   1. Explicit --container-config — host path, repo-local
-	//      .ahjo/<name>.json, bundled stack, or "bare". Overrides the
-	//      in-repo canonical file by design (so a contributor can spin
-	//      up a CI-flavored container against a repo whose committed
-	//      ahjocontainer.json targets full local dev).
-	//   2. In-repo .ahjo/ahjocontainer.json (the canonical file).
-	//   3. Interactive picker on a TTY.
-	//   4. Bare (non-TTY fallback).
-	// Docker-flavored fields are rejected by the parser itself, so by
-	// the time we have a *Config it's already valid for ahjo.
-	// dcConfs is a slice so detection can apply multiple stacks to a
-	// monorepo (node + go + docker etc.). The single-config paths
-	// (committed file / --container-config) wrap into a 1-element
-	// slice; the apply-in-series block below treats both shapes
-	// uniformly.
-	var dcConfs []*ahjocontainer.Config
-	if containerConfig != "" {
-		cfg, _, err := resolveContainerConfig(containerName, containerConfig)
-		if err != nil {
-			return err
-		}
-		if cfg != nil {
-			dcConfs = []*ahjocontainer.Config{cfg}
-		}
-	} else {
-		cfg, found, err := ahjocontainer.LoadFromContainer(containerName)
-		if err != nil {
-			return err
-		}
-		if found {
-			dcConfs = []*ahjocontainer.Config{cfg}
-		} else {
-			// Detection-driven suggestion: a lockfile, Dockerfile, or
-			// compose manifest in /repo is the clearest hint about
-			// which bundled stack(s) and Features the user wants.
-			// Prompt per match before falling through to the generic
-			// picker so the obvious case is one keypress per row, and
-			// so `bare` (picked after declining everything) genuinely
-			// means bare — runWarmInstall is gated on dcConfs below.
-			matches, err := detectStacks(containerName)
-			if err != nil {
-				return err
-			}
-			autoYes := yes || !isTerminal(os.Stdin)
-			accepted, err := promptStackDetections(matches, os.Stdin, cobraOut(), autoYes)
-			if err != nil {
-				return err
-			}
-			for _, m := range accepted {
-				picked, err := resolveDetectMatch(m)
-				if err != nil {
-					return err
-				}
-				fmt.Printf("→ applying %s\n", picked.Source)
-				dcConfs = append(dcConfs, picked)
-			}
-			if len(dcConfs) == 0 {
-				chosen, err := promptContainerConfig(containerName, os.Stdin, cobraOut())
-				if err != nil {
-					return err
-				}
-				if chosen != "" && chosen != bareConfigName {
-					picked, _, err := resolveContainerConfig(containerName, chosen)
-					if err != nil {
-						return err
-					}
-					if picked != nil {
-						dcConfs = []*ahjocontainer.Config{picked}
-					}
-				}
-			}
-		}
-	}
-	for _, c := range dcConfs {
-		if msg := remoteUserWarning(c); msg != "" {
-			fmt.Fprintln(cobraOutErr(), msg)
-		}
+	dcConfs, err := repoAddResolveConfigs(containerName, containerConfig, yes)
+	if err != nil {
+		return err
 	}
 
 	// Apply containerEnv via Incus's `environment.<KEY>` config keys so
@@ -624,6 +455,208 @@ func repoAddSetup(ctx context.Context, slug, primary string, aliases []string, s
 		return err
 	}
 
+	return commitRegistry(slug, primary, aliases, url, defaultBase, containerName, port, consent)
+}
+
+// cloneRepo is the token-resolution + clone phase of repoAddSetup. It runs
+// the per-repo GitHub-token prompt, forwards the token onto the container and
+// configures gh's credential helper when one is in hand, picks the clone URL
+// (HTTPS-with-PAT vs SSH-then-HTTPS), clones /repo as the ubuntu user, and
+// checks out an explicit --default-base. Returns the recorded remote URL and
+// the resolved default branch (detected from the clone's HEAD when defaultBase
+// was empty).
+//
+// The git clone + checkout run via ExecAsContext so a canceled ctx (Ctrl-C on
+// a slow clone — the longest part of repo add) tears them down.
+func cloneRepo(ctx context.Context, containerName, slug, primary string, src repoSource, defaultBase string, yes bool) (url, resolvedBase string, err error) {
+	// Per-repo GitHub token prompt. Non-fatal: skipped on --yes / non-TTY /
+	// already-set / empty paste. See `ahjo repo set-token` to add later.
+	// Resolved before the clone URL is chosen so an inferred GitHub alias can
+	// clone over HTTPS (and use the PAT) instead of falling onto the SSH key.
+	if err := promptRepoGHToken(slug, primary, yes); err != nil {
+		return "", "", err
+	}
+	// repoToken sees this prompt's paste, the Mac shim's pre-relay Keychain
+	// inject, a global `ahjo env set GH_TOKEN`, or a prior repo-set-token run.
+	tok, hasToken, err := repoToken(slug)
+	if err != nil {
+		return "", "", err
+	}
+	hasToken = hasToken && tok != ""
+	if hasToken {
+		// Promote the token onto the container as environment.GH_TOKEN/
+		// GITHUB_TOKEN and configure git's HTTPS credential helper. `incus
+		// copy` carries environment.* and the in-$HOME .gitconfig into every
+		// branch container, so this runs once.
+		if err := installRepoToken(func(k, v string) error { return incus.ConfigSet(containerName, k, v) }, tok); err != nil {
+			return "", "", fmt.Errorf("forward GH_TOKEN to container: %w", err)
+		}
+		if err := incus.ExecAs(
+			containerName, 1000,
+			map[string]string{"HOME": "/home/ubuntu", "GH_TOKEN": tok},
+			"/home/ubuntu",
+			"gh", "auth", "setup-git",
+		); err != nil {
+			return "", "", fmt.Errorf("gh auth setup-git: %w", err)
+		}
+	}
+
+	// Pick the clone URL now that we know whether a PAT is in hand. An
+	// explicit URL is used verbatim; an inferred GitHub alias clones over
+	// HTTPS when a token exists (so the PAT authenticates the clone and every
+	// later fetch/push) and otherwise keeps the SSH-then-HTTPS probe. The
+	// chosen URL is recorded as the repo's remote (registry row below).
+	url = src.cloneURL(hasToken)
+
+	// An inferred GitHub alias with no PAT falls onto SSH (when reachable).
+	// That's a deliberate option for SSH-key users, but it's silent — surface
+	// it so the dead-weight-PAT / agent-only-push footgun isn't a surprise.
+	// Explicit user-typed git@ URLs (explicitURL != "") are intentional and
+	// don't warn; the HTTPS-public fallback (no git@ prefix) doesn't either.
+	if src.explicitURL == "" && !hasToken && strings.HasPrefix(url, "git@") {
+		fmt.Fprintf(cobraOutErr(), "warn: cloning %s over SSH using the host ssh-agent "+
+			"(no PAT set). git push/fetch will rely on the forwarded agent and `gh` "+
+			"won't work. Set a repo-scoped PAT with `ahjo repo set-token %s`.\n", url, primary)
+	}
+
+	// /repo is at the container root, where uid 1000 can't `mkdir`. Create
+	// it as ubuntu:ubuntu first so `git clone` runs unprivileged.
+	if err := incus.ExecAs(containerName, 0, nil, "/", "install", "-d", "-m", "0755", "-o", "ubuntu", "-g", "ubuntu", paths.RepoMountPath); err != nil {
+		return "", "", fmt.Errorf("create %s: %w", paths.RepoMountPath, err)
+	}
+	fmt.Printf("→ git clone %s %s (in container as ubuntu)\n", url, paths.RepoMountPath)
+	// GIT_TERMINAL_PROMPT=0 turns a missing-credentials misconfig into a
+	// fast clone failure instead of a hung `Username:` prompt the user
+	// can't always see (e.g., when ahjo is invoked from a TUI surface).
+	if err := incus.ExecAsContext(ctx, containerName, 1000, map[string]string{"GIT_TERMINAL_PROMPT": "0"}, "/", "git", "clone", url, paths.RepoMountPath); err != nil {
+		return "", "", wrapCloneErr(err)
+	}
+
+	// A plain `git clone` checks out the remote's HEAD branch. When the user
+	// passes an explicit --default-base that differs, the working tree is on
+	// the wrong branch: the clone fetched origin/<default-base> as a
+	// remote-tracking ref, but never checked it out. Detection (empty
+	// defaultBase) reads that same HEAD, so the tree already matches and the
+	// checkout below is a no-op; an explicit override must be checked out so
+	// container-config detection, Features, warm-install, the lifecycle
+	// hooks, and `ahjo shell <repo>@<default-base>` all operate on the
+	// recorded base branch. (Feature containers re-checkout origin/<base> on
+	// their own — see cli/create.go — but the base container is itself the
+	// default-branch container.)
+	explicitBase := defaultBase != ""
+	if defaultBase == "" {
+		defaultBase, err = detectContainerDefaultBranch(containerName)
+		if err != nil {
+			return "", "", fmt.Errorf("detect default branch (pass --default-base to override): %w", err)
+		}
+	}
+	if explicitBase {
+		fmt.Printf("→ git checkout -B %s origin/%s (in container)\n", defaultBase, defaultBase)
+		if err := incus.ExecAsContext(ctx, containerName, 1000, nil, paths.RepoMountPath, "git", "checkout", "-B", defaultBase, "origin/"+defaultBase); err != nil {
+			return "", "", fmt.Errorf("checkout --default-base %q (does the branch exist on the remote?): %w", defaultBase, err)
+		}
+	}
+	return url, defaultBase, nil
+}
+
+// repoAddResolveConfigs is the container-config-resolution phase of
+// repoAddSetup: it rejects a legacy .ahjoconfig, then resolves the
+// ahjocontainer config(s) to apply. Order, first match wins:
+//
+//  1. Explicit --container-config — host path, repo-local .ahjo/<name>.json,
+//     bundled stack, or "bare". Overrides the in-repo canonical file by
+//     design (a contributor can spin up a CI-flavored container against a
+//     repo whose committed ahjocontainer.json targets full local dev).
+//  2. In-repo .ahjo/ahjocontainer.json (the canonical file).
+//  3. Interactive picker on a TTY.
+//  4. Bare (non-TTY fallback).
+//
+// Docker-flavored fields are rejected by the parser itself, so a returned
+// *Config is already valid for ahjo. The result is a slice so detection can
+// apply multiple stacks to a monorepo (node + go + docker etc.); the
+// single-config paths wrap into a 1-element slice so the caller's
+// apply-in-series block treats both shapes uniformly. Empty result == bare.
+func repoAddResolveConfigs(containerName, containerConfig string, yes bool) ([]*ahjocontainer.Config, error) {
+	if has, err := ahjocontainer.HasLegacyAhjoconfig(containerName); err != nil {
+		return nil, fmt.Errorf("probe legacy .ahjoconfig: %w", err)
+	} else if has {
+		return nil, fmt.Errorf("/repo/.ahjoconfig is no longer supported. " +
+			"Migrate it to .ahjo/ahjocontainer.json: " +
+			"`run` → `postCreateCommand`, `forward_env` / `auto_expose` → `customizations.ahjo.*`")
+	}
+
+	var dcConfs []*ahjocontainer.Config
+	if containerConfig != "" {
+		cfg, _, err := resolveContainerConfig(containerName, containerConfig)
+		if err != nil {
+			return nil, err
+		}
+		if cfg != nil {
+			dcConfs = []*ahjocontainer.Config{cfg}
+		}
+	} else {
+		cfg, found, err := ahjocontainer.LoadFromContainer(containerName)
+		if err != nil {
+			return nil, err
+		}
+		if found {
+			dcConfs = []*ahjocontainer.Config{cfg}
+		} else {
+			// Detection-driven suggestion: a lockfile, Dockerfile, or
+			// compose manifest in /repo is the clearest hint about
+			// which bundled stack(s) and Features the user wants.
+			// Prompt per match before falling through to the generic
+			// picker so the obvious case is one keypress per row, and
+			// so `bare` (picked after declining everything) genuinely
+			// means bare — runWarmInstall is gated on dcConfs below.
+			matches, err := detectStacks(containerName)
+			if err != nil {
+				return nil, err
+			}
+			autoYes := yes || !isTerminal(os.Stdin)
+			accepted, err := promptStackDetections(matches, os.Stdin, cobraOut(), autoYes)
+			if err != nil {
+				return nil, err
+			}
+			for _, m := range accepted {
+				picked, err := resolveDetectMatch(m)
+				if err != nil {
+					return nil, err
+				}
+				fmt.Printf("→ applying %s\n", picked.Source)
+				dcConfs = append(dcConfs, picked)
+			}
+			if len(dcConfs) == 0 {
+				chosen, err := promptContainerConfig(containerName, os.Stdin, cobraOut())
+				if err != nil {
+					return nil, err
+				}
+				if chosen != "" && chosen != bareConfigName {
+					picked, _, err := resolveContainerConfig(containerName, chosen)
+					if err != nil {
+						return nil, err
+					}
+					if picked != nil {
+						dcConfs = []*ahjocontainer.Config{picked}
+					}
+				}
+			}
+		}
+	}
+	for _, c := range dcConfs {
+		if msg := remoteUserWarning(c); msg != "" {
+			fmt.Fprintln(cobraOutErr(), msg)
+		}
+	}
+	return dcConfs, nil
+}
+
+// commitRegistry is the final phase of repoAddSetup: under the ahjo lock it
+// re-validates the slug/aliases (a parallel run may have grabbed them during
+// the unlocked setup), writes the repo + default-branch rows atomically,
+// regenerates the ssh-config, and prints the ready line. Split out so
+// repoAddSetup reads as a sequence of named phases rather than one long body.
+func commitRegistry(slug, primary string, aliases []string, url, defaultBase, containerName string, port int, consent map[string]bool) error {
 	// Acquire lock for final registry write — both repo + default branch
 	// rows go in atomically so a partial state is impossible.
 	release, err := lockfile.Acquire()
