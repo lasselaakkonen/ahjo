@@ -18,6 +18,9 @@
 # `--yes` against the sandbox repo so there's no live prompt to block the
 # timed SIGINT); otherwise it falls back to an attended Ctrl-C.
 
+# Capture the invocation dir before cd so a relative AHJO_BIN (e.g. ./ahjo)
+# resolves against where the operator ran this, not e2e/.
+AHJO_E2E_PWD="${AHJO_E2E_PWD:-$PWD}"
 cd "$(dirname "$0")"
 # shellcheck source=lib.sh
 source ./lib.sh
