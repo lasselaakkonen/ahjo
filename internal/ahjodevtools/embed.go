@@ -9,10 +9,8 @@ package ahjodevtools
 
 import (
 	"embed"
-	"fmt"
-	"io/fs"
-	"os"
-	"path/filepath"
+
+	"github.com/lasselaakkonen/ahjo/internal/featurefs"
 )
 
 //go:embed all:feature
@@ -20,33 +18,8 @@ var FeatureFS embed.FS
 
 const FeatureID = "ahjo-default-dev-tools"
 
-// Materialize copies the embedded feature dir into dst (created with 0o755),
-// preserving exec bit on shell scripts. Mirrors ahjoruntime.Materialize so
-// the build pipeline drives both packages with the same shape.
+// Materialize copies the embedded feature dir into dst. Mode handling (exec
+// bit on *.sh) is shared with every built-in Feature via featurefs.Materialize.
 func Materialize(dst string) error {
-	if err := os.MkdirAll(dst, 0o755); err != nil {
-		return fmt.Errorf("mkdir %s: %w", dst, err)
-	}
-	return fs.WalkDir(FeatureFS, "feature", func(p string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		rel, err := filepath.Rel("feature", p)
-		if err != nil {
-			return err
-		}
-		out := filepath.Join(dst, rel)
-		if d.IsDir() {
-			return os.MkdirAll(out, 0o755)
-		}
-		b, err := FeatureFS.ReadFile(p)
-		if err != nil {
-			return fmt.Errorf("read embedded %s: %w", p, err)
-		}
-		mode := os.FileMode(0o644)
-		if filepath.Ext(rel) == ".sh" {
-			mode = 0o755
-		}
-		return os.WriteFile(out, b, mode)
-	})
+	return featurefs.Materialize(FeatureFS, dst)
 }
