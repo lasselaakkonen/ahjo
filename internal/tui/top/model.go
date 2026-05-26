@@ -349,6 +349,18 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.KeyPressMsg:
 		return m.handleKey(msg)
+
+	case tea.PasteMsg:
+		// Bracketed-paste content arrives as its own message, not a run of
+		// KeyPressMsgs, so it bypasses handleKey entirely. Route it to the
+		// active text prompt; outside a prompt there's nowhere for pasted
+		// text to go (the list panes have filtering disabled), so drop it.
+		if m.textInputActive() {
+			var cmd tea.Cmd
+			m.input, cmd = m.input.Update(msg)
+			return m, cmd
+		}
+		return m, nil
 	}
 
 	var cmd tea.Cmd
@@ -474,6 +486,19 @@ func (m *model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		cmd = tea.Batch(cmd, m.maybeRefreshBranchStatus(), m.maybeRefreshAhjoState())
 	}
 	return m, cmd
+}
+
+// textInputActive reports whether a prompt backed by m.input is currently
+// capturing input. The inputIDE / inputRunTarget pickers are list-style
+// selection (no m.input), so they're deliberately excluded — pasted text
+// means nothing to them.
+func (m *model) textInputActive() bool {
+	switch m.inputMode {
+	case inputAddRepo, inputNewContainer, inputMirrorTarget, inputForward:
+		return true
+	default:
+		return false
+	}
 }
 
 func (m *model) startInput(mode inputMode) {
