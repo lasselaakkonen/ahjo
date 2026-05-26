@@ -56,7 +56,9 @@ AHJO_E2E_EXPOSE_PORT="${AHJO_E2E_EXPOSE_PORT:-3000}"
 
 # ---------------------------------------------------------------------------
 # Derived names (deterministic from the alias — mirrors internal/registry).
-# Assumes a fresh/isolated registry so no `-N` collision suffix is appended.
+# These assume `repo add` lands the un-suffixed base slug (no `-N` collision
+# suffix). setup_isolation's pre-clean establishes that precondition by
+# sweeping any leftover sandbox container before the run — see sweep_sandbox.
 # ---------------------------------------------------------------------------
 
 # slugify mirrors registry.sanitizeSlug: lowercase, runs of anything outside
@@ -204,6 +206,18 @@ setup_isolation() {
 	# shellcheck disable=SC2064  # capture current values into the trap now.
 	trap teardown EXIT
 	note "teardown armed: repo rm --force + targeted sweep of $SANDBOX_SLUG_PREFIX*"
+
+	# Pre-clean: a prior run that never reached its EXIT teardown (Ctrl-C during
+	# teardown, kill -9, crash) can leave a sandbox container behind. On macOS the
+	# in-VM ~/.ahjo + containers are a shared singleton; even on Linux the
+	# throwaway HOME resets only the registry, not the global incus containers. A
+	# surviving `ahjo-<slug>` container makes the next `repo add` suffix its slug
+	# to `-2` (its collision probe walks past the orphan — see
+	# registry.AllocateRepoSlug), which would point every derived *_CONTAINER name
+	# above at the stale leftover instead of what this run creates. Sweep up front
+	# so the run starts from the clean slate those names assume.
+	section "pre-clean — clear any leftover sandbox state"
+	sweep_sandbox
 }
 
 # teardown removes everything this run created and nothing else. NEVER calls
@@ -214,13 +228,8 @@ teardown() {
 	local code=$?
 	trap - EXIT
 	section "teardown"
-	# 1. Hand the registered repo back to ahjo so it tears down containers,
-	#    frees ports, drops rows, and reverts any live mirror in one shot.
-	step "ahjo repo rm $REPO_ALIAS --force"
-	"$AHJO_BIN" repo rm "$REPO_ALIAS" --force || warn "repo rm failed (continuing to sweep)"
-	# 2. Targeted sweep for anything ahjo left behind (a half-built container
-	#    from a crashed/cancelled add, a branch the registry lost track of).
-	safe_sweep "$SANDBOX_SLUG_PREFIX"
+	# 1+2. Hand the repo back to ahjo, then targeted-sweep the leftovers.
+	sweep_sandbox
 	# 3. Linux only: drop the throwaway HOME.
 	if [ -n "$AHJO_E2E_ISOLATED_HOME" ] && [ -d "$AHJO_E2E_ISOLATED_HOME" ]; then
 		step "rm -rf $AHJO_E2E_ISOLATED_HOME"
@@ -232,6 +241,22 @@ teardown() {
 		printf '%s\nRUN FAILED (exit %d) — substrate swept, real state untouched%s\n' \
 			"$_C_RED" "$code" "$_C_RST" >&2
 	fi
+}
+
+# sweep_sandbox clears all state for this run's sandbox repo, then sweeps any
+# residue. Shared by the pre-run clean (setup_isolation) and teardown so
+# "clean slate" means exactly the same thing going in and coming out.
+#  1. `ahjo repo rm --force` hands the repo back to ahjo: it drops registry
+#     rows, frees the SSH port, deletes the repo + every branch container,
+#     reverts a live mirror, and tail-sweeps suffix-past-orphan leftovers. When
+#     nothing is registered (the common pre-clean / post-success case) it exits
+#     non-zero — expected, not a failure — so we only note and press on.
+#  2. A targeted incus sweep catches anything ahjo lost track of (a half-built
+#     container from a crashed/cancelled add, a branch the registry forgot).
+sweep_sandbox() {
+	step "ahjo repo rm $REPO_ALIAS --force"
+	"$AHJO_BIN" repo rm "$REPO_ALIAS" --force || note "repo rm: nothing registered to remove (sweeping incus directly)"
+	safe_sweep "$SANDBOX_SLUG_PREFIX"
 }
 
 # safe_sweep <prefix>: incus delete --force every container matching <prefix>
