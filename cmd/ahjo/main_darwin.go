@@ -87,6 +87,17 @@ func main() {
 			execSSHFromMac(args[1])
 			return
 		}
+	case "ide":
+		// Detect + launch the IDE Mac-side (apps are /Applications bundles;
+		// the relayed in-VM path can only probe the VM's empty PATH). Missing
+		// alias falls through to the relay so the VM prints the usage error.
+		if len(args) >= 2 {
+			if err := runMacIDE(args[1]); err != nil {
+				fmt.Fprintln(os.Stderr, "ahjo:", err)
+				os.Exit(1)
+			}
+			return
+		}
 	case "top":
 		if err := runMacTop(); err != nil {
 			fmt.Fprintln(os.Stderr, "ahjo:", err)
@@ -279,6 +290,7 @@ Usage:
                                  pipeline) inside the VM
   ahjo nuke [--yes]              tear down the VM + cache; keep ~/.ahjo configs
   ahjo ssh <alias>               ssh into a branch by alias (resolves Mac-side via the generated config)
+  ahjo ide <alias>               open an SSH-capable IDE on a branch (detected + launched Mac-side)
   ahjo <subcommand> [args...]    relayed into the VM and run there
 `, vmName)
 }
