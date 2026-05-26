@@ -2,6 +2,7 @@
 package lockfile
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"time"
@@ -34,7 +35,7 @@ func AcquireWithTimeout(timeout time.Duration) (func(), error) {
 		if err == nil {
 			break
 		}
-		if err != unix.EWOULDBLOCK {
+		if !errors.Is(err, unix.EWOULDBLOCK) {
 			f.Close()
 			return nil, fmt.Errorf("flock: %w", err)
 		}
