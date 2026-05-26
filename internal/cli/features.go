@@ -172,7 +172,7 @@ func applyRepoFeatures(
 	runtimeEnv := devcontainer.RuntimeEnv()
 	for _, ff := range ordered {
 		fmt.Fprintf(out, "→ feature %s (apply)\n", ff.Ref)
-		if err := devcontainer.Apply(containerName, ff.Feature, runtimeEnv, out); err != nil {
+		if err := devcontainer.Apply(ctx, containerName, ff.Feature, runtimeEnv, out); err != nil {
 			return nil, fmt.Errorf("feature %s: %w", ff.Ref, err)
 		}
 		// Apply persists the Feature's containerEnv onto the container

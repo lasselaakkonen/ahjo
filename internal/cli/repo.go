@@ -112,8 +112,8 @@ token instead; override with ` + "`forward_ssh_agent`" + ` in config.toml.
 
 ` + containerConfigHelpBlock,
 		Args: cobra.ExactArgs(1),
-		RunE: func(_ *cobra.Command, args []string) error {
-			return runRepoAdd(args[0], asAlias, defaultBase, yes, containerConfig)
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runRepoAdd(cmd.Context(), args[0], asAlias, defaultBase, yes, containerConfig)
 		},
 	}
 	cmd.Flags().StringVar(&defaultBase, "default-base", "", "default branch to base new branches on (default: detect from the remote's HEAD)")
@@ -123,13 +123,13 @@ token instead; override with ` + "`forward_ssh_agent`" + ` in config.toml.
 	return cmd
 }
 
-func runRepoAdd(input, asAlias, defaultBase string, yes bool, containerConfig string) error {
+func runRepoAdd(ctx context.Context, input, asAlias, defaultBase string, yes bool, containerConfig string) error {
 	src := parseRepoSource(input)
 	slug, primary, aliases, err := repoAddPlan(src.canonicalURL(), asAlias)
 	if err != nil {
 		return err
 	}
-	return repoAddSetup(slug, primary, aliases, src, defaultBase, yes, containerConfig)
+	return repoAddSetup(ctx, slug, primary, aliases, src, defaultBase, yes, containerConfig)
 }
 
 // repoSource captures how a repo's clone URL should be derived. An explicit
@@ -241,7 +241,7 @@ func repoAddPlan(url, asAlias string) (slug, primary string, aliases []string, e
 // Lockfile is acquired only for the final registry write; the long
 // container/network operations run unlocked so concurrent ahjo invocations
 // (e.g. `ahjo top` refresh) aren't starved.
-func repoAddSetup(slug, primary string, aliases []string, src repoSource, defaultBase string, yes bool, containerConfig string) error {
+func repoAddSetup(ctx context.Context, slug, primary string, aliases []string, src repoSource, defaultBase string, yes bool, containerConfig string) error {
 	cfg, err := config.Load()
 	if err != nil {
 		return err
@@ -294,7 +294,7 @@ func repoAddSetup(slug, primary string, aliases []string, src repoSource, defaul
 
 	containerName := registry.ContainerName(slug)
 	fmt.Printf("→ incus init ahjo-base %s\n", containerName)
-	if err := incus.LaunchStopped(paths.AhjoBaseProfile, containerName); err != nil {
+	if err := incus.LaunchStopped(ctx, paths.AhjoBaseProfile, containerName); err != nil {
 		return err
 	}
 	if err := wireBranchContainer(containerName, hostKeysDir); err != nil {
@@ -305,11 +305,11 @@ func repoAddSetup(slug, primary string, aliases []string, src repoSource, defaul
 	if err := incus.Start(containerName); err != nil {
 		return err
 	}
-	if err := incus.WaitReady(containerName, 30*time.Second); err != nil {
+	if err := incus.WaitReady(ctx, containerName, 30*time.Second); err != nil {
 		return err
 	}
 	// ssh-agent proxy must be attached post-start.
-	if err := attachSSHAgent(containerName); err != nil {
+	if err := attachSSHAgent(ctx, containerName); err != nil {
 		return fmt.Errorf("attach ssh-agent: %w", err)
 	}
 	// Paste-shim wiring: best-effort, never blocks repo add.
@@ -317,7 +317,7 @@ func repoAddSetup(slug, primary string, aliases []string, src repoSource, defaul
 		fmt.Fprintf(cobraOutErr(), "warn: paste shim: %v\n", err)
 	}
 
-	if err := pushClaudeConfig(containerName); err != nil {
+	if err := pushClaudeConfig(ctx, containerName); err != nil {
 		return fmt.Errorf("push claude config: %w", err)
 	}
 	// Install the static AHJO.md (imported by CLAUDE.md) and seed an initial
@@ -564,7 +564,7 @@ func repoAddSetup(slug, primary string, aliases []string, src repoSource, defaul
 	// so the existing single-config resolver runs one trust-prompt /
 	// fetch / resolve / apply pass for the combined set.
 	consent, err := applyRepoFeatures(
-		context.Background(), containerName, mergeFeaturesForApply(dcConfs),
+		ctx, containerName, mergeFeaturesForApply(dcConfs),
 		featureConsentForNew, os.Stdin, cobraOut(),
 	)
 	if err != nil {
@@ -577,7 +577,7 @@ func repoAddSetup(slug, primary string, aliases []string, src repoSource, defaul
 		// no stack means no installer. Matches the existing "no
 		// lockfile detected" line for parity in the output.
 		fmt.Println("→ bare config; skipping warm install")
-	} else if err := runWarmInstall(containerName, hostEnv); err != nil {
+	} else if err := runWarmInstall(ctx, containerName, hostEnv); err != nil {
 		fmt.Fprintf(cobraOutErr(), "warn: warm install: %v\n", err)
 	}
 
@@ -590,7 +590,7 @@ func repoAddSetup(slug, primary string, aliases []string, src repoSource, defaul
 	// honest equivalent.
 	for _, c := range dcConfs {
 		if err := ahjocontainer.RunLifecycle(
-			containerName, ahjocontainer.StageOnCreate, c.OnCreateCommand,
+			ctx, containerName, ahjocontainer.StageOnCreate, c.OnCreateCommand,
 			1000, hostEnv, paths.RepoMountPath, cobraOut(),
 		); err != nil {
 			return err
@@ -598,7 +598,7 @@ func repoAddSetup(slug, primary string, aliases []string, src repoSource, defaul
 	}
 	for _, c := range dcConfs {
 		if err := ahjocontainer.RunLifecycle(
-			containerName, ahjocontainer.StagePostCreate, c.PostCreateCommand,
+			ctx, containerName, ahjocontainer.StagePostCreate, c.PostCreateCommand,
 			1000, hostEnv, paths.RepoMountPath, cobraOut(),
 		); err != nil {
 			return err
@@ -794,12 +794,12 @@ func wireLoopDevices(container string) error {
 // host's current SSH_AUTH_SOCK. Must run while the container is RUNNING:
 // `bind=container` proxy devices need a live container namespace to create
 // the listen socket. No-op when the host has no SSH_AUTH_SOCK.
-func attachSSHAgent(containerName string) error {
+func attachSSHAgent(ctx context.Context, containerName string) error {
 	sock := os.Getenv("SSH_AUTH_SOCK")
 	if sock == "" {
 		return nil
 	}
-	return incus.EnsureSSHAgentProxy(containerName, sock)
+	return incus.EnsureSSHAgentProxy(ctx, containerName, sock)
 }
 
 // isHTTPSRemote reports whether remote is an HTTPS GitHub origin — the only
@@ -903,7 +903,7 @@ func detectContainerDefaultBranch(containerName string) (string, error) {
 // the warm-up) are skipped silently. Branch containers (cloned via
 // `incus copy` with btrfs/zfs reflinks) inherit the hot dependency
 // cache. hostEnv is forwarded into each installer (NPM_TOKEN etc.).
-func runWarmInstall(containerName string, hostEnv map[string]string) error {
+func runWarmInstall(ctx context.Context, containerName string, hostEnv map[string]string) error {
 	matches, err := detectStacks(containerName)
 	if err != nil {
 		return err
@@ -918,8 +918,10 @@ func runWarmInstall(containerName string, hostEnv map[string]string) error {
 			_, err := incus.Exec(containerName, "/bin/sh", "-c", "command -v '"+bin+"'")
 			return err == nil
 		},
+		// ExecAsContext: the installer (`npm ci`, `go mod download`, …) is the
+		// canonical long/hang-prone step, so a canceled ctx kills it directly.
 		func(argv []string) error {
-			return incus.ExecAs(containerName, 1000, hostEnv, paths.RepoMountPath, argv...)
+			return incus.ExecAsContext(ctx, containerName, 1000, hostEnv, paths.RepoMountPath, argv...)
 		},
 		os.Stdout,
 	)
@@ -1010,7 +1012,7 @@ func resolveHostEnv(keys []string) map[string]string {
 // CLAUDE.md and settings.json *also* no-op silently but emit a warn,
 // since their absence is almost always a misconfigured source rather
 // than a deliberate choice.
-func pushClaudeConfig(containerName string) error {
+func pushClaudeConfig(ctx context.Context, containerName string) error {
 	home := os.Getenv("AHJO_HOST_HOME")
 	if home == "" {
 		h, err := os.UserHomeDir()
@@ -1071,7 +1073,7 @@ func pushClaudeConfig(containerName string) error {
 		if !info.IsDir() {
 			continue
 		}
-		if err := incus.FilePushRecursive(containerName, d.src, d.dst); err != nil {
+		if err := incus.FilePushRecursive(ctx, containerName, d.src, d.dst); err != nil {
 			return fmt.Errorf("push %s: %w", d.src, err)
 		}
 		pushed = append(pushed, d.dst)
@@ -1358,8 +1360,8 @@ container in this repo) against origin. Starts the container if it was
 stopped, pulls fast-forward only, and leaves it running. Failures surface
 verbatim from git — no silent recovery.`,
 		Args: cobra.ExactArgs(1),
-		RunE: func(_ *cobra.Command, args []string) error {
-			return runRepoPull(args[0])
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runRepoPull(cmd.Context(), args[0])
 		},
 	}
 }
@@ -1462,7 +1464,7 @@ func refreshRepoBase(repoName string) (retErr error) {
 		if err := incus.Start(repo.BaseContainerName); err != nil {
 			return fmt.Errorf("start %s: %w", repo.BaseContainerName, err)
 		}
-		if err := incus.WaitReady(repo.BaseContainerName, refreshReadyTimeout); err != nil {
+		if err := incus.WaitReady(ctx, repo.BaseContainerName, refreshReadyTimeout); err != nil {
 			return fmt.Errorf("wait %s ready: %w", repo.BaseContainerName, err)
 		}
 	}
@@ -1557,17 +1559,14 @@ func refreshHostEnv(containerName string) map[string]string {
 // removed package version, etc.) gets killed when ctx expires instead of
 // holding the ahjo lockfile past the warm budget.
 //
-// runWarmInstall is itself non-context-aware — it calls incus.ExecAs which
-// blocks on cmd.Run(). To honour ctx without rewriting the whole installer
-// path, we run it in a goroutine and race against ctx.Done(); on cancel we
-// don't try to interrupt the in-flight `incus exec` (it'd take a fork-of-
-// fork), but the overall refresh process exits, which severs the parent
-// pipe, which makes `incus exec` exit on its next write — bounded extra
-// wait of a few seconds.
+// runWarmInstall now threads ctx into incus.ExecAsContext, so a canceled ctx
+// kills the in-flight `incus exec` directly. We still run it in a goroutine and
+// race ctx.Done() so this returns promptly (releasing the ahjo lockfile)
+// without waiting for the killed child to be reaped.
 func execWarmInstallCtx(ctx context.Context, containerName string, hostEnv map[string]string) error {
 	done := make(chan error, 1)
 	go func() {
-		done <- runWarmInstall(containerName, hostEnv)
+		done <- runWarmInstall(ctx, containerName, hostEnv)
 	}()
 	select {
 	case err := <-done:
@@ -1617,7 +1616,7 @@ func logStep(format string, args ...any) {
 		fmt.Sprintf(format, args...))
 }
 
-func runRepoPull(repoAlias string) error {
+func runRepoPull(ctx context.Context, repoAlias string) error {
 	reg, err := registry.Load()
 	if err != nil {
 		return err
@@ -1639,14 +1638,14 @@ func runRepoPull(repoAlias string) error {
 		if err := incus.Start(repo.BaseContainerName); err != nil {
 			return err
 		}
-		if err := incus.WaitReady(repo.BaseContainerName, 30*time.Second); err != nil {
+		if err := incus.WaitReady(ctx, repo.BaseContainerName, 30*time.Second); err != nil {
 			return err
 		}
 	}
 
 	fmt.Printf("→ git pull --ff-only (in %s)\n", repo.BaseContainerName)
-	return incus.ExecAs(
-		repo.BaseContainerName, 1000, nil, paths.RepoMountPath,
+	return incus.ExecAsContext(
+		ctx, repo.BaseContainerName, 1000, nil, paths.RepoMountPath,
 		"git", "pull", "--ff-only",
 	)
 }
@@ -1664,7 +1663,7 @@ func runRepoPull(repoAlias string) error {
 // fall back to the standard resolution (in-repo ahjocontainer.json, or
 // the interactive picker on a TTY). Ignored when the repo is already
 // registered.
-func EnsureRepo(repoAlias, containerConfig string) (*registry.Repo, error) {
+func EnsureRepo(ctx context.Context, repoAlias, containerConfig string) (*registry.Repo, error) {
 	reg, err := registry.Load()
 	if err != nil {
 		return nil, err
@@ -1683,7 +1682,7 @@ func EnsureRepo(repoAlias, containerConfig string) (*registry.Repo, error) {
 	// here is what stops `ahjo create owner/repo branch` from grabbing the
 	// host SSH key when a PAT is available.
 	fmt.Printf("repo %q not registered; adding from GitHub...\n", repoAlias)
-	if err := runRepoAdd(repoAlias, "", "", false, containerConfig); err != nil {
+	if err := runRepoAdd(ctx, repoAlias, "", "", false, containerConfig); err != nil {
 		return nil, err
 	}
 

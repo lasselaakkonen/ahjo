@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"os"
 	"strings"
@@ -23,7 +24,7 @@ import (
 //
 // action is the verb-phrase ("remove", "recreate") spliced into the error so
 // the user sees which op --force would unlock.
-func ensureRepoCleanOrForce(br *registry.Branch, action string, force bool) error {
+func ensureRepoCleanOrForce(ctx context.Context, br *registry.Branch, action string, force bool) error {
 	if force {
 		return nil
 	}
@@ -44,7 +45,7 @@ func ensureRepoCleanOrForce(br *registry.Branch, action string, force bool) erro
 		if err := incus.Start(br.IncusName); err != nil {
 			return fmt.Errorf("start %s for clean-check: %w", br.IncusName, err)
 		}
-		if err := incus.WaitReady(br.IncusName, 15*time.Second); err != nil {
+		if err := incus.WaitReady(ctx, br.IncusName, 15*time.Second); err != nil {
 			return fmt.Errorf("wait %s ready: %w", br.IncusName, err)
 		}
 	}
