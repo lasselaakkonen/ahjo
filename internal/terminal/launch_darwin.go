@@ -102,20 +102,30 @@ func launchMacGhostty(argv []string, asTab bool) error {
 	if shell == "" {
 		shell = "/bin/bash"
 	}
-	target := "window"
-	if asTab {
-		target = "tab"
-	}
 	// shellJoin POSIX-quotes each argv element; we then hand that joined
 	// string to `$SHELL -lc` as a single double-quoted token so Ghostty's
 	// tokeniser keeps it intact across the boundary.
 	value := fmt.Sprintf("%s -lc %q", shell, shellJoin(argv))
+	// A bare application-scoped `make new tab` lets Ghostty pick the parent
+	// window, which on newer macOS resolves to a fresh window instead of a
+	// tab. Target the front window explicitly (mirroring launchITerm),
+	// falling back to a new window when none is open.
+	var create string
+	if asTab {
+		create = `if (count of windows) is 0 then
+make new window with configuration cfg
+else
+tell front window to make new tab with configuration cfg
+end if`
+	} else {
+		create = "make new window with configuration cfg"
+	}
 	script := fmt.Sprintf(`tell application "Ghostty"
 activate
 set cfg to new surface configuration
 set command of cfg to %q
-new %s with configuration cfg
-end tell`, value, target)
+%s
+end tell`, value, create)
 	return spawnDetached("osascript", "-e", script)
 }
 
