@@ -54,6 +54,27 @@ AHJO_E2E_EXPECT_GH_TOKEN="${AHJO_E2E_EXPECT_GH_TOKEN:-1}"
 AHJO_E2E_FWD_PORT="${AHJO_E2E_FWD_PORT:-8000}"
 AHJO_E2E_EXPOSE_PORT="${AHJO_E2E_EXPOSE_PORT:-3000}"
 
+# Additional aliases exercised via `--as` on `repo add` / `create`. Must be
+# valid aliases (registry.ValidateAlias: letters, digits and any of . _ - / @,
+# no leading/trailing punctuation) and must not collide with the auto-derived
+# primary aliases.
+AHJO_E2E_REPO_AS="${AHJO_E2E_REPO_AS:-ahjo-e2e-sandbox-alt}"
+AHJO_E2E_BRANCH_AS="${AHJO_E2E_BRANCH_AS:-e2e-branch-alt}"
+
+# A second branch `create`d from an explicit `--base` ref, to prove --base
+# plumbs a ref through. AHJO_E2E_BASE_REF defaults (resolved at runtime once the
+# default branch is known) to origin/<default>~1, so the checkout lands on a
+# commit DIFFERENT from the default tip — the sandbox's default branch must have
+# ≥2 commits. Override to pin a tag/SHA/branch (e.g. a known tag).
+AHJO_E2E_BRANCH2="${AHJO_E2E_BRANCH2:-e2e-base-branch}"
+AHJO_E2E_BASE_REF="${AHJO_E2E_BASE_REF:-}"
+
+# A non-default branch that EXISTS on the sandbox's remote, used to exercise
+# `repo add --default-base`. Unset → that checkpoint is skipped: we can't know
+# the sandbox's branches, and pointing it at the detected default would prove
+# nothing (the override must differ from auto-detection to be observable).
+AHJO_E2E_ALT_BRANCH="${AHJO_E2E_ALT_BRANCH:-}"
+
 # ---------------------------------------------------------------------------
 # Derived names (deterministic from the alias — mirrors internal/registry).
 # These assume `repo add` lands the un-suffixed base slug (no `-N` collision
@@ -74,6 +95,13 @@ REPO_CONTAINER="ahjo-${REPO_SLUG}"                  # registry.ContainerName(slu
 BRANCH_ALIAS="${REPO_ALIAS}@${AHJO_E2E_BRANCH}"     # registry.MakeBranchAlias
 BRANCH_SLUG="$(slugify "${REPO_SLUG}-${AHJO_E2E_BRANCH}")"  # registry.MakeSlug
 BRANCH_CONTAINER="ahjo-${BRANCH_SLUG}"
+
+# Second branch (the `create --base` checkpoint). Same repo, so its container
+# still sits under the sandbox slug prefix → covered by teardown's targeted
+# sweep without any extra bookkeeping.
+BRANCH2_ALIAS="${REPO_ALIAS}@${AHJO_E2E_BRANCH2}"
+BRANCH2_SLUG="$(slugify "${REPO_SLUG}-${AHJO_E2E_BRANCH2}")"
+BRANCH2_CONTAINER="ahjo-${BRANCH2_SLUG}"
 
 # The targeted-teardown prefix. Covers the repo container (ahjo-<slug>) and
 # every branch container (ahjo-<slug>-…). safe_sweep refuses anything that
@@ -453,6 +481,83 @@ assert_mirror_target_populated() {
 	count="$(find "$dir" -mindepth 1 -not -path '*/.git/*' -not -name '.git' -type f 2>/dev/null | head -1)"
 	[ -n "$count" ] || fail "mirror target $dir has no mirrored files"
 	pass "mirror target $dir is populated"
+}
+
+# assert_mirror_propagates <container> <hostdir>: write a unique probe file
+# INSIDE the container's /repo (as the uid-1000 owner, mimicking a real edit)
+# and assert the in-container ahjo-mirror daemon pushes it out to the host
+# target with identical content. This exercises the live watch→push path, not
+# just the activation-time bootstrap copy. Records the probe's basename in
+# REPLY_MIRROR_PROBE so a later `mirror off --no-revert` check can confirm the
+# file was kept. The host target is read directly (it's the disk device's source
+# on the host — Linux fs, or the Mac via virtiofs), like the bootstrap check.
+assert_mirror_propagates() {
+	local c="$1" dir="$2"
+	local probe="ahjo-e2e-mirror-probe-$$-${RANDOM}"
+	step "write $probe into $c:/repo, expect it mirrored to $dir"
+	incusq incus exec "$c" --user 1000 -- sh -c "printf '%s\n' '$probe' > /repo/$probe" ||
+		fail "could not write mirror probe into $c:/repo"
+	local i
+	for i in $(seq 1 30); do
+		if [ -f "$dir/$probe" ] && grep -qF "$probe" "$dir/$probe" 2>/dev/null; then
+			REPLY_MIRROR_PROBE="$probe"
+			pass "mirror propagated the live edit $probe → $dir (content matches)"
+			return 0
+		fi
+		sleep 1
+	done
+	fail "mirror did not propagate $probe to $dir within 30s (live watch broken?)" "$(ls -la "$dir" 2>&1)"
+}
+
+# assert_ssh_attaches <branch-alias>: `ahjo ssh <alias>` connects over the
+# generated ssh-config and runs a command as the in-container `ubuntu` user.
+# The remote command is fed on stdin (no TTY → ssh runs it non-interactively and
+# exits); stderr (MOTD/banner) is dropped so stdout is just the command output.
+# StrictHostKeyChecking=yes against the pre-seeded known_hosts means a clean
+# connect already proves we reached THIS container's sshd, not some local
+# listener. `ahjo ssh` is invoked directly (never through incusq) — like every
+# ahjo call, the launcher relays on its own. Needs the container running with
+# sshd wired (create/shell establish that).
+assert_ssh_attaches() {
+	local alias="$1" out rc=0
+	out="$(printf 'id -un\n' | ahjo ssh "$alias" 2>/dev/null)" || rc=$?
+	[ "$rc" -eq 0 ] || fail "ahjo ssh $alias exited $rc (ssh connect/auth failed?)" "$out"
+	# The remote login shell prints the dynamic MOTD on stdout *before* our
+	# command's output, so match a standalone `ubuntu` line (the `id -un` result)
+	# rather than the whole capture — the banner has no bare `ubuntu` line.
+	printf '%s\n' "$out" | grep -qx ubuntu ||
+		fail "ahjo ssh $alias: no standalone 'ubuntu' line in remote 'id -un' output" "$out"
+	pass "ahjo ssh $alias attached over ssh and ran as the container's ubuntu user"
+}
+
+# assert_repo_head_matches <container> <ref>: /repo's HEAD resolves to the same
+# commit as <ref> (e.g. origin/main~1). Proves `create --base <ref>` checked the
+# branch out from exactly that ref. Needs a running container (uses cgit).
+assert_repo_head_matches() {
+	local c="$1" ref="$2" head want
+	head="$(cgit "$c" rev-parse HEAD 2>&1)" || fail "rev-parse HEAD in $c failed" "$head"
+	want="$(cgit "$c" rev-parse "$ref" 2>&1)" || fail "rev-parse $ref in $c failed" "$want"
+	head="$(printf '%s' "$head" | tr -d '[:space:]')"
+	want="$(printf '%s' "$want" | tr -d '[:space:]')"
+	[ "$head" = "$want" ] || fail "container $c HEAD ($head) != $ref ($want)" "$head vs $want"
+	pass "container $c HEAD is at $ref ($head)"
+}
+
+# assert_alias_maps <alias>: the alias appears in the generated alias maps under
+# ~/.ahjo-shared (the `aliases` / `repo-aliases` files ahjo writes for the
+# cross-host shim). Grepping these is ground truth past ahjo's own stdout — it
+# proves an `--as` alias was actually registered. The shared dir is host-visible
+# on both platforms (Linux: under the isolated HOME; macOS: <mac-home>/.ahjo-shared
+# via virtiofs), so this reads it directly rather than through incusq.
+assert_alias_maps() {
+	local alias="$1"
+	local f="$HOME/.ahjo-shared/aliases" rf="$HOME/.ahjo-shared/repo-aliases"
+	if grep -qE "^${alias}[[:space:]]" "$f" 2>/dev/null ||
+		grep -qE "^${alias}[[:space:]]" "$rf" 2>/dev/null; then
+		pass "alias '$alias' present in the generated alias map"
+	else
+		fail "alias '$alias' not found in $f or $rf" "$(cat "$f" "$rf" 2>/dev/null)"
+	fi
 }
 
 # ---------------------------------------------------------------------------
