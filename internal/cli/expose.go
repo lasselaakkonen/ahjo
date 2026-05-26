@@ -9,7 +9,6 @@ import (
 	"github.com/lasselaakkonen/ahjo/internal/incus"
 	"github.com/lasselaakkonen/ahjo/internal/lockfile"
 	"github.com/lasselaakkonen/ahjo/internal/ports"
-	"github.com/lasselaakkonen/ahjo/internal/registry"
 )
 
 func newExposeCmd() *cobra.Command {
@@ -52,13 +51,9 @@ func runExposeSync(alias string) error {
 	}
 	defer release()
 
-	reg, err := registry.Load()
+	br, err := resolveBranch(alias)
 	if err != nil {
 		return err
-	}
-	br := reg.FindBranchByAlias(alias)
-	if br == nil {
-		return fmt.Errorf("no branch with alias %q", alias)
 	}
 	if err := reconcileAutoExpose(cobraOut(), br); err != nil {
 		return err
@@ -74,16 +69,7 @@ func runExpose(alias string, cport int) error {
 	}
 	defer release()
 
-	reg, err := registry.Load()
-	if err != nil {
-		return err
-	}
-	br := reg.FindBranchByAlias(alias)
-	if br == nil {
-		return fmt.Errorf("no branch with alias %q", alias)
-	}
-
-	containerName, err := resolveContainerName(br)
+	br, containerName, err := resolveBranchContainer(alias)
 	if err != nil {
 		return err
 	}

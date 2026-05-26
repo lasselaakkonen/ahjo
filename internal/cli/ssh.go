@@ -24,13 +24,9 @@ func newSSHCmd() *cobra.Command {
 }
 
 func runSSH(alias string) error {
-	reg, err := registry.Load()
+	br, err := resolveBranch(alias)
 	if err != nil {
 		return err
-	}
-	br := reg.FindBranchByAlias(alias)
-	if br == nil {
-		return fmt.Errorf("no branch with alias %q", alias)
 	}
 	bin, err := exec.LookPath("ssh")
 	if err != nil {

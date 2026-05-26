@@ -36,13 +36,9 @@ a terminal. The container must be running for the IDE's SSH connection to land
 }
 
 func runIDE(alias string) error {
-	reg, err := registry.Load()
+	br, err := resolveBranch(alias)
 	if err != nil {
 		return err
-	}
-	br := reg.FindBranchByAlias(alias)
-	if br == nil {
-		return fmt.Errorf("no branch with alias %q", alias)
 	}
 	if br.Slug == "" {
 		return fmt.Errorf("registry row for %q has no slug; recreate with `ahjo rm %s && ahjo create`", alias, alias)
