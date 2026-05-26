@@ -1,6 +1,7 @@
 package incus
 
 import (
+	"context"
 	_ "embed"
 	"errors"
 	"fmt"
@@ -107,7 +108,7 @@ func pushShim(container string, content []byte, containerPath string) error {
 	if err := tmp.Close(); err != nil {
 		return fmt.Errorf("close temp: %w", err)
 	}
-	cmd := execCommand("incus", "file", "push", "--mode", "0755", tmpPath, container+containerPath)
+	cmd := execCommand(context.Background(), "incus", "file", "push", "--mode", "0755", tmpPath, container+containerPath)
 	out, err := cmd.CombinedOutput()
 	if err == nil {
 		return nil

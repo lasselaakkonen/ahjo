@@ -285,7 +285,7 @@ func securityOptNote(featureID, opt string) string {
 // the caller (typically `_REMOTE_USER`/`_REMOTE_USER_HOME`/`_CONTAINER_USER`/
 // `_CONTAINER_USER_HOME`); options become ALL_CAPS env vars per the
 // devcontainer Features spec.
-func Apply(container string, f Feature, env map[string]string, out io.Writer) error {
+func Apply(ctx context.Context, container string, f Feature, env map[string]string, out io.Writer) error {
 	if f.ID == "" {
 		return errors.New("Feature.ID required")
 	}
@@ -311,10 +311,10 @@ func Apply(container string, f Feature, env map[string]string, out io.Writer) er
 	// at <c>/<path>/<basename(dir)>; pre-create the parent and push the
 	// dir contents so the install.sh lands at <containerPath>/install.sh
 	// regardless of what the host tempdir is named.
-	if _, err := incus.Exec(container, "rm", "-rf", containerPath); err != nil {
+	if _, err := incus.ExecContext(ctx, container, "rm", "-rf", containerPath); err != nil {
 		return fmt.Errorf("clear stale %s: %w", containerPath, err)
 	}
-	if _, err := incus.Exec(container, "mkdir", "-p", containerPath); err != nil {
+	if _, err := incus.ExecContext(ctx, container, "mkdir", "-p", containerPath); err != nil {
 		return fmt.Errorf("mkdir %s: %w", containerPath, err)
 	}
 	entries, err := os.ReadDir(f.Dir)
@@ -323,7 +323,7 @@ func Apply(container string, f Feature, env map[string]string, out io.Writer) er
 	}
 	for _, e := range entries {
 		host := filepath.Join(f.Dir, e.Name())
-		if err := incus.FilePushRecursive(container, host, containerPath+"/"); err != nil {
+		if err := incus.FilePushRecursive(ctx, container, host, containerPath+"/"); err != nil {
 			return fmt.Errorf("push %s: %w", host, err)
 		}
 	}
@@ -355,7 +355,10 @@ func Apply(container string, f Feature, env map[string]string, out io.Writer) er
 	envv["USER"] = "root"
 	envv["LOGNAME"] = "root"
 
-	ctx, cancel := context.WithTimeout(context.Background(), applyTimeout)
+	// Layer the per-Feature timeout under the caller's ctx: install.sh still
+	// gets its applyTimeout budget, but a canceled parent (Ctrl-C during a
+	// build / repo-add) tears it down immediately rather than waiting it out.
+	runCtx, cancel := context.WithTimeout(ctx, applyTimeout)
 	defer cancel()
 
 	args := []string{"exec", container}
@@ -364,11 +367,11 @@ func Apply(container string, f Feature, env map[string]string, out io.Writer) er
 	}
 	args = append(args, "--", "bash", containerPath+"/install.sh")
 
-	cmd := exec.CommandContext(ctx, "incus", args...)
+	cmd := exec.CommandContext(runCtx, "incus", args...)
 	cmd.Stdout = out
 	cmd.Stderr = out
 	if err := cmd.Run(); err != nil {
-		if ctx.Err() == context.DeadlineExceeded {
+		if runCtx.Err() == context.DeadlineExceeded {
 			return fmt.Errorf("Feature %s install.sh timed out after %s", f.ID, applyTimeout)
 		}
 		var ee *exec.ExitError

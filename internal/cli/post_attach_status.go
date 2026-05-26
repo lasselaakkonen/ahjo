@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"strings"
@@ -107,7 +108,11 @@ func offerCleanupAfterMerge(br *registry.Branch, containerName string, bs *top.B
 		if len(br.Aliases) > 0 {
 			alias = br.Aliases[0]
 		}
-		if err := runRm(alias, false, false); err != nil {
+		// context.Background(), not a threaded ctx: this cleanup runs *after*
+		// the interactive session exits, where the root context may already be
+		// canceled (the user Ctrl-C'd their shell). It's a fresh user-initiated
+		// action and must not inherit that cancellation.
+		if err := runRm(context.Background(), alias, false, false); err != nil {
 			fmt.Fprintf(os.Stderr, "warn: remove container: %v\n", err)
 		}
 	}

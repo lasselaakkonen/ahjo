@@ -16,7 +16,7 @@ func newGCCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "gc",
 		Short: "Report (and optionally remove) stale branches",
-		RunE: func(_ *cobra.Command, _ []string) error {
+		RunE: func(cmd *cobra.Command, _ []string) error {
 			reg, err := registry.Load()
 			if err != nil {
 				return err
@@ -47,7 +47,7 @@ func newGCCmd() *cobra.Command {
 			}
 			for _, br := range stale {
 				alias := br.Aliases[0]
-				if err := runRm(alias, false, true); err != nil {
+				if err := runRm(cmd.Context(), alias, false, true); err != nil {
 					fmt.Fprintf(cobraOutErr(), "warn: rm %s: %v\n", alias, err)
 				}
 			}

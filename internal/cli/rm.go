@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -33,8 +34,8 @@ Before tearing down, ahjo inspects /repo for uncommitted/unpushed work:
 If /repo is dirty (or the user declines to start a stopped container), the
 command refuses to proceed. Pass --force to skip the check and remove anyway.`,
 		Args: cobra.ExactArgs(1),
-		RunE: func(_ *cobra.Command, args []string) error {
-			return runRm(args[0], forceDefault, force)
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runRm(cmd.Context(), args[0], forceDefault, force)
 		},
 	}
 	cmd.Flags().BoolVar(&forceDefault, "force-default", false, "permit removing a repo's default-branch container; the repo will be unable to spawn new branches until re-added")
@@ -42,7 +43,7 @@ command refuses to proceed. Pass --force to skip the check and remove anyway.`,
 	return cmd
 }
 
-func runRm(alias string, forceDefault, force bool) error {
+func runRm(ctx context.Context, alias string, forceDefault, force bool) error {
 	release, err := lockfile.Acquire()
 	if err != nil {
 		return err
@@ -58,7 +59,7 @@ func runRm(alias string, forceDefault, force bool) error {
 		fmt.Printf("no branch with alias %q; nothing to do\n", alias)
 		return nil
 	}
-	if err := ensureRepoCleanOrForce(br, "remove", force); err != nil {
+	if err := ensureRepoCleanOrForce(ctx, br, "remove", force); err != nil {
 		return err
 	}
 	wasNonDefault := !br.IsDefault

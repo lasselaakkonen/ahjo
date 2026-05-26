@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"strings"
@@ -37,8 +38,8 @@ container — on btrfs that's a near-free reflink that inherits node_modules,
 the pnpm store, and any other warm dependencies. ` + "`git checkout -b <branch>`" + `
 runs inside the clone after copy completes.`,
 		Args: cobra.ExactArgs(2),
-		RunE: func(_ *cobra.Command, args []string) error {
-			return runCreate(args[0], args[1], base, asAlias, noFetch)
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runCreate(cmd.Context(), args[0], args[1], base, asAlias, noFetch)
 		},
 	}
 	cmd.Flags().StringVar(&base, "base", "", "branch/ref to create from (default: repo's default-base)")
@@ -47,7 +48,7 @@ runs inside the clone after copy completes.`,
 	return cmd
 }
 
-func runCreate(repoAlias, branch, base, asAlias string, noFetch bool) error {
+func runCreate(ctx context.Context, repoAlias, branch, base, asAlias string, noFetch bool) error {
 	raw := branch
 	branch = git.SanitizeBranchName(branch)
 	if branch == "" {
@@ -64,7 +65,7 @@ func runCreate(repoAlias, branch, base, asAlias string, noFetch bool) error {
 	// proceed. No --container-config on `ahjo create`: the primary
 	// onboarding paths are `ahjo repo add --container-config=...` and
 	// `ahjo claude --container-config=...`.
-	if _, err := EnsureRepo(repoAlias, ""); err != nil {
+	if _, err := EnsureRepo(ctx, repoAlias, ""); err != nil {
 		return err
 	}
 
@@ -86,7 +87,7 @@ func runCreate(repoAlias, branch, base, asAlias string, noFetch bool) error {
 
 	// Phase 2: COW + checkout, no lock held.
 	containerName := br.IncusName
-	if err := cloneFromBase(repo, br); err != nil {
+	if err := cloneFromBase(ctx, repo, br); err != nil {
 		return err
 	}
 
@@ -94,7 +95,7 @@ func runCreate(repoAlias, branch, base, asAlias string, noFetch bool) error {
 	if err := incus.Start(containerName); err != nil {
 		return err
 	}
-	if err := incus.WaitReady(containerName, 30*time.Second); err != nil {
+	if err := incus.WaitReady(ctx, containerName, 30*time.Second); err != nil {
 		return err
 	}
 	// Forward the ssh-agent only when the repo actually needs it: an HTTPS+PAT
@@ -104,7 +105,7 @@ func runCreate(repoAlias, branch, base, asAlias string, noFetch bool) error {
 	tok, hasToken, _ := repoToken(repo.Name)
 	hasToken = hasToken && tok != ""
 	if shouldForwardAgent(repo, hasToken, cfg) {
-		if err := attachSSHAgent(containerName); err != nil {
+		if err := attachSSHAgent(ctx, containerName); err != nil {
 			return fmt.Errorf("attach ssh-agent: %w", err)
 		}
 	} else if err := incus.RemoveDevice(containerName, "ssh-agent"); err != nil {
@@ -258,7 +259,7 @@ func createReserveBranch(cfg *config.Config, repoAlias, branch, asAlias string) 
 // Leaves the new container stopped, ready for Start.
 //
 // Reused by shell.go's --update / missing-container path.
-func cloneFromBase(repo *registry.Repo, br *registry.Branch) error {
+func cloneFromBase(ctx context.Context, repo *registry.Repo, br *registry.Branch) error {
 	containerName := br.IncusName
 
 	// btrfs `incus copy` requires the source stopped. Tolerant: if it's
@@ -269,7 +270,7 @@ func cloneFromBase(repo *registry.Repo, br *registry.Branch) error {
 	}
 
 	fmt.Printf("→ incus copy %s %s\n", repo.BaseContainerName, containerName)
-	if err := incus.CopyContainer(repo.BaseContainerName, containerName); err != nil {
+	if err := incus.CopyContainer(ctx, repo.BaseContainerName, containerName); err != nil {
 		return err
 	}
 
@@ -308,7 +309,7 @@ func cloneFromBase(repo *registry.Repo, br *registry.Branch) error {
 // containerConfig is forwarded to EnsureRepo for the auto-add path.
 // Pass "" to skip; ignored when the parent repo is already registered
 // (the base container is not rebuilt by this function).
-func EnsureBranch(branchAlias, containerConfig string) (*registry.Branch, error) {
+func EnsureBranch(ctx context.Context, branchAlias, containerConfig string) (*registry.Branch, error) {
 	reg, err := registry.Load()
 	if err != nil {
 		return nil, err
@@ -322,13 +323,13 @@ func EnsureBranch(branchAlias, containerConfig string) (*registry.Branch, error)
 		return nil, fmt.Errorf("no branch with alias %q; create with `ahjo create`", branchAlias)
 	}
 
-	if _, err := EnsureRepo(repoAlias, containerConfig); err != nil {
+	if _, err := EnsureRepo(ctx, repoAlias, containerConfig); err != nil {
 		return nil, err
 	}
 
 	// runCreate is idempotent for an existing branch (re-renders config); for
 	// a missing one it creates the COW container.
-	if err := runCreate(repoAlias, branch, "", "", false); err != nil {
+	if err := runCreate(ctx, repoAlias, branch, "", "", false); err != nil {
 		return nil, err
 	}
 
