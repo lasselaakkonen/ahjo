@@ -13,6 +13,9 @@
 # stack-detection prompt (accept it so warm-install runs), and Claude auth at
 # `ahjo claude` if not already signed in. See e2e/README.md for prereqs.
 
+# Capture the invocation dir before cd so a relative AHJO_BIN (e.g. ./ahjo)
+# resolves against where the operator ran this, not e2e/.
+AHJO_E2E_PWD="${AHJO_E2E_PWD:-$PWD}"
 cd "$(dirname "$0")"
 # shellcheck source=lib.sh
 source ./lib.sh

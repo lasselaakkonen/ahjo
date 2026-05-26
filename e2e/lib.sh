@@ -24,6 +24,12 @@ set -euo pipefail
 # Configuration knobs (override via the environment before sourcing).
 # ---------------------------------------------------------------------------
 
+# The directory the operator invoked the script from. Scripts `cd` into e2e/
+# to source this file, so a RELATIVE AHJO_BIN (e.g. ./ahjo) must be resolved
+# against here, not against e2e/. Each script sets this before its `cd`; the
+# default covers a direct `source lib.sh`.
+AHJO_E2E_PWD="${AHJO_E2E_PWD:-$PWD}"
+
 # The VM name to relay validation into on macOS. Ignored on Linux.
 AHJO_VM="${AHJO_VM:-ahjo}"
 
@@ -142,8 +148,14 @@ require_cmd() {
 resolve_ahjo() {
 	require_cmd jq
 	: "${AHJO_BIN:?set AHJO_BIN to the ahjo binary under test (e.g. AHJO_BIN=./ahjo)}"
+	# A relative AHJO_BIN is relative to where the operator ran the script, not
+	# to e2e/ (scripts cd here to source lib.sh). Anchor it before checking.
+	case "$AHJO_BIN" in
+		/*) : ;;
+		*) AHJO_BIN="$AHJO_E2E_PWD/$AHJO_BIN" ;;
+	esac
 	if [ ! -x "$AHJO_BIN" ]; then
-		fail "AHJO_BIN=$AHJO_BIN is not an executable (run \`make build\`?)"
+		fail "AHJO_BIN is not an executable: $AHJO_BIN (run \`make build\`?)"
 	fi
 	AHJO_BIN="$(cd "$(dirname "$AHJO_BIN")" && pwd)/$(basename "$AHJO_BIN")"
 	local ver
