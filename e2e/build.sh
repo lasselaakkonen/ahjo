@@ -17,6 +17,9 @@
 # derivative, and needing no PAT/auth. The probe is named under the sandbox slug
 # so the standard teardown sweep reclaims it.
 
+# Capture the invocation dir before cd so a relative AHJO_BIN (e.g. ./ahjo)
+# resolves against where the operator ran this, not e2e/.
+AHJO_E2E_PWD="${AHJO_E2E_PWD:-$PWD}"
 cd "$(dirname "$0")"
 # shellcheck source=lib.sh
 source ./lib.sh
