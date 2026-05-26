@@ -55,8 +55,10 @@ AHJO_BIN=./ahjo bash e2e/build.sh
 ```
 
 Each checkpoint prints `✓`/`✗` from its `incus`/`git`/shell validation. Any
-failure dumps the validation output and exits non-zero. **Teardown is automatic
-on exit** (success, failure, or Ctrl-C).
+failure dumps the validation output and exits non-zero. The harness **pre-cleans
+any leftover sandbox state on startup** and **tears down automatically on exit**
+(success, failure, or Ctrl-C) — so a prior run that was killed before its
+teardown can't poison the next one.
 
 ## What each script verifies
 
@@ -113,6 +115,12 @@ assertion works on both hosts unchanged.
   (`ahjo-<sandbox-slug>`). `safe_sweep` **refuses any prefix less specific than
   the sandbox slug** (and bare `ahjo-`), so a typo can never enumerate your real
   containers.
+- **Pre-clean on startup**: the same `repo rm --force` + targeted sweep runs
+  once *before* the run begins. The macOS in-VM `~/.ahjo` is a shared singleton
+  and even the Linux throwaway HOME resets only the registry (not the global
+  incus containers), so a container left by a previous run that never reached
+  its teardown would otherwise make `repo add` suffix its slug to `-2` and
+  desync every derived container name. Pre-cleaning makes each run idempotent.
 - **NEVER `ahjo nuke`**: nuke deletes the global `ahjo-base`/`ahjo-osbase`
   images (see `internal/cli/nuke.go`). The harness never calls it. Only
   `build.sh` intentionally rebuilds `ahjo-base`, and only after a confirm.
