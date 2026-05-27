@@ -9,6 +9,8 @@ Blazing fast firing up of containers per feature branch.
 - **Near-instant start up of new containers** for a 'container per feature branch with multiple features in development at once' workflow
 - **SSH/AWS/etc secrets completely isolated** from the containers, minimally only a repo scoped GitHub PAT is exposed to whatever is running in the container
 
+---
+
 - [Quick start](#quick-start)
   - [1. Installation](#1-installation)
   - [2. Starting a feature container from CLI](#2-starting-a-feature-container-from-cli)
