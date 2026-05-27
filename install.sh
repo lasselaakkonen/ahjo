@@ -7,7 +7,7 @@
 #   curl -fsSL https://raw.githubusercontent.com/lasselaakkonen/ahjo/master/install.sh | sh -s -- --install-dir <dir>
 #
 # Options:
-#   --install-dir <dir>  install location; default: /usr/local/bin
+#   --install-dir <dir>  install location; default: $HOME/.local/bin
 #
 # Env:
 #   AHJO_VERSION  pin a tag (e.g. v0.0.1); default: latest release
@@ -20,7 +20,7 @@ INSTALL_DIR="${INSTALL_DIR:-}"   # from env if set; --install-dir overrides; def
 
 main() {
     parse_args "$@"
-    : "${INSTALL_DIR:=/usr/local/bin}"
+    : "${INSTALL_DIR:="$HOME/.local/bin"}"
     require curl
     platform=$(detect_platform)
     tag=$(resolve_tag "${AHJO_VERSION:-}")
@@ -41,6 +41,7 @@ main() {
     install_binary "${tmp}/${asset}" "${INSTALL_DIR}/ahjo"
 
     "${INSTALL_DIR}/ahjo" --version
+    check_path "$INSTALL_DIR"
     say "next: run 'ahjo init'"
 }
 
@@ -69,7 +70,7 @@ Usage:
   curl -fsSL https://raw.githubusercontent.com/${REPO}/master/install.sh | sh -s -- --install-dir <dir>
 
 Options:
-  --install-dir <dir>   install location (default: /usr/local/bin)
+  --install-dir <dir>   install location (default: \$HOME/.local/bin)
   -h, --help            show this help
 
 Env:
@@ -160,6 +161,38 @@ explain_sudo() {
         printf '    curl -fsSL https://raw.githubusercontent.com/%s/master/install.sh | sh -s -- --install-dir "$HOME/.local/bin"\n' "$REPO"
         printf '\n'
     } >&2
+}
+
+# Warn if the install dir isn't on PATH, so the user knows why `ahjo` won't be
+# found, and hand them a shell-specific one-liner to fix it.
+check_path() {
+    dir=$1
+    case ":${PATH}:" in
+        *":${dir}:"*) return 0 ;;
+    esac
+
+    # Show $HOME rather than the expanded path in anything we ask them to paste.
+    display=$dir
+    case "$dir" in
+        "$HOME"/*) display="\$HOME${dir#"$HOME"}" ;;
+    esac
+
+    printf '\n' >&2
+    printf '  %s is not on your PATH, so your shell will not find the `ahjo` command yet.\n' "$display" >&2
+    case "$(basename "${SHELL:-}")" in
+        zsh)
+            printf '  add it to ~/.zshrc, then restart your shell (or run: source ~/.zshrc):\n\n' >&2
+            printf "    echo 'export PATH=\"%s:\$PATH\"' >> ~/.zshrc\n\n" "$display" >&2 ;;
+        bash)
+            printf '  add it to ~/.bashrc, then restart your shell (or run: source ~/.bashrc):\n\n' >&2
+            printf "    echo 'export PATH=\"%s:\$PATH\"' >> ~/.bashrc\n\n" "$display" >&2 ;;
+        fish)
+            printf '  add it with fish_add_path (persists across sessions):\n\n' >&2
+            printf '    fish_add_path %s\n\n' "$display" >&2 ;;
+        *)
+            printf '  add it to your shell startup file, then restart your shell:\n\n' >&2
+            printf '    export PATH="%s:$PATH"\n\n' "$display" >&2 ;;
+    esac
 }
 
 require() {
