@@ -16,6 +16,16 @@ const defaultTimeout = 30 * time.Second
 
 // Acquire takes an exclusive flock on ~/.ahjo/.lock and returns a release func.
 // It waits up to 30 seconds before returning a timeout error.
+//
+// This is intentionally a coarse, command-level mutex — NOT a registry
+// read-modify-write lock, and deliberately not folded into a
+// registry.Update(fn) helper. Call sites hold it across a whole critical
+// section that spans several shared-state files at once: the registry plus
+// ports.json, the per-branch host-keys dir, and the rendered ssh-config (see
+// create.go::createReserveBranch), or across container create/delete
+// operations (rm.go, repo_rm.go). A helper scoped to registry load/save would
+// silently drop those other resources out of the lock, so the explicit
+// acquire/defer-release at each call site is the correct shape here.
 func Acquire() (func(), error) {
 	return AcquireWithTimeout(defaultTimeout)
 }
