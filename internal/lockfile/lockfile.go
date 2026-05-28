@@ -34,7 +34,7 @@ func AcquireWithTimeout(timeout time.Duration) (func(), error) {
 	if err := paths.EnsureSkeleton(); err != nil {
 		return nil, err
 	}
-	f, err := os.OpenFile(paths.LockPath(), os.O_CREATE|os.O_RDWR, 0o644)
+	f, err := os.OpenFile(paths.LockPath(), os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
 		return nil, fmt.Errorf("open lockfile: %w", err)
 	}
