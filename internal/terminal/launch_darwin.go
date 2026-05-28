@@ -6,7 +6,8 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"strings"
+
+	"github.com/lasselaakkonen/ahjo/internal/spawn"
 )
 
 // LaunchCommand spawns the terminal identified by slug pointed at argv as
@@ -41,12 +42,12 @@ func LaunchCommand(slug string, argv []string, asTab bool) error {
 // Accessibility-permissioned keystroke injection, so we accept Terminal's
 // pref as the final word on tab-vs-window even when asTab is true.
 func launchAppleTerminal(argv []string, _ bool) error {
-	cmd := shellJoin(argv)
+	cmd := spawn.ShellJoin(argv)
 	script := fmt.Sprintf(`tell application "Terminal"
 activate
 do script %q
 end tell`, cmd)
-	return spawnDetached("osascript", "-e", script)
+	return spawn.Detached("osascript", "-e", script)
 }
 
 // launchITerm runs argv in iTerm. iTerm exposes both
@@ -54,7 +55,7 @@ end tell`, cmd)
 // AppleScript, so tab-vs-window is honoured precisely. Falls back to
 // creating a new window when no window is currently open.
 func launchITerm(argv []string, asTab bool) error {
-	cmd := shellJoin(argv)
+	cmd := spawn.ShellJoin(argv)
 	var script string
 	if asTab {
 		script = fmt.Sprintf(`tell application "iTerm"
@@ -71,7 +72,7 @@ activate
 create window with default profile command %q
 end tell`, cmd)
 	}
-	return spawnDetached("osascript", "-e", script)
+	return spawn.Detached("osascript", "-e", script)
 }
 
 // launchMacWezTerm prefers `wezterm cli spawn` for tabs (talks to the
@@ -82,11 +83,11 @@ func launchMacWezTerm(argv []string, asTab bool) error {
 	if asTab {
 		if _, err := exec.LookPath("wezterm"); err == nil {
 			args := append([]string{"cli", "spawn", "--"}, argv...)
-			return spawnDetached("wezterm", args...)
+			return spawn.Detached("wezterm", args...)
 		}
 	}
 	args := append([]string{"-na", "WezTerm.app", "--args", "start", "--"}, argv...)
-	return spawnDetached("open", args...)
+	return spawn.Detached("open", args...)
 }
 
 // launchMacGhostty drives Ghostty via its AppleScript dictionary (1.3+).
@@ -105,7 +106,7 @@ func launchMacGhostty(argv []string, asTab bool) error {
 	// shellJoin POSIX-quotes each argv element; we then hand that joined
 	// string to `$SHELL -lc` as a single double-quoted token so Ghostty's
 	// tokeniser keeps it intact across the boundary.
-	value := fmt.Sprintf("%s -lc %q", shell, shellJoin(argv))
+	value := fmt.Sprintf("%s -lc %q", shell, spawn.ShellJoin(argv))
 	// Use Ghostty's own scripting verbs (`new window` / `new tab in <window>`)
 	// rather than the standard AppleScript `make` verb. `make new tab` routes
 	// through AppKit's native NSWindow tabbing, which honours the system
@@ -130,7 +131,7 @@ set cfg to new surface configuration
 set command of cfg to %q
 %s
 end tell`, value, create)
-	return spawnDetached("osascript", "-e", script)
+	return spawn.Detached("osascript", "-e", script)
 }
 
 // launchMacOpenArgs is the generic `open -na <App>.app --args <flag>
@@ -139,7 +140,7 @@ end tell`, value, create)
 func launchMacOpenArgs(appName, runFlag string, argv []string) error {
 	full := []string{"-na", appName + ".app", "--args", runFlag}
 	full = append(full, argv...)
-	return spawnDetached("open", full...)
+	return spawn.Detached("open", full...)
 }
 
 // launchMacKitty prefers `kitty @ launch --type=tab` when asTab is true and
@@ -155,29 +156,9 @@ func launchMacKitty(argv []string, asTab bool) error {
 		}
 	}
 	if _, err := exec.LookPath("kitty"); err == nil {
-		return spawnDetached("kitty", argv...)
+		return spawn.Detached("kitty", argv...)
 	}
 	full := []string{"-na", "kitty.app", "--args"}
 	full = append(full, argv...)
-	return spawnDetached("open", full...)
-}
-
-func spawnDetached(name string, args ...string) error {
-	cmd := exec.Command(name, args...)
-	cmd.Stdin = nil
-	cmd.Stdout = nil
-	cmd.Stderr = nil
-	return cmd.Start()
-}
-
-// shellJoin renders argv as a POSIX shell command string. Each token is
-// wrapped in single quotes with embedded single quotes escaped via the
-// `'\”` idiom; safe to paste into bash/sh and into AppleScript `do
-// script` payloads.
-func shellJoin(argv []string) string {
-	parts := make([]string, len(argv))
-	for i, a := range argv {
-		parts[i] = "'" + strings.ReplaceAll(a, "'", `'\''`) + "'"
-	}
-	return strings.Join(parts, " ")
+	return spawn.Detached("open", full...)
 }
