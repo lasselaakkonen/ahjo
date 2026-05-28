@@ -4,8 +4,9 @@ import (
 	"archive/tar"
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
-	"io"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -175,7 +176,8 @@ func TestFetcher_BearerHandshakeAndExtract(t *testing.T) {
 		{Name: "./devcontainer-feature.json", Type: tar.TypeReg, Mode: 0o644, Body: []byte(`{"id":"x","version":"1"}`)},
 	})
 	const token = "test-token-xyz"
-	const digest = "sha256:abc"
+	featureBytes := feature.Bytes()
+	digest := "sha256:" + fmt.Sprintf("%x", sha256.Sum256(featureBytes))
 
 	tokenSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Query().Get("scope") == "" {
@@ -206,7 +208,7 @@ func TestFetcher_BearerHandshakeAndExtract(t *testing.T) {
 			})
 		case "/v2/foo/bar/blobs/" + digest:
 			w.Header().Set("Content-Type", "application/octet-stream")
-			_, _ = io.Copy(w, feature)
+			_, _ = w.Write(featureBytes)
 		default:
 			http.NotFound(w, r)
 		}
@@ -230,6 +232,43 @@ func TestFetcher_BearerHandshakeAndExtract(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dst, "devcontainer-feature.json")); err != nil {
 		t.Errorf("metadata missing: %v", err)
+	}
+}
+
+func TestFetcher_BlobDigestMismatch(t *testing.T) {
+	// A registry that serves bytes not matching the manifest's pinned
+	// digest must fail the fetch — the extracted install.sh runs as root.
+	feature := buildTar(t, []tarEntry{
+		{Name: "./install.sh", Type: tar.TypeReg, Mode: 0o755, Body: []byte("#!/bin/sh\n")},
+	})
+	featureBytes := feature.Bytes()
+	// Claim a digest the bytes don't hash to.
+	wrongDigest := "sha256:" + strings.Repeat("00", 32)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v2/foo/bar/manifests/1":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"schemaVersion": 2,
+				"layers": []map[string]any{
+					{"mediaType": featureLayerMediaType, "digest": wrongDigest, "size": len(featureBytes)},
+				},
+			})
+		case "/v2/foo/bar/blobs/" + wrongDigest:
+			_, _ = w.Write(featureBytes)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	host := strings.TrimPrefix(srv.URL, "http://")
+	client := &http.Client{Transport: &rewritingTransport{rt: http.DefaultTransport, hostHTTP: host, hostHTTPS: "registry.test"}}
+	f := &Fetcher{HTTP: client}
+
+	err := f.Fetch(context.Background(), FeatureRef{"registry.test", "foo/bar", "1"}, t.TempDir())
+	if err == nil || !strings.Contains(err.Error(), "digest mismatch") {
+		t.Fatalf("expected digest mismatch error; got %v", err)
 	}
 }
 
