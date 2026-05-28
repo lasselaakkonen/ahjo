@@ -88,7 +88,7 @@ fi
 # (which runs without a login shell, so ~/.profile's PATH adjustment isn't
 # sourced) finds it. The symlink follows the canonical install dir, so
 # auto-updates that rewrite ~/.local/bin/claude transparently apply.
-runuser -u "$_REMOTE_USER" -- bash -lc 'curl -fsSL https://claude.ai/install.sh | bash'
+runuser -u "$_REMOTE_USER" -- bash -lc 'curl --proto "=https" --tlsv1.2 -fsSL https://claude.ai/install.sh | bash'
 ln -sf "$_REMOTE_USER_HOME/.local/bin/claude" /usr/local/bin/claude
 
 # ahjo-mirror: in-container daemon that watches /repo and pushes per-event
