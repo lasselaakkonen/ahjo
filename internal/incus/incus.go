@@ -32,6 +32,21 @@ import (
 // there is nothing left to fake or observe.
 var execCommand = exec.CommandContext
 
+// ExecError carries the exit code of a failed `incus exec`. Callers that need
+// to distinguish a command's own non-zero exit (e.g. `test -f` → 1 for "file
+// absent") from an incus-layer failure should errors.As for this type and
+// inspect Code, rather than substring-matching the message — the latter breaks
+// silently on incus/locale wording changes. Mirrors the exit-code discipline
+// SystemctlIsActive already uses.
+type ExecError struct {
+	Container string
+	Code      int
+}
+
+func (e *ExecError) Error() string {
+	return fmt.Sprintf("incus exec %s: exit %d", e.Container, e.Code)
+}
+
 // Exec is the context.Background() shorthand for ExecContext — used for the
 // many fast, uncancelable container probes (config reads, `test -f`, small
 // `cat`s) where plumbing a context through every caller buys nothing.
@@ -53,7 +68,7 @@ func ExecContext(ctx context.Context, container string, argv ...string) ([]byte,
 	if err != nil {
 		var ee *exec.ExitError
 		if errors.As(err, &ee) {
-			return out, fmt.Errorf("incus exec %s: exit %d", container, ee.ExitCode())
+			return out, &ExecError{Container: container, Code: ee.ExitCode()}
 		}
 		return out, fmt.Errorf("incus exec %s: %w", container, err)
 	}
@@ -106,20 +121,25 @@ func ContainersWithPrefix(prefix string) ([]string, error) {
 	return matches, nil
 }
 
-// AddProxyDevice adds a proxy device, tolerating "already exists" errors.
-func AddProxyDevice(container, device, listen, connect string) error {
-	args := []string{
-		"config", "device", "add", container, device, "proxy",
-		"listen=" + listen,
-		"connect=" + connect,
+// addDeviceIfAbsent runs an `incus config device add …` argv only when no
+// device named `device` already exists on `container`. This replaces the older
+// "add, then swallow an 'already exists' error string" idiom: `incus config
+// device add` returns exit 1 for BOTH the benign already-present case and a
+// genuine failure, so the English message text — not the exit code — was the
+// only signal, and an incus wording change would silently turn a tolerated
+// re-add into a hard error. HasDevice queries the structured `config device
+// list` instead, so idempotency no longer hinges on stderr phrasing.
+func addDeviceIfAbsent(container, device string, args []string) error {
+	exists, err := HasDevice(container, device)
+	if err != nil {
+		return err
 	}
-	cmd := execCommand(context.Background(), "incus", args...)
-	out, err := cmd.CombinedOutput()
-	if err == nil {
-		os.Stdout.Write(out)
+	if exists {
 		return nil
 	}
-	if strings.Contains(strings.ToLower(string(out)), "already exists") {
+	out, err := execCommand(context.Background(), "incus", args...).CombinedOutput()
+	if err == nil {
+		os.Stdout.Write(out)
 		return nil
 	}
 	os.Stderr.Write(out)
@@ -128,6 +148,15 @@ func AddProxyDevice(container, device, listen, connect string) error {
 		return fmt.Errorf("incus %s: exit %d", strings.Join(args, " "), ee.ExitCode())
 	}
 	return fmt.Errorf("incus %s: %w", strings.Join(args, " "), err)
+}
+
+// AddProxyDevice adds a proxy device, skipping the add when it already exists.
+func AddProxyDevice(container, device, listen, connect string) error {
+	return addDeviceIfAbsent(container, device, []string{
+		"config", "device", "add", container, device, "proxy",
+		"listen=" + listen,
+		"connect=" + connect,
+	})
 }
 
 // reverseProxyArgs builds the `incus config device add` argv for a
@@ -207,7 +236,8 @@ func reverseConnectIP(resolve func() (string, error)) (string, error) {
 	return "127.0.0.1", nil
 }
 
-// AddDiskDevice adds a disk (bind-mount) device, tolerating "already exists" errors.
+// AddDiskDevice adds a disk (bind-mount) device, skipping the add when it
+// already exists.
 func AddDiskDevice(container, device, source, path string, readonly bool) error {
 	args := []string{
 		"config", "device", "add", container, device, "disk",
@@ -217,51 +247,22 @@ func AddDiskDevice(container, device, source, path string, readonly bool) error 
 	if readonly {
 		args = append(args, "readonly=true")
 	}
-	cmd := execCommand(context.Background(), "incus", args...)
-	out, err := cmd.CombinedOutput()
-	if err == nil {
-		os.Stdout.Write(out)
-		return nil
-	}
-	if strings.Contains(strings.ToLower(string(out)), "already exists") {
-		return nil
-	}
-	os.Stderr.Write(out)
-	var ee *exec.ExitError
-	if errors.As(err, &ee) {
-		return fmt.Errorf("incus %s: exit %d", strings.Join(args, " "), ee.ExitCode())
-	}
-	return fmt.Errorf("incus %s: %w", strings.Join(args, " "), err)
+	return addDeviceIfAbsent(container, device, args)
 }
 
 // AddUnixDevice attaches a host /dev node to the container as a unix-char
 // or unix-block device (Incus device types). devType must be "unix-char"
-// or "unix-block". Tolerant of "already exists" so callers can use it as
-// an idempotent wire step (matches AddDiskDevice).
+// or "unix-block". Skips the add when the device already exists, so callers
+// can use it as an idempotent wire step (matches AddDiskDevice).
 //
 // Used by the nested_incus capability to expose /dev/loop-control +
 // /dev/loop0..7 into a container so nested Incus can back its storage
 // pool with a loop-mounted .img. See internal/cli/repo.go::wireLoopDevices.
 func AddUnixDevice(container, device, devType, source string) error {
-	args := []string{
+	return addDeviceIfAbsent(container, device, []string{
 		"config", "device", "add", container, device, devType,
 		"source=" + source,
-	}
-	cmd := execCommand(context.Background(), "incus", args...)
-	out, err := cmd.CombinedOutput()
-	if err == nil {
-		os.Stdout.Write(out)
-		return nil
-	}
-	if strings.Contains(strings.ToLower(string(out)), "already exists") {
-		return nil
-	}
-	os.Stderr.Write(out)
-	var ee *exec.ExitError
-	if errors.As(err, &ee) {
-		return fmt.Errorf("incus %s: exit %d", strings.Join(args, " "), ee.ExitCode())
-	}
-	return fmt.Errorf("incus %s: %w", strings.Join(args, " "), err)
+	})
 }
 
 // ImageAliasExists returns true if alias resolves to an Incus image.
@@ -464,17 +465,23 @@ func ListProxyDevices(container string) ([]ProxyDevice, error) {
 	return proxies, nil
 }
 
-// RemoveDevice removes a named device from a container. Tolerant of "not found".
+// RemoveDevice removes a named device from a container. Skips the remove when
+// the device is already absent (idempotent), checking via the structured
+// HasDevice query rather than matching "not found" stderr text.
 func RemoveDevice(container, device string) error {
+	exists, err := HasDevice(container, device)
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return nil
+	}
 	cmd := execCommand(context.Background(), "incus", "config", "device", "remove", container, device)
 	out, err := cmd.CombinedOutput()
 	if err == nil {
 		return nil
 	}
-	low := strings.ToLower(string(out))
-	if strings.Contains(low, "not found") || strings.Contains(low, "no such") || strings.Contains(low, "doesn't exist") {
-		return nil
-	}
+	os.Stderr.Write(out)
 	var ee *exec.ExitError
 	if errors.As(err, &ee) {
 		return fmt.Errorf("incus config device remove %s %s: exit %d", container, device, ee.ExitCode())
@@ -589,17 +596,21 @@ func Launch(ctx context.Context, image, name string) error {
 }
 
 // ImageCopyRemote pulls remote (e.g. "images:ubuntu/24.04") into the local
-// image store and tags it with alias. Tolerant of "already exists" so
-// callers can use it as a "ensure" step without first checking.
+// image store and tags it with alias. Skips the copy when the alias already
+// resolves (idempotent "ensure" step), checking via the structured
+// ImageAliasExists query rather than matching "already exists" stderr text.
 func ImageCopyRemote(ctx context.Context, remote, alias string) error {
+	exists, err := ImageAliasExists(alias)
+	if err != nil {
+		return err
+	}
+	if exists {
+		return nil
+	}
 	cmd := execCommand(ctx, "incus", "image", "copy", remote, "local:", "--alias", alias)
 	out, err := cmd.CombinedOutput()
 	if err == nil {
 		os.Stdout.Write(out)
-		return nil
-	}
-	low := strings.ToLower(string(out))
-	if strings.Contains(low, "already exists") {
 		return nil
 	}
 	os.Stderr.Write(out)
