@@ -47,6 +47,8 @@ main() {
 	step_env
 	step_repo_add
 	step_create
+	step_doctor
+	step_gc
 	step_forward
 	step_expose
 	step_mirror
@@ -58,6 +60,7 @@ main() {
 	step_create_base
 	step_rm_branch
 	step_repo_pull
+	step_set_token
 	step_repo_rm
 	step_default_base
 }
@@ -125,6 +128,12 @@ step_repo_add() {
 	else
 		note "AHJO_E2E_EXPECT_GH_TOKEN=0 — skipping GH_TOKEN env check"
 	fi
+	# repo ls must list the freshly-registered repo — a ground-truth read of the
+	# registry the rest of the run depends on. The --as alias is in r.Aliases, so
+	# the joined alias column carries it.
+	ahjo repo ls | grep -qF "$AHJO_E2E_REPO_AS" ||
+		fail "ahjo repo ls did not list the --as alias $AHJO_E2E_REPO_AS"
+	pass "ahjo repo ls lists $AHJO_E2E_REPO_AS"
 }
 
 # 3. create <branch>, with --as. Validates the COW clone: branch container
@@ -148,6 +157,52 @@ step_create() {
 	if [ "$AHJO_E2E_EXPECT_GH_TOKEN" = 1 ]; then
 		assert_container_env "$BRANCH_CONTAINER" GH_TOKEN
 	fi
+}
+
+# 3.1 doctor — read-only environment diagnostics. Driver coverage for `ahjo
+#     doctor`, which the harness otherwise never exercised. Runs after repo add +
+#     create so a real repo is registered and a live container exists for the
+#     per-repo survey. doctor legitimately exits non-zero in the isolated HOME
+#     (no CLAUDE_CODE_OAUTH_TOKEN / host git identity there), so we don't gate on
+#     its exit code — we assert it reached its incus-backed checks: the `incus`
+#     binary probe and the ahjo-base image-alias lookup (the base is present
+#     because `ahjo init` is a prerequisite). On macOS the relayed in-VM block
+#     carries these same lines, so both assertions hold on either platform.
+step_doctor() {
+	section "3.1 doctor — environment diagnostics (read-only)"
+	local out
+	out="$(ahjo doctor 2>&1 || true)"
+	[ -n "$out" ] || fail "ahjo doctor produced no output"
+	printf '%s\n' "$out" | grep -qF "incus on PATH" ||
+		fail "ahjo doctor did not report the incus binary check" "$out"
+	printf '%s\n' "$out" | grep -qF "ahjo-base image present" ||
+		fail "ahjo doctor did not confirm the ahjo-base image (incus image-alias check)" "$out"
+	pass "ahjo doctor ran its incus-backed checks (incus binary + ahjo-base image)"
+}
+
+# 3.2 gc — stale-branch reporting. Driver coverage for `ahjo gc`. The default
+#     24h window must NOT flag the seconds-old branch; `--older-than 0` must flag
+#     it as a candidate but, without `--prune`, only REPORT (dry run). The branch
+#     container still running afterward is the safety check that report mode
+#     never deletes. (gc always excludes the repo's default/COW-source branch.)
+step_gc() {
+	section "3.2 gc — stale-branch report (no prune)"
+	local out
+	out="$(ahjo gc 2>&1)" || fail "ahjo gc (default window) failed" "$out"
+	printf '%s\n' "$out" | grep -q "no candidates" ||
+		fail "ahjo gc (default 24h) flagged a fresh branch; expected 'no candidates'" "$out"
+	pass "ahjo gc (default 24h) reports no stale candidates"
+
+	out="$(ahjo gc --older-than 0 2>&1)" || fail "ahjo gc --older-than 0 failed" "$out"
+	if printf '%s\n' "$out" | grep -q "no candidates"; then
+		fail "ahjo gc --older-than 0 found no candidates; expected the branch container" "$out"
+	fi
+	printf '%s\n' "$out" | grep -q "dry run" ||
+		fail "ahjo gc --older-than 0 did not stay in report mode (no 'dry run' notice)" "$out"
+	pass "ahjo gc --older-than 0 reports the branch as a dry-run candidate"
+
+	# Report mode must not delete: the branch container must survive untouched.
+	assert_container_running "$BRANCH_CONTAINER"
 }
 
 # 4. forward <host-port> [→ container]. bind=container proxy that pipes the host
@@ -175,6 +230,16 @@ step_expose() {
 		"" "tcp:127.0.0.1:$AHJO_E2E_EXPOSE_PORT"
 	note "(optional) start a listener on container :$AHJO_E2E_EXPOSE_PORT to also"
 	note "exercise assert_port_answers against the published host port."
+
+	# expose --sync reconciles auto-expose proxy devices to the container's live
+	# TCP loopback listeners; by contract it NEVER touches a MANUAL expose entry.
+	# With no guaranteed in-container listener we assert the invariant we can:
+	# --sync runs cleanly and leaves the manual device created above intact.
+	local sout
+	sout="$(ahjo expose "$BRANCH_ALIAS" --sync 2>&1)" || fail "ahjo expose --sync failed" "$sout"
+	assert_proxy_device "$BRANCH_CONTAINER" "ahjo-expose-$AHJO_E2E_EXPOSE_PORT" \
+		"" "tcp:127.0.0.1:$AHJO_E2E_EXPOSE_PORT"
+	pass "ahjo expose --sync ran and preserved the manual expose device"
 }
 
 # 6. mirror on/off + live propagation. Disk device + ahjo-mirror unit, the host
@@ -244,6 +309,18 @@ step_mirror() {
 		fail "mirror off --no-revert did not keep the mirrored probe (${REPLY_MIRROR_PROBE:-<unset>}) on the host"
 	fi
 	pass "mirror off --no-revert kept the mirrored files in place"
+
+	# mirror revert <target> — the orphan-recovery path (no container needed).
+	# `off --no-revert` deliberately kept both the mirrored files AND the
+	# pre-mirror snapshot (decideRevert returns false under --no-revert, so the
+	# snapshot is never consumed). With the device already torn down, `mirror
+	# revert` auto-resolves that single snapshot and restores the target to its
+	# pre-mirror state — so the probe --no-revert just kept must now be GONE.
+	ahjo mirror revert "$AHJO_E2E_MIRROR_DIR"
+	if [ -n "${REPLY_MIRROR_PROBE:-}" ] && [ -f "$AHJO_E2E_MIRROR_DIR/$REPLY_MIRROR_PROBE" ]; then
+		fail "mirror revert did not remove the kept probe ($REPLY_MIRROR_PROBE) from $AHJO_E2E_MIRROR_DIR"
+	fi
+	pass "mirror revert restored the target (removed the mirror-added probe)"
 
 	# Remove the in-container probe so the branch returns to a clean /repo (it's
 	# otherwise an untracked file the operator would see at the shell step). The
@@ -360,6 +437,36 @@ step_repo_pull() {
 	ahjo repo pull "$REPO_ALIAS"
 	assert_container_running "$REPO_CONTAINER"
 	assert_repo_synced_with_origin "$REPO_CONTAINER" "$DEFAULT_BRANCH"
+}
+
+# 14.1 repo set-token — rotate the per-repo GitHub PAT and re-forward it onto
+#      the repo's containers as environment.GH_TOKEN/GITHUB_TOKEN. Driver
+#      coverage for `ahjo repo set-token`. Linux-only: the in-VM Linux path reads
+#      the token from stdin and writes it to the token store + every existing
+#      repo container; the macOS path instead consumes the value the shim relays
+#      from the login Keychain (GH_TOKEN env), a round trip that's operator
+#      territory, not machine-assertable from in-VM. Runs after `repo pull` (the
+#      last token-dependent network step) and before teardown, with a
+#      recognizable sentinel so overwriting the real PAT here is harmless.
+step_set_token() {
+	section "14.1 repo set-token — $AHJO_E2E_REPO_AS (Linux: stdin token)"
+	if [ "$(uname)" = Darwin ]; then
+		note "macOS: set-token consumes the relayed Keychain value; skip (operator-verified)."
+		return 0
+	fi
+	local sentinel="ghp_e2e_settoken_${BRANCH_SLUG}_sentinel"
+	printf '%s\n' "$sentinel" | ahjo repo set-token "$AHJO_E2E_REPO_AS" ||
+		fail "ahjo repo set-token failed"
+	# Ground truth: both names installRepoToken sets must equal the sentinel on
+	# the repo container. `incus config get` reads it directly (works on the
+	# stopped COW source too), past ahjo's own stdout.
+	local key got
+	for key in GH_TOKEN GITHUB_TOKEN; do
+		got="$(incusq incus config get "$REPO_CONTAINER" "environment.$key" 2>&1 | tr -d '[:space:]')"
+		[ "$got" = "$sentinel" ] ||
+			fail "set-token did not forward environment.$key to $REPO_CONTAINER (got '$got', want the sentinel)"
+	done
+	pass "repo set-token forwarded the new token to $REPO_CONTAINER (GH_TOKEN + GITHUB_TOKEN)"
 }
 
 # 15. repo rm --force — tear down repo + every branch container.
