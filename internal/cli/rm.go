@@ -99,7 +99,7 @@ func spawnRefreshBase(repoName string) {
 
 	logPath := paths.RefreshBaseLogPath()
 	var logFile *os.File
-	if f, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644); err == nil {
+	if f, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600); err == nil {
 		logFile = f
 	} else {
 		fmt.Fprintf(cobraOutErr(), "warn: base refresh log %s unavailable (%v); output dropped\n", logPath, err)

@@ -80,7 +80,7 @@ func writeAncestorRelay(slugDir string, lines []string) error {
 		}
 		sum := sha256.Sum256([]byte(key))
 		name := hex.EncodeToString(sum[:8]) + ".pub"
-		if err := os.WriteFile(filepath.Join(relay, name), []byte(line+"\n"), 0o644); err != nil {
+		if err := os.WriteFile(filepath.Join(relay, name), []byte(line+"\n"), 0o600); err != nil {
 			return fmt.Errorf("write %s/%s: %w", relay, name, err)
 		}
 	}

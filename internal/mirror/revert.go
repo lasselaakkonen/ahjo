@@ -269,7 +269,7 @@ func CaptureEmpty(slug string) error {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
-	return os.WriteFile(emptyMarkerPath(slug), nil, 0o644)
+	return os.WriteFile(emptyMarkerPath(slug), nil, 0o600)
 }
 
 func emptyMarkerPath(slug string) string {

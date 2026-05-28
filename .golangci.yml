@@ -3,7 +3,28 @@ version: "2"
 linters:
   default: standard
 
+  # gosec is not in the `standard` set. We pull in only its file-permission
+  # rules — G302 (chmod) and G306 (WriteFile) — so a future secret-store or
+  # key-file write that loosens perms past 0600 is caught at lint time. The
+  # noisy subprocess rule G204 (os/exec with a variable argv) is inherent to a
+  # tool that shells out to incus/git/ssh this heavily and stays out via the
+  # `includes` allowlist.
+  enable:
+    - gosec
+
+  exclusions:
+    rules:
+      # Test fixtures legitimately write world-readable scratch files; the
+      # perm rules are about production secret/key handling, not test data.
+      - path: _test\.go
+        linters:
+          - gosec
+
   settings:
+    gosec:
+      includes:
+        - G302
+        - G306
     errcheck:
       # Exclude well-known cleanup / output functions whose error returns are
       # idiomatically ignored across this codebase. Closing already-written
