@@ -12,6 +12,8 @@ package devcontainer
 import (
 	"archive/tar"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -167,14 +169,33 @@ func (f *Fetcher) Fetch(ctx context.Context, ref FeatureRef, dst string) error {
 	if layer.MediaType != featureLayerMediaType {
 		return fmt.Errorf("feature %s layer mediaType %q; expected %q", ref, layer.MediaType, featureLayerMediaType)
 	}
+	// A pinned digest only *addresses* the blob; a misbehaving or
+	// compromised registry can still serve different bytes under it, and the
+	// extracted install.sh runs as root. Hash the bytes as they stream
+	// through extraction and compare against the manifest's layer digest, so
+	// a mismatch fails the fetch — the caller extracts into a throwaway
+	// MkdirTemp and only runs install.sh when Fetch returns nil.
+	algo, want, ok := strings.Cut(layer.Digest, ":")
+	if !ok || algo != "sha256" {
+		return fmt.Errorf("feature %s layer digest %q is not sha256", ref, layer.Digest)
+	}
 	blobURL := fmt.Sprintf("https://%s/v2/%s/blobs/%s", ref.Registry, ref.Repository, layer.Digest)
 	rc, err := f.getStream(ctx, blobURL, "")
 	if err != nil {
 		return fmt.Errorf("fetch blob %s: %w", ref, err)
 	}
 	defer rc.Close()
-	if err := extractTar(rc, dst); err != nil {
+	h := sha256.New()
+	if err := extractTar(io.TeeReader(rc, h), dst); err != nil {
 		return fmt.Errorf("extract %s: %w", ref, err)
+	}
+	// extractTar stops at the tar end-of-archive marker; drain any trailing
+	// blob bytes through the same hasher so the digest covers the whole blob.
+	if _, err := io.Copy(h, rc); err != nil {
+		return fmt.Errorf("read blob %s: %w", ref, err)
+	}
+	if got := hex.EncodeToString(h.Sum(nil)); !strings.EqualFold(got, want) {
+		return fmt.Errorf("feature %s blob digest mismatch: manifest sha256:%s, got sha256:%s", ref, want, got)
 	}
 	return nil
 }
