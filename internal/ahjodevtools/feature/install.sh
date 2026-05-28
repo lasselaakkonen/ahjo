@@ -101,6 +101,6 @@ install -m 0755 "$tmp/ast-grep/ast-grep" /usr/local/bin/ast-grep
 # CLAUDE.md *are* overwritten from host on first repo add, so whether
 # the hook is actually wired up at runtime is governed by the user's
 # host-side `rtk init -g` state — which is the right authority order.
-runuser -u "$_REMOTE_USER" -- bash -lc 'curl -fsSL https://raw.githubusercontent.com/rtk-ai/rtk/refs/heads/master/install.sh | sh'
+runuser -u "$_REMOTE_USER" -- bash -lc 'curl --proto "=https" --tlsv1.2 -fsSL https://raw.githubusercontent.com/rtk-ai/rtk/refs/heads/master/install.sh | sh'
 ln -sf "$_REMOTE_USER_HOME/.local/bin/rtk" /usr/local/bin/rtk
 runuser -u "$_REMOTE_USER" -- bash -lc 'rtk init -g --auto-patch'
