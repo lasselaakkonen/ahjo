@@ -45,6 +45,14 @@ var SkipDirNames = map[string]bool{
 // ErrUnsupportedFileType is returned by CopyFile for sockets, devices, fifos.
 var ErrUnsupportedFileType = errors.New("unsupported file type")
 
+// ErrUnsafeSymlink is returned by CopyFile when a repo symlink's target would
+// escape the mirror root once followed (absolute, or `../`-traversing out of
+// dstRoot). The mirror replicates container-controlled repo contents onto a
+// host-side dir, so a symlink like `x -> /etc/passwd` would otherwise plant a
+// host symlink pointing at an arbitrary file. Unlike ErrUnsupportedFileType,
+// callers should log this — it flags a planting attempt, not a benign skip.
+var ErrUnsafeSymlink = errors.New("symlink target escapes mirror root")
+
 // LoadIgnoreMatcher walks `root`, reads `.gitignore` from each kept directory
 // and `.git/info/exclude` once, and builds a single git-faithful matcher. The
 // walk honors SkipDirNames so we never parse a `.gitignore` deep inside
@@ -128,7 +136,7 @@ func IsIgnored(m gitignore.Matcher, rel string, isDir bool) bool {
 
 // CopyFile copies srcPath to dstPath using lstat-first dispatch.
 //   - Regular file → tempfile in dstPath's dir, io.Copy, fchmod, atomic rename.
-//   - Symlink     → readlink, remove existing dst (if any), os.Symlink.
+//   - Symlink     → readlink, target-containment check, os.Symlink.
 //   - Anything else → ErrUnsupportedFileType (caller logs and skips).
 //
 // When fastSkip is true AND the destination already exists with matching
@@ -137,8 +145,10 @@ func IsIgnored(m gitignore.Matcher, rel string, isDir bool) bool {
 // cheap; live event handling passes fastSkip=false because the event itself
 // is the "something changed" signal.
 //
+// dstRoot is the mirror's destination root (dstPath always lives under it);
+// symlink targets that would escape it are rejected with ErrUnsafeSymlink.
 // Caller is responsible for ensuring dstPath's parent dir exists.
-func CopyFile(srcPath, dstPath string, fastSkip bool) error {
+func CopyFile(srcPath, dstPath, dstRoot string, fastSkip bool) error {
 	srcInfo, err := os.Lstat(srcPath)
 	if err != nil {
 		return err
@@ -148,7 +158,7 @@ func CopyFile(srcPath, dstPath string, fastSkip bool) error {
 	case mode.IsRegular():
 		return copyRegular(srcPath, dstPath, srcInfo, fastSkip)
 	case mode&os.ModeSymlink != 0:
-		return copySymlink(srcPath, dstPath, fastSkip)
+		return copySymlink(srcPath, dstPath, dstRoot, fastSkip)
 	default:
 		return ErrUnsupportedFileType
 	}
@@ -199,10 +209,22 @@ func copyRegular(srcPath, dstPath string, srcInfo os.FileInfo, fastSkip bool) er
 	return nil
 }
 
-func copySymlink(srcPath, dstPath string, fastSkip bool) error {
+func copySymlink(srcPath, dstPath, dstRoot string, fastSkip bool) error {
 	target, err := os.Readlink(srcPath)
 	if err != nil {
 		return fmt.Errorf("readlink %s: %w", srcPath, err)
+	}
+	// Reject targets that escape the mirror root once followed. An absolute
+	// target, or a relative one that `../`-climbs out of dstRoot, would plant
+	// a host-side symlink pointing at a file the container shouldn't reach.
+	// Same Rel-based containment idiom as oci.go's extractTar.
+	resolved := target
+	if !filepath.IsAbs(resolved) {
+		resolved = filepath.Join(filepath.Dir(dstPath), target)
+	}
+	rel, err := filepath.Rel(dstRoot, filepath.Clean(resolved))
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return fmt.Errorf("%w: %s -> %s", ErrUnsafeSymlink, dstPath, target)
 	}
 	if fastSkip {
 		if cur, err := os.Readlink(dstPath); err == nil && cur == target {
