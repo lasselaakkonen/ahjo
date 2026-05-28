@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"regexp"
+	"slices"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -133,8 +134,7 @@ func newEnvListCmd() *cobra.Command {
 			for k := range m {
 				keys = append(keys, k)
 			}
-			// stable output
-			sortStrings(keys)
+			slices.Sort(keys) // stable output
 			for _, k := range keys {
 				v := m[k]
 				if !show {
@@ -191,15 +191,6 @@ func maskSecret(s string) string {
 		return "…"
 	}
 	return "…" + s[len(s)-4:]
-}
-
-func sortStrings(s []string) {
-	// tiny inline sort to avoid importing sort just for List output
-	for i := 1; i < len(s); i++ {
-		for j := i; j > 0 && s[j-1] > s[j]; j-- {
-			s[j-1], s[j] = s[j], s[j-1]
-		}
-	}
 }
 
 // looksLikeGitHubToken classifies a pasted token. Permissive on purpose:
