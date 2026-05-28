@@ -5,7 +5,8 @@ package terminal
 import (
 	"fmt"
 	"os/exec"
-	"strings"
+
+	"github.com/lasselaakkonen/ahjo/internal/spawn"
 )
 
 // LaunchCommand spawns the terminal identified by slug pointed at argv as
@@ -25,7 +26,7 @@ func LaunchCommand(slug string, argv []string, asTab bool) error {
 		}
 		full := append(base, "--")
 		full = append(full, argv...)
-		return spawnDetached(full[0], full[1:]...)
+		return spawn.Detached(full[0], full[1:]...)
 	case Konsole:
 		base := []string{"konsole"}
 		if asTab {
@@ -33,7 +34,7 @@ func LaunchCommand(slug string, argv []string, asTab bool) error {
 		}
 		full := append(base, "-e")
 		full = append(full, argv...)
-		return spawnDetached(full[0], full[1:]...)
+		return spawn.Detached(full[0], full[1:]...)
 	case Kitty:
 		if asTab {
 			if _, err := exec.LookPath("kitty"); err == nil {
@@ -43,7 +44,7 @@ func LaunchCommand(slug string, argv []string, asTab bool) error {
 				}
 			}
 		}
-		return spawnDetached("kitty", argv...)
+		return spawn.Detached("kitty", argv...)
 	case WezTerm:
 		if asTab {
 			args := append([]string{"cli", "spawn", "--"}, argv...)
@@ -52,42 +53,23 @@ func LaunchCommand(slug string, argv []string, asTab bool) error {
 			}
 		}
 		args := append([]string{"start", "--"}, argv...)
-		return spawnDetached("wezterm", args...)
+		return spawn.Detached("wezterm", args...)
 	case Ghostty:
-		args := []string{"-e", shellJoin(argv)}
-		return spawnDetached("ghostty", args...)
+		args := []string{"-e", spawn.ShellJoin(argv)}
+		return spawn.Detached("ghostty", args...)
 	case Alacritty:
 		args := append([]string{"-e"}, argv...)
-		return spawnDetached("alacritty", args...)
+		return spawn.Detached("alacritty", args...)
 	case Xterm:
 		args := append([]string{"-e"}, argv...)
-		return spawnDetached("xterm", args...)
+		return spawn.Detached("xterm", args...)
 	case Tilix:
-		args := []string{"-e", shellJoin(argv)}
-		return spawnDetached("tilix", args...)
+		args := []string{"-e", spawn.ShellJoin(argv)}
+		return spawn.Detached("tilix", args...)
 	case Terminator:
 		args := []string{"-x"}
 		args = append(args, argv...)
-		return spawnDetached("terminator", args...)
+		return spawn.Detached("terminator", args...)
 	}
 	return fmt.Errorf("terminal: unknown slug %q", slug)
-}
-
-func spawnDetached(name string, args ...string) error {
-	cmd := exec.Command(name, args...)
-	cmd.Stdin = nil
-	cmd.Stdout = nil
-	cmd.Stderr = nil
-	return cmd.Start()
-}
-
-// shellJoin renders argv as a POSIX shell command string. Used for the
-// emulators whose "run this command" flag is a shell string rather than an
-// argv list (ghostty -e, tilix -e).
-func shellJoin(argv []string) string {
-	parts := make([]string, len(argv))
-	for i, a := range argv {
-		parts[i] = "'" + strings.ReplaceAll(a, "'", `'\''`) + "'"
-	}
-	return strings.Join(parts, " ")
 }

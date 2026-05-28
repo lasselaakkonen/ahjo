@@ -5,6 +5,8 @@ package ide
 import (
 	"fmt"
 	"os/exec"
+
+	"github.com/lasselaakkonen/ahjo/internal/spawn"
 )
 
 // LaunchOnHost invokes the local IDE's CLI shim with a vscode-remote URI
@@ -21,7 +23,7 @@ func LaunchOnHost(slug, host, path string) error {
 	if err != nil {
 		return fmt.Errorf("%s not on PATH", bin)
 	}
-	return spawnDetached(resolved, args...)
+	return spawn.Detached(resolved, args...)
 }
 
 func cliInvocation(slug, host, path string) (string, []string, error) {
@@ -39,12 +41,4 @@ func cliInvocation(slug, host, path string) (string, []string, error) {
 		return "zed", []string{fmt.Sprintf("ssh://%s%s", host, path)}, nil
 	}
 	return "", nil, fmt.Errorf("unknown IDE slug %q", slug)
-}
-
-func spawnDetached(name string, args ...string) error {
-	cmd := exec.Command(name, args...)
-	cmd.Stdin = nil
-	cmd.Stdout = nil
-	cmd.Stderr = nil
-	return cmd.Start()
 }

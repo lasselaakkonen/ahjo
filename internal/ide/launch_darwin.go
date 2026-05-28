@@ -4,7 +4,8 @@ package ide
 
 import (
 	"fmt"
-	"os/exec"
+
+	"github.com/lasselaakkonen/ahjo/internal/spawn"
 )
 
 // LaunchOnHost opens the IDE identified by slug pointed at <host>:<path>
@@ -21,7 +22,7 @@ func LaunchOnHost(slug, host, path string) error {
 	if err != nil {
 		return err
 	}
-	return spawnDetached("open", args...)
+	return spawn.Detached("open", args...)
 }
 
 // openArgs returns the argv (excluding "open" itself) for launching slug
@@ -42,15 +43,4 @@ func openArgs(slug, host, path string) ([]string, error) {
 		return []string{"-a", "Zed.app", "--args", fmt.Sprintf("ssh://%s%s", host, path)}, nil
 	}
 	return nil, fmt.Errorf("unknown IDE slug %q", slug)
-}
-
-// spawnDetached starts cmd without inheriting stdio, then returns
-// immediately. We don't reap — `open` returns in milliseconds and the GUI
-// app it dispatches to is the real long-running process.
-func spawnDetached(name string, args ...string) error {
-	cmd := exec.Command(name, args...)
-	cmd.Stdin = nil
-	cmd.Stdout = nil
-	cmd.Stderr = nil
-	return cmd.Start()
 }
