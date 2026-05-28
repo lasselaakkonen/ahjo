@@ -98,26 +98,6 @@ func TestArgvConstruction(t *testing.T) {
 			want: []string{"incus", "exec", "c1", "--", "echo", "hi"},
 		},
 		{
-			name: "AddProxyDevice",
-			call: func() { _ = AddProxyDevice("c1", "dev", "tcp:127.0.0.1:80", "tcp:10.0.0.1:80") },
-			want: []string{"incus", "config", "device", "add", "c1", "dev", "proxy", "listen=tcp:127.0.0.1:80", "connect=tcp:10.0.0.1:80"},
-		},
-		{
-			name: "AddDiskDevice readonly",
-			call: func() { _ = AddDiskDevice("c1", "d", "/src", "/dst", true) },
-			want: []string{"incus", "config", "device", "add", "c1", "d", "disk", "source=/src", "path=/dst", "readonly=true"},
-		},
-		{
-			name: "AddDiskDevice writable",
-			call: func() { _ = AddDiskDevice("c1", "d", "/src", "/dst", false) },
-			want: []string{"incus", "config", "device", "add", "c1", "d", "disk", "source=/src", "path=/dst"},
-		},
-		{
-			name: "AddUnixDevice",
-			call: func() { _ = AddUnixDevice("c1", "loop0", "unix-block", "/dev/loop0") },
-			want: []string{"incus", "config", "device", "add", "c1", "loop0", "unix-block", "source=/dev/loop0"},
-		},
-		{
 			name: "ConfigSet",
 			call: func() { _ = ConfigSet("c1", "security.nesting", "true") },
 			want: []string{"incus", "config", "set", "c1", "security.nesting=true"},
@@ -168,19 +148,9 @@ func TestArgvConstruction(t *testing.T) {
 			want: []string{"incus", "image", "delete", "ahjo-base"},
 		},
 		{
-			name: "ImageCopyRemote",
-			call: func() { _ = ImageCopyRemote(context.Background(), "images:ubuntu/24.04", "ahjo-base") },
-			want: []string{"incus", "image", "copy", "images:ubuntu/24.04", "local:", "--alias", "ahjo-base"},
-		},
-		{
 			name: "FilePushRecursive",
 			call: func() { _ = FilePushRecursive(context.Background(), "c1", "/host/dir", "/etc/x") },
 			want: []string{"incus", "file", "push", "--recursive", "/host/dir", "c1/etc/x"},
-		},
-		{
-			name: "RemoveDevice",
-			call: func() { _ = RemoveDevice("c1", "dev") },
-			want: []string{"incus", "config", "device", "remove", "c1", "dev"},
 		},
 		{
 			name: "SystemctlDaemonReload",
@@ -386,9 +356,6 @@ func TestToleranceBranches(t *testing.T) {
 		{"Start tolerates already-running", fakeRun{stderr: "Error: The instance is already running", exit: 1}, func() error { return Start("c1") }},
 		{"DeleteImageAlias tolerates not-found", fakeRun{stderr: "Error: Image not found", exit: 1}, func() error { return DeleteImageAlias("x") }},
 		{"ContainerDeleteForce tolerates not-found", fakeRun{stderr: "Error: Instance not found", exit: 1}, func() error { return ContainerDeleteForce("c1") }},
-		{"AddProxyDevice tolerates already-exists", fakeRun{stderr: "Error: device already exists", exit: 1}, func() error { return AddProxyDevice("c1", "d", "l", "c") }},
-		{"RemoveDevice tolerates not-found", fakeRun{stderr: "Error: device doesn't exist", exit: 1}, func() error { return RemoveDevice("c1", "d") }},
-		{"ImageCopyRemote tolerates already-exists", fakeRun{stderr: "Error: Alias already exists", exit: 1}, func() error { return ImageCopyRemote(context.Background(), "r", "a") }},
 		{"SystemctlDisableNow tolerates not-loaded", fakeRun{stdout: "Failed: Unit foo.service not loaded.", exit: 1}, func() error { return SystemctlDisableNow("c1", "foo.service") }},
 		{"SystemctlStop tolerates not-loaded", fakeRun{stdout: "Failed: Unit foo.service not loaded.", exit: 1}, func() error { return SystemctlStop("c1", "foo.service") }},
 	}
@@ -403,13 +370,106 @@ func TestToleranceBranches(t *testing.T) {
 }
 
 // TestErrorSurfacedOnRealFailure: an unrelated non-zero exit must NOT be
-// swallowed — it surfaces with the exit code.
+// swallowed — it surfaces with the exit code. The first run is HasDevice's
+// existence probe (device absent), the second is the real add failing.
 func TestErrorSurfacedOnRealFailure(t *testing.T) {
-	withFakeExec(t, fakeRun{stderr: "Error: permission denied", exit: 1})
+	withFakeExec(t, fakeRun{stdout: ""}, fakeRun{stderr: "Error: permission denied", exit: 1})
 	err := AddProxyDevice("c1", "d", "l", "c")
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
+}
+
+// TestDeviceAddArgv pins the two-call shape of an idempotent device add: a
+// structured existence probe (HasDevice → device absent), then the add.
+func TestDeviceAddArgv(t *testing.T) {
+	cases := []struct {
+		name string
+		call func()
+		add  []string
+	}{
+		{"AddProxyDevice", func() { _ = AddProxyDevice("c1", "dev", "tcp:127.0.0.1:80", "tcp:10.0.0.1:80") },
+			[]string{"incus", "config", "device", "add", "c1", "dev", "proxy", "listen=tcp:127.0.0.1:80", "connect=tcp:10.0.0.1:80"}},
+		{"AddDiskDevice readonly", func() { _ = AddDiskDevice("c1", "d", "/src", "/dst", true) },
+			[]string{"incus", "config", "device", "add", "c1", "d", "disk", "source=/src", "path=/dst", "readonly=true"}},
+		{"AddDiskDevice writable", func() { _ = AddDiskDevice("c1", "d", "/src", "/dst", false) },
+			[]string{"incus", "config", "device", "add", "c1", "d", "disk", "source=/src", "path=/dst"}},
+		{"AddUnixDevice", func() { _ = AddUnixDevice("c1", "loop0", "unix-block", "/dev/loop0") },
+			[]string{"incus", "config", "device", "add", "c1", "loop0", "unix-block", "source=/dev/loop0"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fe := withFakeExec(t, fakeRun{stdout: ""}, fakeRun{}) // absent, then add
+			tc.call()
+			want := [][]string{{"incus", "config", "device", "list", "c1"}, tc.add}
+			if !reflect.DeepEqual(fe.Calls, want) {
+				t.Fatalf("calls:\n got %q\nwant %q", fe.Calls, want)
+			}
+		})
+	}
+}
+
+// TestRemoveDeviceArgv pins the present→remove shape.
+func TestRemoveDeviceArgv(t *testing.T) {
+	fe := withFakeExec(t, fakeRun{stdout: "dev\n"}, fakeRun{}) // present, then remove
+	if err := RemoveDevice("c1", "dev"); err != nil {
+		t.Fatalf("RemoveDevice: %v", err)
+	}
+	want := [][]string{
+		{"incus", "config", "device", "list", "c1"},
+		{"incus", "config", "device", "remove", "c1", "dev"},
+	}
+	if !reflect.DeepEqual(fe.Calls, want) {
+		t.Fatalf("calls:\n got %q\nwant %q", fe.Calls, want)
+	}
+}
+
+// TestImageCopyRemoteArgv pins the alias-absent→copy shape.
+func TestImageCopyRemoteArgv(t *testing.T) {
+	fe := withFakeExec(t, fakeRun{stdout: "[]"}, fakeRun{}) // alias absent, then copy
+	if err := ImageCopyRemote(context.Background(), "images:ubuntu/24.04", "ahjo-base"); err != nil {
+		t.Fatalf("ImageCopyRemote: %v", err)
+	}
+	want := [][]string{
+		{"incus", "image", "alias", "list", "--format=json"},
+		{"incus", "image", "copy", "images:ubuntu/24.04", "local:", "--alias", "ahjo-base"},
+	}
+	if !reflect.DeepEqual(fe.Calls, want) {
+		t.Fatalf("calls:\n got %q\nwant %q", fe.Calls, want)
+	}
+}
+
+// TestDeviceIdempotency: the structured existence probe makes the add/remove a
+// no-op when the resource is already in the desired state — no stderr-string
+// matching, so it survives an incus wording change.
+func TestDeviceIdempotency(t *testing.T) {
+	t.Run("AddProxyDevice skips when present", func(t *testing.T) {
+		fe := withFakeExec(t, fakeRun{stdout: "dev\n"}) // HasDevice → present
+		if err := AddProxyDevice("c1", "dev", "l", "c"); err != nil {
+			t.Fatalf("AddProxyDevice: %v", err)
+		}
+		if len(fe.Calls) != 1 {
+			t.Fatalf("expected only the existence probe, got %v", fe.Calls)
+		}
+	})
+	t.Run("RemoveDevice skips when absent", func(t *testing.T) {
+		fe := withFakeExec(t, fakeRun{stdout: ""}) // HasDevice → absent
+		if err := RemoveDevice("c1", "dev"); err != nil {
+			t.Fatalf("RemoveDevice: %v", err)
+		}
+		if len(fe.Calls) != 1 {
+			t.Fatalf("expected only the existence probe, got %v", fe.Calls)
+		}
+	})
+	t.Run("ImageCopyRemote skips when alias exists", func(t *testing.T) {
+		fe := withFakeExec(t, fakeRun{stdout: `[{"name":"a"}]`}) // ImageAliasExists → present
+		if err := ImageCopyRemote(context.Background(), "r", "a"); err != nil {
+			t.Fatalf("ImageCopyRemote: %v", err)
+		}
+		if len(fe.Calls) != 1 {
+			t.Fatalf("expected only the alias check, got %v", fe.Calls)
+		}
+	})
 }
 
 // TestWaitReadyRespectsCancel: a probe that never succeeds would spin WaitReady

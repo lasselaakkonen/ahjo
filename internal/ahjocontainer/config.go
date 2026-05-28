@@ -150,11 +150,12 @@ func LoadAlternateFromContainer(container, name string) (*Config, bool, error) {
 // (nil, false, nil) when path doesn't exist; surfaces real incus errors
 // otherwise.
 func loadJSONFromContainer(container, path, source string) (*Config, bool, error) {
-	// `test -f` exit 1 means missing. incus.Exec wraps the exit code into
-	// the error string; sniff for "exit 1" so we can treat absent as
-	// "not configured".
+	// `test -f` exits 1 when the file is missing. incus.Exec surfaces the
+	// command's exit code as an *incus.ExecError; inspect Code rather than
+	// substring-matching the message, so the "absent" detection survives an
+	// incus/locale wording change.
 	if _, err := incus.Exec(container, "test", "-f", path); err != nil {
-		if strings.Contains(err.Error(), "exit 1") {
+		if isExitCode(err, 1) {
 			return nil, false, nil
 		}
 		return nil, false, fmt.Errorf("probe %s in %s: %w", path, container, err)
@@ -182,7 +183,7 @@ func ListAlternatesInContainer(container string) ([]string, error) {
 	if err != nil {
 		// `find` itself exiting non-zero on a missing dir is squelched by
 		// the redirect; any error reaching here is the incus exec layer.
-		if strings.Contains(err.Error(), "exit 1") {
+		if isExitCode(err, 1) {
 			return nil, nil
 		}
 		return nil, fmt.Errorf("list /repo/.ahjo in %s: %w", container, err)
@@ -212,7 +213,7 @@ func HasLegacyAhjoconfig(container string) (bool, error) {
 }
 
 // probeContainerFile returns whether `test -f path` succeeds in container.
-// Any non-"exit 1" error is surfaced verbatim so callers see real failures
+// Any non-exit-1 error is surfaced verbatim so callers see real failures
 // (incus unreachable, permission denied) rather than treating them as
 // "absent".
 func probeContainerFile(container, path string) (bool, error) {
@@ -220,10 +221,18 @@ func probeContainerFile(container, path string) (bool, error) {
 	if err == nil {
 		return true, nil
 	}
-	if strings.Contains(err.Error(), "exit 1") {
+	if isExitCode(err, 1) {
 		return false, nil
 	}
 	return false, fmt.Errorf("probe %s in %s: %w", path, container, err)
+}
+
+// isExitCode reports whether err is an *incus.ExecError carrying exit code
+// `code`. The structured replacement for sniffing "exit N" substrings out of
+// the error message, which broke silently on any incus wording change.
+func isExitCode(err error, code int) bool {
+	var ee *incus.ExecError
+	return errors.As(err, &ee) && ee.Code == code
 }
 
 // Parse strips JSONC comments + trailing commas from b, json.Unmarshals
