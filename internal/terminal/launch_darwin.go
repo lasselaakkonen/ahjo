@@ -106,19 +106,23 @@ func launchMacGhostty(argv []string, asTab bool) error {
 	// string to `$SHELL -lc` as a single double-quoted token so Ghostty's
 	// tokeniser keeps it intact across the boundary.
 	value := fmt.Sprintf("%s -lc %q", shell, shellJoin(argv))
-	// A bare application-scoped `make new tab` lets Ghostty pick the parent
-	// window, which on newer macOS resolves to a fresh window instead of a
-	// tab. Target the front window explicitly (mirroring launchITerm),
-	// falling back to a new window when none is open.
+	// Use Ghostty's own scripting verbs (`new window` / `new tab in <window>`)
+	// rather than the standard AppleScript `make` verb. `make new tab` routes
+	// through AppKit's native NSWindow tabbing, which honours the system
+	// "Prefer tabs when opening documents" setting and a freshly-launched
+	// window's unsettled tab-group state — so on newer macOS the first tab
+	// request misfires into a new window. `new tab in front window` tells
+	// Ghostty to attach a tab to that window directly, unconditionally.
+	// Fall back to a new window when none is open (front window would error).
 	var create string
 	if asTab {
 		create = `if (count of windows) is 0 then
-make new window with configuration cfg
+new window with configuration cfg
 else
-tell front window to make new tab with configuration cfg
+new tab in front window with configuration cfg
 end if`
 	} else {
-		create = "make new window with configuration cfg"
+		create = "new window with configuration cfg"
 	}
 	script := fmt.Sprintf(`tell application "Ghostty"
 activate
