@@ -177,7 +177,7 @@ func bootstrapSubtree(src, dst, walkRoot string, m gitignore.Matcher, noSkiplist
 			return nil
 		}
 		dstPath := filepath.Join(dst, rel)
-		if err := mirror.CopyFile(p, dstPath, fastSkip); err != nil {
+		if err := mirror.CopyFile(p, dstPath, dst, fastSkip); err != nil {
 			if !errors.Is(err, mirror.ErrUnsupportedFileType) {
 				log.Printf("copy %s: %v", rel, err)
 			}
@@ -255,7 +255,7 @@ func handleEvent(ev fsnotify.Event, w *fsnotify.Watcher, src, dst string, m giti
 		return
 	}
 
-	if err := mirror.CopyFile(ev.Name, dstPath, false); err != nil {
+	if err := mirror.CopyFile(ev.Name, dstPath, dst, false); err != nil {
 		if errors.Is(err, mirror.ErrUnsupportedFileType) {
 			return
 		}
