@@ -18,6 +18,11 @@
 # `--yes` against the sandbox repo so there's no live prompt to block the
 # timed SIGINT); otherwise it falls back to an attended Ctrl-C.
 
+# Guard the pre-source statements (notably the cd) too: lib.sh sets this, but
+# only once sourced — a failed cd would otherwise fall through to sourcing
+# lib.sh from the wrong directory unguarded.
+set -euo pipefail
+
 # Capture the invocation dir before cd so a relative AHJO_BIN (e.g. ./ahjo)
 # resolves against where the operator ran this, not e2e/.
 AHJO_E2E_PWD="${AHJO_E2E_PWD:-$PWD}"
