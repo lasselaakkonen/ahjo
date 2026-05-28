@@ -250,14 +250,9 @@ func tempName(dir, base string) (string, error) {
 }
 
 // InstallSignalHandler returns a context that cancels on SIGTERM/SIGINT so
-// the daemon shuts down cleanly when systemd stops the unit.
+// the daemon shuts down cleanly when systemd stops the unit. The returned
+// stop func deregisters the signal handler (the daemon defers it), so there's
+// no goroutine left blocked on a channel for the process's lifetime.
 func InstallSignalHandler() (context.Context, context.CancelFunc) {
-	ctx, cancel := context.WithCancel(context.Background())
-	ch := make(chan os.Signal, 1)
-	signal.Notify(ch, syscall.SIGTERM, syscall.SIGINT)
-	go func() {
-		<-ch
-		cancel()
-	}()
-	return ctx, cancel
+	return signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 }
