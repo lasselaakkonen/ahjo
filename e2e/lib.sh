@@ -344,6 +344,21 @@ assert_container_absent() {
 	pass "container $1 is absent"
 }
 
+# wait_container_absent <container> [tries]: block until the container has no
+# incus record, polling once a second (default 30 tries). Lets a caller that
+# delete-then-recreates a fixed-name container start the recreate from a true
+# clean slate — `incus delete --force` can return while the instance's storage
+# is still being torn down, and a half-created/wedged launch may linger after a
+# `timeout`-reaped attempt. Gating the recreate on this avoids racing either.
+wait_container_absent() {
+	local c="$1" tries="${2:-30}" i
+	for i in $(seq 1 "$tries"); do
+		[ -z "$(_status "$c")" ] && return 0
+		sleep 1
+	done
+	fail "$c still present after ${tries}s of delete (incus storage wedged?)"
+}
+
 # assert_repo_at_branch <container> <branch>: /repo's checked-out branch matches.
 # Reads .git/HEAD via `incus file pull` rather than `git rev-parse`, so it works
 # on a STOPPED container too — `repo add` leaves the repo container stopped (the
