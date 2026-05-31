@@ -185,18 +185,24 @@ step_doctor() {
 #     it as a candidate but, without `--prune`, only REPORT (dry run). The branch
 #     container still running afterward is the safety check that report mode
 #     never deletes. (gc always excludes the repo's default/COW-source branch.)
+#
+#     gc scans the GLOBAL registry across every repo, so the operator's own
+#     unrelated stale branches may legitimately appear. We therefore assert on
+#     the e2e branch alias specifically rather than on the whole report being
+#     empty — the seconds-old branch must be absent under the default window and
+#     present under --older-than 0.
 step_gc() {
 	section "3.2 gc — stale-branch report (no prune)"
 	local out
 	out="$(ahjo gc 2>&1)" || fail "ahjo gc (default window) failed" "$out"
-	printf '%s\n' "$out" | grep -q "no candidates" ||
-		fail "ahjo gc (default 24h) flagged a fresh branch; expected 'no candidates'" "$out"
-	pass "ahjo gc (default 24h) reports no stale candidates"
+	if printf '%s\n' "$out" | grep -qF "$BRANCH_ALIAS"; then
+		fail "ahjo gc (default 24h) flagged the seconds-old branch $BRANCH_ALIAS" "$out"
+	fi
+	pass "ahjo gc (default 24h) does not flag the fresh branch"
 
 	out="$(ahjo gc --older-than 0 2>&1)" || fail "ahjo gc --older-than 0 failed" "$out"
-	if printf '%s\n' "$out" | grep -q "no candidates"; then
-		fail "ahjo gc --older-than 0 found no candidates; expected the branch container" "$out"
-	fi
+	printf '%s\n' "$out" | grep -qF "$BRANCH_ALIAS" ||
+		fail "ahjo gc --older-than 0 did not list the branch $BRANCH_ALIAS" "$out"
 	printf '%s\n' "$out" | grep -q "dry run" ||
 		fail "ahjo gc --older-than 0 did not stay in report mode (no 'dry run' notice)" "$out"
 	pass "ahjo gc --older-than 0 reports the branch as a dry-run candidate"
