@@ -57,13 +57,35 @@ main() {
 # waits for it to accept exec, and asserts every embedded-Feature tool resolves.
 probe_ahjo_base() {
 	section "probe ahjo-base — embedded Features materialized"
-	# Clean any leftover probe from a prior aborted run.
+	# Clean any leftover probe from a prior aborted run, and wait until it is
+	# fully gone before launching (delete's storage teardown can lag).
 	incusq incus delete --force "$PROBE_CONTAINER" >/dev/null 2>&1 || true
+	wait_container_absent "$PROBE_CONTAINER"
 
-	step "incus launch ahjo-base $PROBE_CONTAINER"
-	local out
-	out="$(incusq incus launch ahjo-base "$PROBE_CONTAINER" 2>&1)" ||
-		fail "incus launch ahjo-base failed (did update publish the image?)" "$out"
+	# The FIRST launch from the just-published image unpacks it into the storage
+	# pool: incus keys the unpacked volume by image fingerprint, and every `ahjo
+	# update` mints a fresh fingerprint, so this unpack happens on every run
+	# (normally ~tens of seconds for the ~0.6 GiB ahjo-base). Two traps here:
+	#   1. The launch must STREAM, not be captured — `out="$(incus launch …)"`
+	#      swallows the "Unpacking image: N%" progress bar, so a normal unpack
+	#      looks like a dead hang and tempts a Ctrl-C.
+	#   2. incus's per-fingerprint unpack can genuinely wedge on this btrfs pool:
+	#      it blocks with NO operation registered and NO progress, and a daemon
+	#      restart doesn't clear it — only reaping the stuck attempt does. An
+	#      interrupted unpack (trap 1) is one way to land here.
+	# So: stream live, bound each attempt with `timeout` so a wedge fails loudly
+	# instead of hanging forever, and retry once after reaping the stuck attempt.
+	step "incus launch ahjo-base $PROBE_CONTAINER  (first launch unpacks the fresh image — progress below)"
+	local attempt
+	for attempt in 1 2; do
+		if incusq timeout 180 incus launch ahjo-base "$PROBE_CONTAINER"; then break; fi
+		[ "$attempt" = 2 ] && fail "incus launch ahjo-base never completed (image unpack wedged?).
+    Recover: incusq incus delete --force $PROBE_CONTAINER ; reap any stuck
+    'incus launch ahjo-base' in the VM, then re-run. Did update publish the image?"
+		warn "launch attempt $attempt did not finish within 180s — reaping stuck attempt and retrying"
+		incusq incus delete --force "$PROBE_CONTAINER" >/dev/null 2>&1 || true
+		wait_container_absent "$PROBE_CONTAINER"
+	done
 
 	# Wait until the container accepts exec (init far enough along for command -v).
 	local i ready=0
