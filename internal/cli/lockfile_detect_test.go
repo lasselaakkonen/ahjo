@@ -333,6 +333,67 @@ func TestDetectMatches_FallthroughOnMiss(t *testing.T) {
 	}
 }
 
+// TestDetectMatches_SubdirHit verifies that a probe returning a subdir-relative
+// path (e.g. "backend/go.sum") is accepted by detectMatches and surfaces the
+// full relative path in detectMatch.hit — so the prompt reads
+// "Found backend/go.sum" rather than just "Found go.sum".
+func TestDetectMatches_SubdirHit(t *testing.T) {
+	probe := func(e detectEntry) string {
+		for _, p := range e.probes {
+			if p == "go.sum" {
+				return "backend/" + p
+			}
+		}
+		return ""
+	}
+	got := detectMatches(probe)
+	if len(got) != 1 {
+		t.Fatalf("want 1 match, got %d: %v", len(got), got)
+	}
+	if got[0].hit != "backend/go.sum" {
+		t.Fatalf("want hit=backend/go.sum, got %q", got[0].hit)
+	}
+}
+
+// TestDetectMatches_RootBeatsSubdir confirms that when the probe finds a
+// root hit for one name and a subdir hit for the same name, the root hit
+// wins (because detectMatches dedupes by name and root probes fire first).
+func TestDetectMatches_RootBeatsSubdir(t *testing.T) {
+	probe := func(e detectEntry) string {
+		for _, p := range e.probes {
+			if p == "go.work" {
+				return p // root hit
+			}
+			if p == "go.sum" {
+				return "backend/" + p // subdir hit, lower priority row
+			}
+		}
+		return ""
+	}
+	got := detectMatches(probe)
+	if len(got) != 1 {
+		t.Fatalf("want 1 match, got %d: %v", len(got), got)
+	}
+	if got[0].hit != "go.work" {
+		t.Fatalf("want root go.work to win, got hit=%q", got[0].hit)
+	}
+}
+
+// TestSkipSubdirs verifies the canonical skip set contains exactly the four
+// high-risk entries. A change that silently adds or removes an entry would
+// alter detection behaviour in ways the user might not expect.
+func TestSkipSubdirs(t *testing.T) {
+	want := []string{".git", ".venv", "node_modules", "vendor"}
+	if len(skipSubdirs) != len(want) {
+		t.Fatalf("skipSubdirs has %d entries, want %d (%v)", len(skipSubdirs), len(want), want)
+	}
+	for _, d := range want {
+		if !skipSubdirs[d] {
+			t.Fatalf("skipSubdirs missing %q", d)
+		}
+	}
+}
+
 func equalStrings(a, b []string) bool {
 	if len(a) != len(b) {
 		return false

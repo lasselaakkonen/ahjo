@@ -141,18 +141,63 @@ var detectTable = []detectEntry{
 	},
 }
 
+// skipSubdirs is the set of immediate subdirectories under /repo that are
+// never scanned for tech-stack lockfiles. Each has a concrete reason:
+//   - node_modules: npm/pnpm/yarn dependency cache — contains thousands of
+//     package dirs, each with a package.json that is not a project root
+//   - vendor: Go/PHP/Ruby vendored deps — go.sum files here belong to
+//     vendored modules, not the project, and would fire a spurious Go prompt
+//   - .git: VCS internals
+//   - .venv: Python virtualenv — contains requirements.txt fragments written
+//     by pip for installed packages, not the project's own dependency spec
+var skipSubdirs = map[string]bool{
+	"node_modules": true,
+	"vendor":       true,
+	".git":         true,
+	".venv":        true,
+}
+
+// listSubdirs returns the names (not full paths) of immediate subdirectories
+// under /repo in the container, excluding entries in skipSubdirs. A find
+// failure (e.g. empty repo, permission error) returns nil so the caller
+// degrades gracefully to root-only detection.
+func listSubdirs(containerName string) []string {
+	out, err := incus.Exec(containerName, "find", paths.RepoMountPath,
+		"-maxdepth", "1", "-mindepth", "1", "-type", "d", "-printf", "%f\\n")
+	if err != nil {
+		return nil
+	}
+	var dirs []string
+	for name := range strings.SplitSeq(strings.TrimRight(string(out), "\n"), "\n") {
+		if name == "" || skipSubdirs[name] {
+			continue
+		}
+		dirs = append(dirs, name)
+	}
+	return dirs
+}
+
 // firstProbeHit returns the first probe file from e that exists in
-// containerName's /repo, or "" if none match. Probing is a `test -f` via
-// incus.Exec; a non-zero exit (file absent) is treated as a miss, every
-// other error is collapsed to a miss too — consistent with how
-// runWarmInstall has always interpreted this same probe. The matched
-// filename is surfaced in the prompt so the user sees which artifact
-// triggered the suggestion (helpful for Docker, where Dockerfile vs.
-// compose.yaml leads to different mental models).
-func firstProbeHit(containerName string, e detectEntry) string {
+// containerName's /repo or any of the supplied immediate subdirs, or ""
+// if none match. Root is checked before subdirs so a workspace-root
+// lockfile (which covers the whole monorepo) beats per-package lockfiles
+// and the global dedup-by-name logic keeps the result to one prompt per
+// ecosystem. Probing is a `test -f` via incus.Exec; a non-zero exit
+// (file absent) is treated as a miss, every other error collapses to a
+// miss too. The returned string is a repo-relative path
+// (e.g. "backend/go.sum") so the prompt can tell the user exactly which
+// file triggered the suggestion.
+func firstProbeHit(containerName string, e detectEntry, subdirs []string) string {
 	for _, p := range e.probes {
 		if _, err := incus.Exec(containerName, "test", "-f", paths.RepoMountPath+"/"+p); err == nil {
 			return p
+		}
+	}
+	for _, sub := range subdirs {
+		for _, p := range e.probes {
+			if _, err := incus.Exec(containerName, "test", "-f", paths.RepoMountPath+"/"+sub+"/"+p); err == nil {
+				return sub + "/" + p
+			}
 		}
 	}
 	return ""
@@ -190,10 +235,12 @@ func detectMatches(probe func(detectEntry) string) []detectMatch {
 
 // detectStacks probes /repo inside containerName against every row of
 // detectTable, returning matches in table order with the dedupe-by-name
-// pass applied (see detectMatches).
+// pass applied (see detectMatches). Subdirectories one level below /repo
+// are scanned in addition to the root; entries in skipSubdirs are excluded.
 func detectStacks(containerName string) ([]detectMatch, error) {
+	subdirs := listSubdirs(containerName)
 	return detectMatches(func(e detectEntry) string {
-		return firstProbeHit(containerName, e)
+		return firstProbeHit(containerName, e, subdirs)
 	}), nil
 }
 
