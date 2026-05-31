@@ -146,37 +146,56 @@ func RevertPossible(target, slug string) bool {
 	return hasEmptyMarker(slug)
 }
 
-// ListSnapshots returns the slugs that have a worktree snapshot ref under
-// target's .git, sorted. Used by the orphan-recovery path (`ahjo mirror revert
-// <target>`) to discover which snapshot to restore when no container/branch
-// remains. A target that is not a git work tree (or has no snapshots) yields an
-// empty slice and no error.
+// ListSnapshots returns the slugs that have a pre-mirror snapshot for target,
+// sorted and de-duplicated. Used by the orphan-recovery path (`ahjo mirror
+// revert <target>`) to discover which snapshot to restore when no
+// container/branch remains. It covers both snapshot mechanisms: git-ref
+// snapshots under target's own .git, and empty-marker snapshots recorded for
+// target under ~/.ahjo. A target with neither yields an empty slice and no
+// error.
 func ListSnapshots(target string) ([]string, error) {
 	if err := gitAvailable(); err != nil {
 		return nil, err
 	}
-	if _, ok := IsGitWorkTree(target); !ok {
-		return nil, nil
+	seen := map[string]bool{}
+	var slugs []string
+	add := func(slug string) {
+		if slug != "" && !seen[slug] {
+			seen[slug] = true
+			slugs = append(slugs, slug)
+		}
 	}
-	out, err := runGit(target, nil, "for-each-ref", "--format=%(refname)", snapshotRefPrefix)
+
+	if _, ok := IsGitWorkTree(target); ok {
+		out, err := runGit(target, nil, "for-each-ref", "--format=%(refname)", snapshotRefPrefix)
+		if err != nil {
+			return nil, err
+		}
+		for _, ref := range strings.Split(out, "\n") {
+			ref = strings.TrimSpace(ref)
+			rest, ok := strings.CutPrefix(ref, snapshotRefPrefix)
+			if !ok {
+				continue
+			}
+			// rest is "<slug>/<kind>"; key off the worktree ref (the
+			// capture-complete flag) so a half-written snapshot doesn't surface
+			// as recoverable.
+			slug, kind, ok := strings.Cut(rest, "/")
+			if !ok || kind != "worktree" || slug == "" {
+				continue
+			}
+			add(slug)
+		}
+	}
+
+	emptySlugs, err := listEmptyMarkerSlugs(target)
 	if err != nil {
 		return nil, err
 	}
-	var slugs []string
-	for _, ref := range strings.Split(out, "\n") {
-		ref = strings.TrimSpace(ref)
-		rest, ok := strings.CutPrefix(ref, snapshotRefPrefix)
-		if !ok {
-			continue
-		}
-		// rest is "<slug>/<kind>"; key off the worktree ref (the capture-complete
-		// flag) so a half-written snapshot doesn't surface as recoverable.
-		slug, kind, ok := strings.Cut(rest, "/")
-		if !ok || kind != "worktree" || slug == "" {
-			continue
-		}
-		slugs = append(slugs, slug)
+	for _, slug := range emptySlugs {
+		add(slug)
 	}
+
 	sort.Strings(slugs)
 	return slugs, nil
 }
@@ -263,13 +282,16 @@ func commitTree(target, tree, parent, msg string) (string, error) {
 }
 
 // CaptureEmpty records that target was empty (or absent) at mirror-on time, so
-// Revert knows to wipe it back to empty.
-func CaptureEmpty(slug string) error {
+// Revert knows to wipe it back to empty. The marker stores target's absolute
+// path so the orphan-recovery path (`ahjo mirror revert <target>`) can map a
+// target back to its slug — empty-marker snapshots live under ~/.ahjo keyed by
+// slug, not in the target's .git, so target alone can't otherwise find them.
+func CaptureEmpty(target, slug string) error {
 	dir := paths.MirrorSnapshotDir(slug)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
-	return os.WriteFile(emptyMarkerPath(slug), nil, 0o600)
+	return os.WriteFile(emptyMarkerPath(slug), []byte(target+"\n"), 0o600)
 }
 
 func emptyMarkerPath(slug string) string {
@@ -279,6 +301,42 @@ func emptyMarkerPath(slug string) string {
 func hasEmptyMarker(slug string) bool {
 	_, err := os.Stat(emptyMarkerPath(slug))
 	return err == nil
+}
+
+// emptyMarkerTarget returns the target path recorded in slug's empty marker.
+// Empty string when the marker is absent or unreadable, or predates the
+// target-recording marker format (written as an empty file) — such a snapshot
+// is still revertable with an explicit slug, just not auto-discoverable.
+func emptyMarkerTarget(slug string) string {
+	b, err := os.ReadFile(emptyMarkerPath(slug))
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(b))
+}
+
+// listEmptyMarkerSlugs returns the slugs whose empty marker records target,
+// the empty-mode complement to ListSnapshots' git-ref scan. A missing
+// snapshots dir is not an error (nothing has ever been mirrored).
+func listEmptyMarkerSlugs(target string) ([]string, error) {
+	entries, err := os.ReadDir(paths.MirrorSnapshotsDir())
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	var slugs []string
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		slug := e.Name()
+		if recorded := emptyMarkerTarget(slug); recorded != "" && samePath(recorded, target) {
+			slugs = append(slugs, slug)
+		}
+	}
+	return slugs, nil
 }
 
 // Revert restores target to its captured pre-mirror state and consumes the

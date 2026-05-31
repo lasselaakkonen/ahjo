@@ -122,6 +122,40 @@ func TestListSnapshots_NonGitTarget(t *testing.T) {
 	}
 }
 
+// Regression: a fresh-empty target's snapshot lives as an empty marker keyed by
+// slug under ~/.ahjo (not in target's .git). `ahjo mirror revert <target>`
+// resolves the slug via ListSnapshots, so the empty-marker slug must be
+// discoverable from target alone — otherwise the orphan-recovery path reports
+// "no pre-mirror snapshot" and can never wipe an empty mirror back.
+func TestListSnapshots_DiscoversEmptyMarker(t *testing.T) {
+	requireGit(t)
+	isolate(t)
+	target := t.TempDir() // empty, not a git repo
+
+	if err := mirror.CaptureEmpty(target, "empty-slug"); err != nil {
+		t.Fatal(err)
+	}
+	slugs, err := mirror.ListSnapshots(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(slugs, ","); got != "empty-slug" {
+		t.Errorf("ListSnapshots = %q, want \"empty-slug\"", got)
+	}
+
+	// A marker for a different target must not surface for this one.
+	if err := mirror.CaptureEmpty(t.TempDir(), "other-slug"); err != nil {
+		t.Fatal(err)
+	}
+	slugs, err = mirror.ListSnapshots(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(slugs, ","); got != "empty-slug" {
+		t.Errorf("ListSnapshots after foreign marker = %q, want \"empty-slug\"", got)
+	}
+}
+
 // Headline: pre-mirror staged-only + unstaged edits both survive a revert.
 func TestRevertGit_PreservesStagedUnstagedSplit(t *testing.T) {
 	requireGit(t)
@@ -448,7 +482,7 @@ func TestRevertEmpty_WipesAndRemovesMarker(t *testing.T) {
 	if m, err := mirror.DetectMode(target); err != nil || m != mirror.ModeFreshEmpty {
 		t.Fatalf("DetectMode = %v err=%v, want ModeFreshEmpty", m, err)
 	}
-	if err := mirror.CaptureEmpty("s"); err != nil {
+	if err := mirror.CaptureEmpty(target, "s"); err != nil {
 		t.Fatal(err)
 	}
 	if !mirror.RevertPossible(target, "s") {
