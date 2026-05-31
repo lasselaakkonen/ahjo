@@ -34,6 +34,15 @@ source ./lib.sh
 # stale run can't collide.
 AHJO_E2E_MIRROR_DIR="${AHJO_E2E_MIRROR_DIR:-$HOME/ahjo-e2e-mirror-$BRANCH_SLUG}"
 
+# extra_teardown (teardown hook in lib.sh): drop the mirror target. It lives in
+# the real Mac home (outside the swept substrate), and `mirror off --no-revert`
+# deliberately leaves files behind — so a mid-run failure between `mirror on`
+# and the inline cleanup would otherwise leave a non-empty, non-git dir that
+# makes the next run's `mirror on` take the no-snapshot ModeFreshNonEmpty path.
+extra_teardown() {
+	rm -rf "$AHJO_E2E_MIRROR_DIR" 2>/dev/null || true
+}
+
 # Skip the mirror checkpoint (it is the most Mac-centric flow) with
 # AHJO_E2E_SKIP_MIRROR=1.
 AHJO_E2E_SKIP_MIRROR="${AHJO_E2E_SKIP_MIRROR:-0}"
@@ -334,10 +343,9 @@ step_mirror() {
 	if [ -n "${REPLY_MIRROR_PROBE:-}" ]; then
 		incusq incus exec "$BRANCH_CONTAINER" --user 1000 -- rm -f "/repo/$REPLY_MIRROR_PROBE" 2>/dev/null || true
 	fi
-	# Tidy the throwaway target. The device is already detached; on Linux it's
-	# inside the isolated HOME (also swept at teardown), on macOS under the real
-	# home — clean both, since --no-revert intentionally left files behind.
-	rm -rf "$AHJO_E2E_MIRROR_DIR" 2>/dev/null || true
+	# The throwaway target is dropped by extra_teardown (the teardown hook), so a
+	# failure anywhere in this step can't leave a non-empty dir behind to poison
+	# the next run's `mirror on`.
 }
 
 # 7. ls + top — operator eyeballs the registry view and the TUI.

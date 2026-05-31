@@ -263,6 +263,13 @@ teardown() {
 		step "rm -rf $AHJO_E2E_ISOLATED_HOME"
 		rm -rf "$AHJO_E2E_ISOLATED_HOME" || warn "rm -rf HOME failed"
 	fi
+	# 4. Test-specific cleanup. A script may define `extra_teardown` to drop
+	#    state that lives outside the swept substrate — e.g. lifecycle.sh's
+	#    mirror target under the real Mac home, which a mid-run failure would
+	#    otherwise leave behind to poison the next run's `mirror on`.
+	if declare -F extra_teardown >/dev/null; then
+		extra_teardown || warn "extra_teardown failed"
+	fi
 	if [ "$code" -eq 0 ]; then
 		printf '%s\nALL CHECKS PASSED%s\n' "$_C_GRN" "$_C_RST"
 	else
