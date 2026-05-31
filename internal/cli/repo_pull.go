@@ -286,6 +286,19 @@ func logStep(format string, args ...any) {
 }
 
 func runRepoPull(ctx context.Context, repoAlias string) error {
+	// Serialize against the detached `_refresh-base` that `ahjo rm <branch>`
+	// spawns: it holds the lockfile while running its own `git pull --ff-only`
+	// (and warm-install) in this same base container's /repo. Without the lock,
+	// two concurrent pulls race on FETCH_HEAD/index.lock — the foreground one
+	// then dies with "Cannot fast-forward to multiple branches" or a stale
+	// index.lock. Acquiring here makes the user's pull wait for the background
+	// refresh to finish instead of corrupting its tree.
+	release, err := lockfile.Acquire()
+	if err != nil {
+		return err
+	}
+	defer release()
+
 	reg, err := registry.Load()
 	if err != nil {
 		return err
