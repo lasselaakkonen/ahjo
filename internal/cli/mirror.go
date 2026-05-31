@@ -275,7 +275,7 @@ func captureMirrorSnapshot(targetPath, slug string) (cancelled bool, err error) 
 			return false, err
 		}
 	case mirror.ModeFreshEmpty:
-		if err := mirror.CaptureEmpty(slug); err != nil {
+		if err := mirror.CaptureEmpty(targetPath, slug); err != nil {
 			return false, err
 		}
 	case mirror.ModeFreshNonEmpty:
