@@ -1,6 +1,8 @@
 package devcontainer
 
 import (
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -299,6 +301,57 @@ func TestNoteIgnoredDockerFields(t *testing.T) {
 				if !strings.Contains(got[i], "ghcr.io/devcontainers/features/example:1") {
 					t.Fatalf("note %d missing Feature ID: %s", i, got[i])
 				}
+			}
+		})
+	}
+}
+
+// TestReadMetadataCustomizationsAhjoNesting verifies that ReadMetadata
+// correctly parses the customizations.ahjo.nesting field added to allow
+// ahjo built-in Features to request security.nesting on the container.
+func TestReadMetadataCustomizationsAhjoNesting(t *testing.T) {
+	cases := []struct {
+		name        string
+		json        string
+		wantNesting bool
+	}{
+		{
+			name:        "nesting absent defaults to false",
+			json:        `{"id":"test","version":"1.0.0"}`,
+			wantNesting: false,
+		},
+		{
+			name:        "nesting=true parsed",
+			json:        `{"id":"test","version":"1.0.0","customizations":{"ahjo":{"nesting":true}}}`,
+			wantNesting: true,
+		},
+		{
+			name:        "nesting=false explicit",
+			json:        `{"id":"test","version":"1.0.0","customizations":{"ahjo":{"nesting":false}}}`,
+			wantNesting: false,
+		},
+		{
+			name:        "customizations with unknown keys still parses nesting",
+			json:        `{"id":"test","version":"1.0.0","customizations":{"ahjo":{"nesting":true,"future-key":42},"vscode":{"extensions":["foo"]}}}`,
+			wantNesting: true,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			// ReadMetadata also requires install.sh to exist.
+			if err := os.WriteFile(filepath.Join(dir, "install.sh"), []byte("#!/bin/bash\n"), 0o755); err != nil {
+				t.Fatalf("write install.sh: %v", err)
+			}
+			if err := os.WriteFile(filepath.Join(dir, "devcontainer-feature.json"), []byte(tc.json), 0o644); err != nil {
+				t.Fatalf("write devcontainer-feature.json: %v", err)
+			}
+			meta, err := ReadMetadata(dir, "test")
+			if err != nil {
+				t.Fatalf("ReadMetadata: %v", err)
+			}
+			if meta.Customizations.Ahjo.Nesting != tc.wantNesting {
+				t.Errorf("Nesting = %v, want %v", meta.Customizations.Ahjo.Nesting, tc.wantNesting)
 			}
 		})
 	}

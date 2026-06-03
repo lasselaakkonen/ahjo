@@ -48,6 +48,7 @@ These are the *intentional* leaks — every other path is closed.
 | SSH agent socket | Mac → VM → container | conditional — suppressed when an HTTPS+PAT origin covers the repo; **see "GitHub credentials" below** |
 | Per-repo GH PAT | Mac Keychain (or Linux disk) → VM → container | one `GH_TOKEN` per repo, injected on each relay; **see below** |
 | `/dev/loop-control` + `/dev/loop0..7` | host → container, read-write | opt-in per repo via `customizations.ahjo.nested_incus`; off by default. See **Elevated runtime: `nested_incus`** below. |
+| `security.nesting=true` (Incus config) | host kernel → container | opt-in: enabled automatically when the repo declares `ahjo/docker` in its Features, or when `customizations.ahjo.nested_incus` is set. Off by default. See **Elevated runtime: `security.nesting`** below. |
 
 Nothing else crosses — no `~/.ssh/`, no `~/.gitconfig`, no shell history, no `~/Library`.
 
@@ -141,6 +142,19 @@ row in `~/.ahjo/registry.toml`. ahjo's own `ahjo-runtime` Feature is
 applied at image-build time inside the transient build container; that
 path's trust posture is unchanged.
 
+## Elevated runtime: `security.nesting`
+
+`security.nesting=true` enables Linux user-namespace nesting inside the container, which is required for Docker-in-container (dockerd needs in-userns `CAP_SYS_ADMIN` to manage overlayfs layers) and for nested Incus/LXC workloads. It is **off by default** — ahjo only enables it when the repo's `.ahjo/ahjocontainer.json` declares:
+
+- `"ahjo/docker"` in `features` — the built-in Docker Feature sets `customizations.ahjo.nesting: true` in its `devcontainer-feature.json`, which ahjo reads at `repo add` time before starting the container.
+- `customizations.ahjo.nested_incus: true` — the loop-device opt-in for nested Incus; nesting is required to make it useful.
+
+When either path triggers, ahjo applies `security.nesting=true` to the container (stopped), restarts it, and logs `→ security.nesting enabled`. Branch containers cloned via `incus copy` inherit the config flag, so individual branches don't need a restart.
+
+**What this costs.** User-namespace nesting widens the overlayfs kernel attack surface. On bare Linux the container kernel *is* the workstation kernel — a kernel-level escape through the nesting surface compromises the workstation. On macOS via Lima, the Lima VM kernel is the exposed layer; the Mac itself sits behind the `vz` boundary. Repos that never run Docker or nested containers now carry none of this surface by default.
+
+**How it is enforced.** Only `ahjo/*` built-in Features (embedded in the ahjo binary) may request nesting via `customizations.ahjo.nesting: true`. Third-party OCI Features that set the same field are silently ignored — they cannot escalate container privileges through their own metadata. The allowlist is enforced in `internal/cli/features.go:featuresRequestNesting` (Registry=="ahjo" guard).
+
 ## Elevated runtime: `nested_incus`
 
 A repo can declare `customizations.ahjo.nested_incus: true` in `.ahjo/ahjocontainer.json` to enable nested Incus storage pools, nested LXC, or any other workload that needs loop-mounted block devices. When set, ahjo wires `/dev/loop-control` and `/dev/loop0..7` into the container at `ahjo repo add` time. The setting is per-repo, checked into git (auditable in PR review), and surfaces a `warn:` line every time it takes effect — there is no global override and no CLI flag.
@@ -168,8 +182,4 @@ Review the code you `ahjo repo add` like you'd review any checkout — that's th
 
 ## Todo
 
-Known posture gaps, recorded here so they're tracked rather than rediscovered. Neither is a live exploit; both are about narrowing surface that's currently wider than it strictly needs to be.
-
-- **Gate `security.nesting` behind an opt-in.** `security.nesting=true` is set on *every* container ahjo creates (`internal/cli/repo_wiring.go:197`), because Docker-in-container needs it. But it widens the user-namespace / overlayfs kernel attack surface unconditionally — including for repos that never run Docker. On Linux (no VM) that wider surface touches the *real host kernel*; on macOS it lands in the disposable Lima VM. The `nested_incus` opt-in already models the right pattern (per-repo, checked into git, warns on every effect — see [Elevated runtime: `nested_incus`](#elevated-runtime-nested_incus)); `nesting` should follow it, defaulting off for repos that don't declare a Docker/nested workload. The blocker is detection: today nesting is wired unconditionally because there's no per-repo signal for "this repo runs Docker." A `customizations.ahjo` flag (or inferring it from a declared `ahjo/docker` Feature) would supply one.
-
-- **Spell out the Linux direct-host blast radius for the elevated opt-ins.** Container hardening is byte-for-byte identical on both platforms, but the boundary it backs onto is not: on bare Linux the Incus container is the *only* boundary to the real host kernel, whereas on macOS the Lima VM is a second hard boundary behind it. This doc frames the Linux case as the middle layer "collapsing" (see [The stack](#the-stack)), but doesn't connect that to the elevated opt-ins. A kernel-level escape through `security.nesting`'s userns surface or `nested_incus`'s loop-device / block-FS surface compromises the **workstation** on Linux, versus only the disposable VM on macOS. The `nested_incus` section already states this for loop devices; the same per-platform framing should cover `security.nesting` and be surfaced up front in [What each boundary protects](#what-each-boundary-protects), so the Linux operator sizes the risk correctly before enabling either.
+Known posture gaps, recorded here so they're tracked rather than rediscovered. These are not live exploits; they're about narrowing surface that's currently wider than it strictly needs to be.

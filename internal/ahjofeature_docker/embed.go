@@ -2,14 +2,16 @@
 // devcontainer Feature so the repo-add path can apply it without an OCI
 // fetch. The upstream docker-in-docker / docker-outside-of-docker
 // Features declare `mounts` and `privileged: true`, both of which
-// ahjo's runner rejects because the runtime profile
-// (security.nesting=true + setxattr intercept, btrfs rootfs,
-// systemd PID 1 — see CONTAINER-ISOLATION.md) already provides the
-// kernel surface Docker needs. Specifically, dockerd >=26 defaults to
-// the containerd snapshotter, whose layer whiteouts are xattrs handled
-// by the profile's setxattr intercept. This Feature is the
-// ahjo-shaped equivalent and ships in the same release as the profile
-// it depends on.
+// ahjo's runner rejects. The setxattr syscall intercept, the btrfs
+// rootfs, and systemd-as-PID 1 already provide the base surface Docker
+// needs on an Incus system container (see CONTAINER-ISOLATION.md).
+//
+// security.nesting is declared via `customizations.ahjo.nesting: true` in
+// this Feature's devcontainer-feature.json; ahjo reads that at repo-add
+// time and enables nesting on the container before warm-install and
+// lifecycle hooks run. This keeps the userns/overlayfs kernel attack
+// surface closed for repos that don't declare Docker. The feature
+// ships in the same release as the runtime it depends on.
 package ahjofeature_docker
 
 import (

@@ -1,12 +1,19 @@
 // Package ahjofeatures is the lookup table for `ahjo/<name>` built-in
 // devcontainer Features — Features shipped embedded in the ahjo binary
 // rather than fetched from an OCI registry. Each entry is a Feature
-// whose installation depends on ahjo's runtime profile
-// (security.nesting=true + setxattr intercept, btrfs rootfs,
-// systemd PID 1 — see CONTAINER-ISOLATION.md), so the upstream
-// equivalent's `mounts:` / `privileged: true` declarations would be
-// rejected by the runner. Bundling them with the binary means the
-// install logic ships at the same version as the profile it expects.
+// whose installation depends on ahjo's runtime environment (setxattr
+// syscall intercept, btrfs rootfs, systemd PID 1 — see
+// CONTAINER-ISOLATION.md); the upstream equivalents' `mounts:` /
+// `privileged: true` declarations would be rejected by the runner.
+// Bundling them with the binary means the install logic ships at the
+// same version as the runtime it expects.
+//
+// security.nesting is NOT always-on. A built-in Feature that requires
+// nesting (e.g. ahjo/docker) declares `customizations.ahjo.nesting: true`
+// in its devcontainer-feature.json; ahjo reads that at repo-add time and
+// enables nesting on the container before warm-install and lifecycle hooks
+// run. This keeps the userns/overlayfs kernel attack surface closed for
+// repos that don't run Docker or nested container workloads.
 //
 // Built-in Features must NOT declare `dependsOn` on upstream OCI
 // Features in v1: the fetcher dispatch in internal/cli/features.go

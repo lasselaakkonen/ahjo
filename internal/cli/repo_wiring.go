@@ -176,30 +176,27 @@ func attachPasteShim(containerName string) error {
 	return incus.WritePasteShims(containerName)
 }
 
-// securityConfigFlags are the per-container Incus config keys ahjo applies:
-// nesting (for docker-in-container), setxattr syscall intercept,
-// unprivileged-port binding (so a dev server on :80 works without sudo),
-// and disabling the guest-API mount (which exposes the host's incus
-// socket inside).
+// securityConfigFlags are the per-container Incus config keys ahjo applies
+// unconditionally to every container:
 //
-// The setxattr intercept is load-bearing for docker-in-container: dockerd
-// >=26 defaults to the containerd snapshotter, whose layer whiteouts are
-// xattrs (trusted.overlay.opaque / trusted.overlay.whiteout). pnpm/npm
-// postinstall scripts that touch xattrs lean on the same intercept.
+//   - setxattr syscall intercept: required by dockerd >=26 (containerd
+//     snapshotter uses xattr whiteouts) and by pnpm/npm postinstall scripts
+//     that touch xattrs. Always on so non-Docker Node repos work without
+//     declaring the Docker Feature.
+//   - ip_unprivileged_port_start=0: lets a dev server bind :80 without sudo.
+//   - security.guestapi=false: suppresses the host incus socket mount inside
+//     the container.
 //
-// The mknod intercept was removed after tracing docker pull + a
-// whiteout-producing docker build (FROM alpine; RUN touch /f; RUN rm /f):
-// zero mknod/mknodat calls in either workload. The containerd snapshotter
-// uses xattr whiteouts exclusively; the legacy graph driver's mknod-c-0-0
-// whiteouts were never reliably covered by the intercept's mode/dev-bit
-// matching anyway, and that driver is deliberately excluded (see
-// ahjofeature_docker/feature/install.sh).
+// security.nesting is intentionally NOT here. Nesting widens the
+// user-namespace / overlayfs kernel attack surface; on bare Linux it backs
+// directly onto the real host kernel. It is enabled on a per-repo basis only
+// when the repo declares `ahjo/docker` (via its Feature metadata) or sets
+// `customizations.ahjo.nested_incus` — see repo_add.go's needsNesting gate.
 //
 // `incus copy` carries these keys to branch containers, so the default
 // container's wireBranchContainer call covers the whole repo.
 func securityConfigFlags() [][2]string {
 	return [][2]string{
-		{"security.nesting", "true"},
 		{"security.syscalls.intercept.setxattr", "true"},
 		{"linux.sysctl.net.ipv4.ip_unprivileged_port_start", "0"},
 		{"security.guestapi", "false"},

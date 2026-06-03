@@ -660,6 +660,24 @@ func Publish(ctx context.Context, name, alias string) error {
 	return fmt.Errorf("incus publish %s --alias %s: %w", name, alias, err)
 }
 
+// Restart stops and re-starts a container, then waits for it to be
+// ready. The config keys (environment.*, security.*, devices) set while
+// the container was running are instance-level and survive the cycle, so
+// callers don't need to re-apply them. Used when a config change (e.g.
+// enabling security.nesting) only takes effect on the next boot.
+func Restart(ctx context.Context, name string, timeout time.Duration) error {
+	if err := Stop(name); err != nil {
+		return fmt.Errorf("restart %s: stop: %w", name, err)
+	}
+	if err := Start(name); err != nil {
+		return fmt.Errorf("restart %s: start: %w", name, err)
+	}
+	if err := WaitReady(ctx, name, timeout); err != nil {
+		return fmt.Errorf("restart %s: %w", name, err)
+	}
+	return nil
+}
+
 // Start runs `incus start <name>`. Tolerant of "already running".
 func Start(name string) error {
 	cmd := execCommand(context.Background(), "incus", "start", name)

@@ -5,24 +5,28 @@
 #
 # This Feature is shipped embedded in the ahjo binary; the upstream
 # docker-in-docker / docker-outside-of-docker Features declare `mounts`
-# and `privileged: true`, both of which ahjo rejects because the runtime
-# profile (security.nesting=true + setxattr syscall intercept,
-# btrfs rootfs, systemd PID 1) already provides the kernel surface Docker
-# needs. The install here just lays down get.docker.com's binaries and
-# leaves dockerd at its default config — which on dockerd >=26 is the
-# containerd snapshotter, whose layer whiteouts use xattrs (handled by
+# and `privileged: true`, both of which ahjo rejects. The setxattr syscall
+# intercept, the btrfs rootfs, and systemd-as-PID 1 already supply the base
+# kernel surface Docker needs.
+#
+# security.nesting is declared via `customizations.ahjo.nesting: true` in
+# devcontainer-feature.json and enabled by ahjo's repo-add path before
+# warm-install runs. This keeps nesting off for repos that don't run Docker.
+#
+# The install here just lays down get.docker.com's binaries and leaves
+# dockerd at its default config — which on dockerd >=26 is the containerd
+# snapshotter, whose layer whiteouts use xattrs (handled by the always-on
 # security.syscalls.intercept.setxattr=true). Writing
 # `{"storage-driver":"overlay2"}` here would route off the snapshotter
 # onto the legacy graph driver and make dockerd refuse to start in
 # snapshotter mode.
 #
-# `customizations.ahjo.nested_incus` is NOT required either. That opt-in
-# exists for nested Incus / LXC, which need loop-mounted block-backed
-# filesystems wired through /dev/loop-control + /dev/loop0..7. Docker's
-# containerd snapshotter sits on the container's existing overlayfs and
-# never touches /dev/loop*, so the kernel-attack-surface bump that
-# nested_incus carries (see CONTAINER-ISOLATION.md) is unnecessary for
-# docker-in-incus.
+# `customizations.ahjo.nested_incus` is NOT required. That opt-in exists
+# for nested Incus / LXC, which need loop-mounted block-backed filesystems
+# wired through /dev/loop-control + /dev/loop0..7. Docker's containerd
+# snapshotter sits on the container's existing overlayfs and never touches
+# /dev/loop*, so the kernel-attack-surface bump that nested_incus carries
+# (see CONTAINER-ISOLATION.md) is unnecessary for docker-in-incus.
 set -euo pipefail
 
 : "${_REMOTE_USER:?ahjo/docker: _REMOTE_USER must be set by the runner}"

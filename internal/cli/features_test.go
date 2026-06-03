@@ -7,11 +7,12 @@ import (
 	"testing"
 
 	"github.com/lasselaakkonen/ahjo/internal/ahjocontainer"
+	"github.com/lasselaakkonen/ahjo/internal/devcontainer"
 )
 
 func TestApplyRepoFeatures_Noop(t *testing.T) {
 	// nil cfg → no-op, no consent recorded.
-	consent, err := applyRepoFeatures(context.Background(), "x", nil, nil, strings.NewReader(""), &bytes.Buffer{})
+	_, consent, err := applyRepoFeatures(context.Background(), "x", nil, nil, strings.NewReader(""), &bytes.Buffer{})
 	if err != nil {
 		t.Fatalf("nil cfg should be no-op: %v", err)
 	}
@@ -21,7 +22,7 @@ func TestApplyRepoFeatures_Noop(t *testing.T) {
 
 	// Empty Features → also no-op.
 	cfg := &ahjocontainer.Config{}
-	consent, err = applyRepoFeatures(context.Background(), "x", cfg, nil, strings.NewReader(""), &bytes.Buffer{})
+	_, consent, err = applyRepoFeatures(context.Background(), "x", cfg, nil, strings.NewReader(""), &bytes.Buffer{})
 	if err != nil {
 		t.Fatalf("empty features should be no-op: %v", err)
 	}
@@ -41,7 +42,7 @@ func TestApplyRepoFeatures_DeclinedTrustAborts(t *testing.T) {
 	}
 	in := strings.NewReader("n\n")
 	out := &bytes.Buffer{}
-	_, err := applyRepoFeatures(context.Background(), "x", cfg, nil, in, out)
+	_, _, err := applyRepoFeatures(context.Background(), "x", cfg, nil, in, out)
 	if err == nil {
 		t.Fatal("expected error on declined trust")
 	}
@@ -65,7 +66,7 @@ func TestApplyRepoFeatures_CuratedAutoTrustNoPrompt(t *testing.T) {
 	}
 	in := strings.NewReader("")
 	out := &bytes.Buffer{}
-	_, err := applyRepoFeatures(context.Background(), "x", cfg, nil, in, out)
+	_, _, err := applyRepoFeatures(context.Background(), "x", cfg, nil, in, out)
 	// Expected: error during fetch (no real registry); but the prompt
 	// must NOT have been shown.
 	if err == nil {
@@ -95,7 +96,7 @@ func TestApplyRepoFeatures_BuiltinAutoTrustNoPrompt(t *testing.T) {
 	}
 	in := strings.NewReader("")
 	out := &bytes.Buffer{}
-	_, err := applyRepoFeatures(context.Background(), "x", cfg, nil, in, out)
+	_, _, err := applyRepoFeatures(context.Background(), "x", cfg, nil, in, out)
 	if err == nil {
 		t.Fatal("expected Apply to fail without a real container")
 	}
@@ -118,7 +119,7 @@ func TestApplyRepoFeatures_UnknownBuiltin(t *testing.T) {
 	}
 	in := strings.NewReader("")
 	out := &bytes.Buffer{}
-	_, err := applyRepoFeatures(context.Background(), "x", cfg, nil, in, out)
+	_, _, err := applyRepoFeatures(context.Background(), "x", cfg, nil, in, out)
 	if err == nil {
 		t.Fatal("expected unknown built-in to error")
 	}
@@ -139,7 +140,7 @@ func TestApplyRepoFeatures_PriorConsentSkipsPrompt(t *testing.T) {
 	prior := map[string]bool{"ghcr.io/acme/*": true}
 	in := strings.NewReader("")
 	out := &bytes.Buffer{}
-	_, err := applyRepoFeatures(context.Background(), "x", cfg, prior, in, out)
+	_, _, err := applyRepoFeatures(context.Background(), "x", cfg, prior, in, out)
 	if err == nil {
 		t.Fatal("expected fetch error")
 	}
@@ -148,5 +149,103 @@ func TestApplyRepoFeatures_PriorConsentSkipsPrompt(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "previously trusted") {
 		t.Fatalf("expected `previously trusted` line; output:\n%s", out.String())
+	}
+}
+
+func TestFeaturesRequestNesting_Empty(t *testing.T) {
+	// No features → no nesting request.
+	if featuresRequestNesting(nil) {
+		t.Fatal("nil slice should return false")
+	}
+	if featuresRequestNesting([]devcontainer.FetchedFeature{}) {
+		t.Fatal("empty slice should return false")
+	}
+}
+
+func TestFeaturesRequestNesting_AhjoBuiltinNestingTrue(t *testing.T) {
+	// An ahjo/* built-in with Nesting:true → requests nesting.
+	ffs := []devcontainer.FetchedFeature{
+		{
+			Ref:      devcontainer.FeatureRef{Registry: "ahjo", Repository: "docker"},
+			Metadata: &devcontainer.Metadata{},
+		},
+	}
+	ffs[0].Metadata.Customizations.Ahjo.Nesting = true
+
+	if !featuresRequestNesting(ffs) {
+		t.Fatal("ahjo/* built-in with Nesting=true should return true")
+	}
+}
+
+func TestFeaturesRequestNesting_AhjoBuiltinNestingFalse(t *testing.T) {
+	// An ahjo/* built-in without Nesting:true → does not request nesting.
+	ffs := []devcontainer.FetchedFeature{
+		{
+			Ref:      devcontainer.FeatureRef{Registry: "ahjo", Repository: "prek"},
+			Metadata: &devcontainer.Metadata{},
+		},
+	}
+	if featuresRequestNesting(ffs) {
+		t.Fatal("ahjo/* built-in with Nesting=false should return false")
+	}
+}
+
+func TestFeaturesRequestNesting_OCIFeatureIgnored(t *testing.T) {
+	// An OCI Feature that sets Nesting:true must be silently ignored —
+	// only ahjo/* built-ins may request Incus config changes.
+	ffs := []devcontainer.FetchedFeature{
+		{
+			Ref: devcontainer.FeatureRef{
+				Registry:   "ghcr.io",
+				Repository: "devcontainers/features/docker-in-docker",
+			},
+			Metadata: &devcontainer.Metadata{},
+		},
+	}
+	ffs[0].Metadata.Customizations.Ahjo.Nesting = true
+
+	if featuresRequestNesting(ffs) {
+		t.Fatal("OCI Feature with Nesting=true must be ignored (only ahjo/* built-ins honored)")
+	}
+}
+
+func TestFeaturesRequestNesting_NilMetadata(t *testing.T) {
+	// Nil Metadata (shouldn't happen in practice but must not panic).
+	ffs := []devcontainer.FetchedFeature{
+		{
+			Ref:      devcontainer.FeatureRef{Registry: "ahjo", Repository: "docker"},
+			Metadata: nil,
+		},
+	}
+	if featuresRequestNesting(ffs) {
+		t.Fatal("nil Metadata should not panic and should return false")
+	}
+}
+
+func TestSecurityConfigFlags_NestingAbsent(t *testing.T) {
+	// security.nesting must NOT be in the default flags — it is now
+	// gated behind the ahjo/docker Feature and customizations.ahjo.nested_incus.
+	for _, kv := range securityConfigFlags() {
+		if kv[0] == "security.nesting" {
+			t.Fatalf("securityConfigFlags must not include security.nesting; found %v", kv)
+		}
+	}
+}
+
+func TestSecurityConfigFlags_RequiredKeysPresent(t *testing.T) {
+	required := []string{
+		"security.syscalls.intercept.setxattr",
+		"linux.sysctl.net.ipv4.ip_unprivileged_port_start",
+		"security.guestapi",
+	}
+	flags := securityConfigFlags()
+	byKey := make(map[string]string, len(flags))
+	for _, kv := range flags {
+		byKey[kv[0]] = kv[1]
+	}
+	for _, k := range required {
+		if _, ok := byKey[k]; !ok {
+			t.Errorf("securityConfigFlags missing required key %q", k)
+		}
 	}
 }
