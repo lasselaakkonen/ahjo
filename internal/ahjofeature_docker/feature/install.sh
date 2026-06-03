@@ -6,16 +6,15 @@
 # This Feature is shipped embedded in the ahjo binary; the upstream
 # docker-in-docker / docker-outside-of-docker Features declare `mounts`
 # and `privileged: true`, both of which ahjo rejects because the runtime
-# profile (security.nesting=true + setxattr/mknod syscall intercepts,
+# profile (security.nesting=true + setxattr syscall intercept,
 # btrfs rootfs, systemd PID 1) already provides the kernel surface Docker
 # needs. The install here just lays down get.docker.com's binaries and
 # leaves dockerd at its default config — which on dockerd >=26 is the
 # containerd snapshotter, whose layer whiteouts use xattrs (handled by
 # security.syscalls.intercept.setxattr=true). Writing
 # `{"storage-driver":"overlay2"}` here would route off the snapshotter
-# onto the legacy graph driver, whose mknod-c-0-0 whiteouts are not
-# reliably covered by the intercept and which in snapshotter mode
-# refuses to start at all.
+# onto the legacy graph driver and make dockerd refuse to start in
+# snapshotter mode.
 #
 # `customizations.ahjo.nested_incus` is NOT required either. That opt-in
 # exists for nested Incus / LXC, which need loop-mounted block-backed
