@@ -587,6 +587,8 @@ Then recreate the container so the config takes effect:
 ahjo shell myacc/myrepo@mybranch --update
 ```
 
+⚠️ `--update` destroys the existing container and creates a fresh one from the repo base. Any uncommitted or unpushed changes inside the container are lost. Push or stash before running it.
+
 See [Run Docker inside a container](#run-docker-inside-a-container) for full details.
 
 ## Development
