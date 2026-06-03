@@ -28,6 +28,7 @@ Blazing fast firing up of containers per feature branch.
   - [From a monorepo, run two different tech stacks in two different containers](#from-a-monorepo-run-two-different-tech-stacks-in-two-different-containers)
   - [Refresh dependencies in repo base container](#refresh-dependencies-in-repo-base-container)
   - [You do not want feature branches to branch off the default branch](#you-do-not-want-feature-branches-to-branch-off-the-default-branch)
+  - [Run Docker inside a container](#run-docker-inside-a-container)
 - [Container tech stack setup](#container-tech-stack-setup)
   - [`.ahjo/ahjocontainer.json`](#ahjoahjocontainerjson)
   - [How ahjo picks the container config](#how-ahjo-picks-the-container-config)
@@ -36,6 +37,7 @@ Blazing fast firing up of containers per feature branch.
 - [Commands](#commands)
 - [Per-repo config (ahjocontainer.json)](#per-repo-config-ahjocontainerjson)
 - [Rebuilding after a change](#rebuilding-after-a-change)
+- [Troubleshooting](#troubleshooting)
 - [Development](#development)
   - [Git hooks](#git-hooks)
 
@@ -320,6 +322,22 @@ ahjo create myacc/myrepo feat-1
 # -> container with `feat-1` branch branched off `origin/develop`
 ```
 
+### Run Docker inside a container
+
+Add the `ahjo/docker` built-in Feature to your `.ahjo/ahjocontainer.json`:
+
+```jsonc
+{
+  "features": {
+    "ahjo/docker": { "version": "latest" }
+  }
+}
+```
+
+This installs Docker Engine and the Compose plugin via `get.docker.com` and automatically enables the kernel capability Docker needs (`security.nesting`). No other config — no `customizations.ahjo.nested_incus`, no `privileged`, no bind mounts.
+
+Options: `version` (default `latest`), `channel` (`stable`/`test`), `daemon_args` (merged into `daemon.json` as a JSON fragment).
+
 ## Container tech stack setup
 
 #### `.ahjo/ahjocontainer.json`
@@ -548,6 +566,28 @@ ahjo has three state layers: the host binary, the `ahjo-base` Incus image, and t
 `ahjo shell --update` is granular by design — `ahjo update` rebuilds the image but leaves running containers alone, so you can decide per-worktree whether to recreate. The worktree, host keys, registry entry, and ssh port are preserved. Worktrees you don't recreate keep running on the old image until you do.
 
 `ahjo nuke` is for the rare case when state itself is wrong (mismatched aliases, corrupt registry, etc.). For ordinary "I changed the code" iteration, `ahjo update` is what you want.
+
+## Troubleshooting
+
+### Running Docker inside a container throws errors
+
+Docker-in-container requires `security.nesting` — a kernel capability that ahjo keeps off by default to limit attack surface. It is enabled automatically when you declare the `ahjo/docker` built-in Feature in your `.ahjo/ahjocontainer.json`:
+
+```jsonc
+{
+  "features": {
+    "ahjo/docker": { "version": "latest" }
+  }
+}
+```
+
+Then recreate the container so the config takes effect:
+
+```
+ahjo shell myacc/myrepo@mybranch --update
+```
+
+See [Run Docker inside a container](#run-docker-inside-a-container) for full details.
 
 ## Development
 
