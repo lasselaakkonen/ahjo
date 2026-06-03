@@ -34,9 +34,9 @@ func TestMetadataAcceptedByRejectDockerFields(t *testing.T) {
 // default) into /etc/docker/daemon.json. On dockerd >=26 that key
 // routes off the containerd snapshotter (xattr whiteouts, covered by
 // security.syscalls.intercept.setxattr=true) onto the legacy graph
-// driver (mknod-c-0-0 whiteouts, not reliably covered by the mknod
-// intercept). The Feature must leave daemon.json absent by default and
-// only write content when DAEMON_ARGS supplies it.
+// driver, which makes dockerd refuse to start in snapshotter mode.
+// The Feature must leave daemon.json absent by default and only write
+// content when DAEMON_ARGS supplies it.
 //
 // The check is conservative: install.sh must not read a STORAGE_DRIVER
 // env var, and devcontainer-feature.json must not advertise a

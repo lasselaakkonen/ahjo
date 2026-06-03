@@ -177,7 +177,7 @@ func attachPasteShim(containerName string) error {
 }
 
 // securityConfigFlags are the per-container Incus config keys ahjo applies:
-// nesting (for docker-in-container), setxattr/mknod syscall intercepts,
+// nesting (for docker-in-container), setxattr syscall intercept,
 // unprivileged-port binding (so a dev server on :80 works without sudo),
 // and disabling the guest-API mount (which exposes the host's incus
 // socket inside).
@@ -185,17 +185,21 @@ func attachPasteShim(containerName string) error {
 // The setxattr intercept is load-bearing for docker-in-container: dockerd
 // >=26 defaults to the containerd snapshotter, whose layer whiteouts are
 // xattrs (trusted.overlay.opaque / trusted.overlay.whiteout). pnpm/npm
-// postinstall scripts that touch xattrs lean on the same intercept. The
-// mknod intercept is kept as defense in depth — the snapshotter path
-// doesn't need it, and the legacy graph driver path that does isn't
-// reliably covered by the intercept's mode/dev-bit matching anyway.
+// postinstall scripts that touch xattrs lean on the same intercept.
+//
+// The mknod intercept was removed after tracing docker pull + a
+// whiteout-producing docker build (FROM alpine; RUN touch /f; RUN rm /f):
+// zero mknod/mknodat calls in either workload. The containerd snapshotter
+// uses xattr whiteouts exclusively; the legacy graph driver's mknod-c-0-0
+// whiteouts were never reliably covered by the intercept's mode/dev-bit
+// matching anyway, and that driver is deliberately excluded (see
+// ahjofeature_docker/feature/install.sh).
 //
 // `incus copy` carries these keys to branch containers, so the default
 // container's wireBranchContainer call covers the whole repo.
 func securityConfigFlags() [][2]string {
 	return [][2]string{
 		{"security.nesting", "true"},
-		{"security.syscalls.intercept.mknod", "true"},
 		{"security.syscalls.intercept.setxattr", "true"},
 		{"linux.sysctl.net.ipv4.ip_unprivileged_port_start", "0"},
 		{"security.guestapi", "false"},

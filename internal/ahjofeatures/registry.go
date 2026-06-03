@@ -2,7 +2,7 @@
 // devcontainer Features — Features shipped embedded in the ahjo binary
 // rather than fetched from an OCI registry. Each entry is a Feature
 // whose installation depends on ahjo's runtime profile
-// (security.nesting=true + mknod/setxattr intercepts, btrfs rootfs,
+// (security.nesting=true + setxattr intercept, btrfs rootfs,
 // systemd PID 1 — see CONTAINER-ISOLATION.md), so the upstream
 // equivalent's `mounts:` / `privileged: true` declarations would be
 // rejected by the runner. Bundling them with the binary means the
