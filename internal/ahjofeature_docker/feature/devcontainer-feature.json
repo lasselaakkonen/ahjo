@@ -2,7 +2,7 @@
   "id": "docker",
   "version": "1.0.0",
   "name": "Docker (ahjo built-in)",
-  "description": "Installs Docker Engine + compose plugin into an ahjo container. Configured for security.nesting=true + mknod/setxattr intercepts; no mounts, no privileged, and no customizations.ahjo.nested_incus required.",
+  "description": "Installs Docker Engine + compose plugin into an ahjo container. Requires security.nesting, which this Feature requests automatically via customizations.ahjo.nesting — no mounts, no privileged, and no customizations.ahjo.nested_incus required.",
   "options": {
     "version":     { "default": "latest" },
     "channel":     { "default": "stable" },
@@ -10,5 +10,10 @@
   },
   "containerEnv": {
     "DOCKER_BUILDKIT": "1"
+  },
+  "customizations": {
+    "ahjo": {
+      "nesting": true
+    }
   }
 }

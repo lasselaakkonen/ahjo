@@ -83,6 +83,13 @@ func SafeRefDir(s string) string {
 // (they map to Docker-runtime concepts that Incus system containers
 // either don't need or already provide via systemd).
 //
+// customizations.ahjo is ahjo's own narrow allowlist for built-in Features
+// to request Incus instance-config changes that must be applied on the host
+// before the next container start. Only `ahjo/*` (Registry=="ahjo") built-ins
+// may request these; the same field in an OCI Feature is silently ignored.
+// The allowlist is the struct shape itself — only fields declared here are
+// honored; no free-form config map is accepted.
+//
 // Spec reference: https://containers.dev/implementors/features/
 type Metadata struct {
 	ID            string                    `json:"id"`
@@ -91,6 +98,25 @@ type Metadata struct {
 	ContainerEnv  map[string]string         `json:"containerEnv"`
 	LegacyIds     []string                  `json:"legacyIds"`
 	Options       map[string]OptionSpec     `json:"options"`
+
+	// Customizations holds the ahjo-specific extension namespace. Only the
+	// `ahjo` sub-object is read; vscode/codespaces blocks are ignored silently.
+	Customizations struct {
+		// Ahjo is ahjo's allowlisted set of host-side Incus config requests.
+		// Fields here may only be honored when the Feature's registry is "ahjo"
+		// (i.e. a built-in declared as `ahjo/<name>`) — OCI Features that set
+		// these fields are silently ignored.
+		Ahjo struct {
+			// Nesting, when true, requests security.nesting=true on the
+			// container. Required by Docker-in-container (dockerd needs userns
+			// + overlayfs nesting) and by any nested Incus workload.
+			// Applying it only for built-ins keeps config-escalation inside
+			// ahjo's audited codebase rather than opening a surface for
+			// arbitrary third-party Features to widen the container's kernel
+			// attack surface.
+			Nesting bool `json:"nesting"`
+		} `json:"ahjo"`
+	} `json:"customizations"`
 
 	// Hard-rejected — the Feature genuinely depends on these to work.
 	Mounts     []any `json:"mounts"`

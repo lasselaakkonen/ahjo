@@ -15,10 +15,32 @@ import (
 	"github.com/lasselaakkonen/ahjo/internal/devcontainer"
 )
 
+// featuresRequestNesting reports whether any built-in Feature in ffs
+// requests security.nesting on the container. Only `ahjo/*` Features
+// (Registry=="ahjo") may request Incus instance-config changes; the same
+// field in an OCI Feature is silently ignored. This is the allowlist
+// mechanism: OCI/third-party Features cannot escalate container privileges
+// by setting customizations.ahjo.nesting in their devcontainer-feature.json.
+//
+// Callers use this after Resolve to decide whether to enable nesting and
+// restart the container before warm-install/lifecycle hooks run, so that
+// dockerd (or any tool that needs userns nesting) is available to
+// postCreateCommand.
+func featuresRequestNesting(ffs []devcontainer.FetchedFeature) bool {
+	for _, ff := range ffs {
+		if ff.Ref.Registry == "ahjo" && ff.Metadata != nil && ff.Metadata.Customizations.Ahjo.Nesting {
+			return true
+		}
+	}
+	return false
+}
+
 // applyRepoFeatures runs the trust-prompt → fetch → resolve → apply
-// pipeline for cfg.Features against containerName. Returns the
-// per-glob consent map captured during the prompt; callers persist it
-// onto the Repo row in registry.toml at the end of repo-add.
+// pipeline for cfg.Features against containerName. Returns whether any
+// resolved built-in Feature requested security.nesting on the container
+// (so the caller can enable nesting and restart before lifecycle hooks
+// run), plus the per-glob consent map captured during the prompt (callers
+// persist it onto the Repo row in registry.toml at the end of repo-add).
 //
 // No-op when cfg.Features is empty. Auto-trusts the curated upstream
 // (`ghcr.io/devcontainers/features/*`); already-consented globs in
@@ -43,9 +65,9 @@ func applyRepoFeatures(
 	existingConsent map[string]bool,
 	in io.Reader,
 	out io.Writer,
-) (newConsent map[string]bool, err error) {
+) (requestsNesting bool, newConsent map[string]bool, err error) {
 	if cfg == nil || len(cfg.Features) == 0 {
-		return nil, nil
+		return false, nil, nil
 	}
 
 	// Sort sources for stable output / deterministic prompt order.
@@ -80,7 +102,7 @@ func applyRepoFeatures(
 			line, _ := reader.ReadString('\n')
 			ans := strings.TrimSpace(strings.ToLower(line))
 			if ans != "y" && ans != "yes" {
-				return nil, fmt.Errorf("trust declined for %s; remove the matching `features:` entries or re-run after reviewing the source", glob)
+				return false, nil, fmt.Errorf("trust declined for %s; remove the matching `features:` entries or re-run after reviewing the source", glob)
 			}
 			newConsent[glob] = true
 		}
@@ -88,7 +110,7 @@ func applyRepoFeatures(
 
 	tmpRoot, err := os.MkdirTemp("", "ahjo-features-")
 	if err != nil {
-		return nil, fmt.Errorf("mktemp for features: %w", err)
+		return false, nil, fmt.Errorf("mktemp for features: %w", err)
 	}
 	defer os.RemoveAll(tmpRoot)
 	fetcher := &devcontainer.Fetcher{}
@@ -166,14 +188,14 @@ func applyRepoFeatures(
 	}
 	ordered, err := devcontainer.Resolve(ctx, topLevel, fetch)
 	if err != nil {
-		return nil, err
+		return false, nil, err
 	}
 
 	runtimeEnv := devcontainer.RuntimeEnv()
 	for _, ff := range ordered {
 		fmt.Fprintf(out, "→ feature %s (apply)\n", ff.Ref)
 		if err := devcontainer.Apply(ctx, containerName, ff.Feature, runtimeEnv, out); err != nil {
-			return nil, fmt.Errorf("feature %s: %w", ff.Ref, err)
+			return false, nil, fmt.Errorf("feature %s: %w", ff.Ref, err)
 		}
 		// Apply persists the Feature's containerEnv onto the container
 		// as Incus environment.* keys (with ${VAR} expanded against
@@ -183,5 +205,5 @@ func applyRepoFeatures(
 		// Features compose: Feature N's expanded values are visible
 		// when Feature N+1's containerEnv is expanded.
 	}
-	return newConsent, nil
+	return featuresRequestNesting(ordered), newConsent, nil
 }

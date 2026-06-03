@@ -335,12 +335,39 @@ func repoAddSetup(ctx context.Context, slug, primary string, aliases []string, s
 	// config with their Features unioned (last-wins on key collision)
 	// so the existing single-config resolver runs one trust-prompt /
 	// fetch / resolve / apply pass for the combined set.
-	consent, err := applyRepoFeatures(
+	featuresNesting, consent, err := applyRepoFeatures(
 		ctx, containerName, mergeFeaturesForApply(dcConfs),
 		featureConsentForNew, os.Stdin, cobraOut(),
 	)
 	if err != nil {
 		return err
+	}
+
+	// Enable security.nesting when a Feature (ahjo/docker) or nested_incus
+	// requires it, then restart so the change is in effect before
+	// warm-install and lifecycle hooks run. This lets postCreateCommand run
+	// `docker compose up` or similar without nesting being absent.
+	//
+	// `incus copy` carries instance config to branch containers, so enabling
+	// nesting on the default container here propagates automatically — no
+	// per-branch restart is needed.
+	if featuresNesting || anyNestedIncus(dcConfs) {
+		if err := incus.ConfigSet(containerName, "security.nesting", "true"); err != nil {
+			return fmt.Errorf("enable security.nesting: %w", err)
+		}
+		fmt.Printf("→ security.nesting enabled; restarting %s\n", containerName)
+		if err := incus.Restart(ctx, containerName, 30*time.Second); err != nil {
+			return fmt.Errorf("restart after enabling nesting: %w", err)
+		}
+		// bind=container proxy devices need a live container namespace;
+		// re-attach both after the restart for parity with the initial
+		// post-start wiring above. Both are best-effort.
+		if err := attachSSHAgent(ctx, containerName); err != nil {
+			fmt.Fprintf(cobraOutErr(), "warn: re-attach ssh-agent after nesting restart: %v\n", err)
+		}
+		if err := attachPasteShim(containerName); err != nil {
+			fmt.Fprintf(cobraOutErr(), "warn: re-attach paste shim after nesting restart: %v\n", err)
+		}
 	}
 
 	if len(dcConfs) == 0 {
