@@ -32,6 +32,7 @@ func TestLoad_AllStacksParseAndCarryFeatures(t *testing.T) {
 			}
 			if cfg == nil {
 				t.Fatalf("Load(%q): nil config with found=true", name)
+				return
 			}
 			if len(cfg.Features) == 0 {
 				t.Errorf("stack %q declares no features; every stack should install at least one toolchain Feature", name)
