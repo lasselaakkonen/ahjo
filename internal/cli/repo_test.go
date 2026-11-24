@@ -17,6 +17,7 @@ func TestShouldForwardAgent(t *testing.T) {
 	https := &registry.Repo{Remote: "https://github.com/o/r.git"}
 	ssh := &registry.Repo{Remote: "git@github.com:o/r.git"}
 	local := &registry.Repo{Remote: "/srv/git/r"}
+	mixedCase := &registry.Repo{Remote: "https://GitHub.com/o/r"}
 	cases := []struct {
 		name     string
 		repo     *registry.Repo
@@ -32,6 +33,8 @@ func TestShouldForwardAgent(t *testing.T) {
 		{"nil repo forwards", nil, true, nil, true},
 		{"explicit true forwards even when covered", https, true, boolPtr(true), true},
 		{"explicit false never forwards even on ssh", ssh, false, boolPtr(false), false},
+		{"mixed-case https host+token suppresses", mixedCase, true, nil, false},
+		{"mixed-case https host+no-token forwards", mixedCase, false, nil, true},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -39,6 +42,36 @@ func TestShouldForwardAgent(t *testing.T) {
 			if got != c.want {
 				t.Fatalf("shouldForwardAgent(%+v, token=%v, forward=%v) = %v, want %v",
 					c.repo, c.hasToken, c.forward, got, c.want)
+			}
+		})
+	}
+}
+
+func TestIsHTTPSRemote(t *testing.T) {
+	cases := []struct {
+		remote string
+		want   bool
+	}{
+		{"https://github.com/o/r.git", true},
+		{"https://GitHub.com/o/r", true},
+		{"HTTPS://github.com/o/r", true},
+		{"https://github.com:443/o/r", true},
+		{"https://user@github.com/o/r", true},
+		{"git@github.com:o/r.git", false},
+		{"ssh://git@github.com/o/r", false},
+		{"http://github.com/o/r", false},
+		{"https://github.com.evil.example/o/r", false},
+		{"https://github.com:8443/o/r", false},
+		{"https://github.com", false},
+		{"https://github.com/", false},
+		{"https://gitlab.com/o/r", false},
+		{"/srv/git/r", false},
+		{"", false},
+	}
+	for _, c := range cases {
+		t.Run(c.remote, func(t *testing.T) {
+			if got := isHTTPSRemote(c.remote); got != c.want {
+				t.Fatalf("isHTTPSRemote(%q) = %v, want %v", c.remote, got, c.want)
 			}
 		})
 	}
