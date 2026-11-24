@@ -208,3 +208,52 @@ func TestRepoForContainerIn(t *testing.T) {
 		t.Errorf("unknown container: %v", r)
 	}
 }
+
+// TestBranchEnv_GatesRequestedNames exercises the attach-time wiring, not
+// just the helpers: a name the in-container config requests is forwarded
+// only when the registry row approves it.
+func TestBranchEnv_GatesRequestedNames(t *testing.T) {
+	t.Setenv("HOME", t.TempDir()) // registry, config and env files live under HOME
+	t.Setenv("OK_VAR", "ok-value")
+	t.Setenv("EVIL_VAR", "secret")
+	reg := &registry.Registry{Repos: []registry.Repo{{
+		Name:               "acme-api",
+		Aliases:            []string{"acme/api"},
+		BaseContainerName:  "ahjo-acme-api",
+		ApprovedForwardEnv: []string{"OK_VAR"},
+	}}}
+	if err := reg.Save(); err != nil {
+		t.Fatal(err)
+	}
+	dc := &ahjocontainer.Config{}
+	dc.Customizations.Ahjo.ForwardEnv = []string{"OK_VAR", "EVIL_VAR", "bad name"}
+
+	env, skip, err := branchEnv("ahjo-acme-api", dc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if env["OK_VAR"] != "ok-value" {
+		t.Errorf("approved name not forwarded: %q", env["OK_VAR"])
+	}
+	if _, ok := env["EVIL_VAR"]; ok {
+		t.Error("unapproved name was forwarded")
+	}
+	if !reflect.DeepEqual(skip.Pending, []string{"EVIL_VAR"}) || !reflect.DeepEqual(skip.Invalid, []string{"bad name"}) {
+		t.Errorf("skip = %+v", skip)
+	}
+	if skip.RepoAlias != "acme/api" {
+		t.Errorf("RepoAlias = %q", skip.RepoAlias)
+	}
+
+	// No registry row for the container: nothing repo-requested is forwarded.
+	env, skip, err = branchEnv("ahjo-unknown", dc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := env["OK_VAR"]; ok {
+		t.Error("name forwarded without a registry row")
+	}
+	if !reflect.DeepEqual(skip.Pending, []string{"OK_VAR", "EVIL_VAR"}) {
+		t.Errorf("pending without row = %q", skip.Pending)
+	}
+}
