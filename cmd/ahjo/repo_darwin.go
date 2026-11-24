@@ -25,23 +25,27 @@ import (
 const ghTokenKey = "GH_TOKEN"
 
 // interceptRepoSubcommand inspects args and, when the subcommand is one that
-// reads or writes a per-repo PAT on macOS, performs the Mac-side half:
+// reads or writes a per-repo PAT on macOS, or runs in-container git network
+// I/O that needs it, performs the Mac-side half:
 //
-//   - repo add <url>:        prompt + Keychain store, inject GH_TOKEN on relay
+//   - repo add <url>:         prompt + Keychain store, inject GH_TOKEN on relay
 //   - repo set-token <alias>: prompt + Keychain store, inject GH_TOKEN on relay
-//   - create <alias> <br>:   unregistered owner/repo: same prompt as repo add;
-//     registered alias: Keychain read, inject GH_TOKEN (silent miss)
-//   - shell <alias>:         Keychain read, inject GH_TOKEN on relay (silent miss)
-//   - claude <alias>:        same as shell
-//   - rm <alias>:            no upfront action (in-VM ahjo writes a cleanup marker;
-//     sweepKeychainCleanup runs post-relay)
-//   - repo rm <alias>:       same as rm
+//   - shell <alias>:          Keychain read, inject GH_TOKEN on relay (silent miss)
+//   - claude <alias>:         same as shell
+//   - create <alias> <br>:    registered alias → same as shell (for `git fetch`);
+//     unregistered owner/repo → the repo add prompt (first-add)
+//   - repo pull <alias>:      same as shell (for `git pull`)
+//   - rm <alias>:             Keychain read, inject GH_TOKEN on relay so the
+//     detached `_refresh-base` child can `git pull`; a Keychain error is
+//     a warning, never blocks the removal. The in-VM ahjo also writes a
+//     cleanup marker; sweepKeychainCleanup runs post-relay.
+//   - repo rm <alias>:        no upfront action; marker sweep as for rm
 //
 // Returns the args to forward to the VM (unchanged for now), the extra env
-// pairs to inject on the limactl-shell command line, and any error. Errors
-// returned here are fatal to the shim — they happen before relay and indicate
-// either a refused PAT (locked Keychain, broken `security`) or a missing
-// repo-aliases entry, both of which the user must fix before continuing.
+// pairs to hand the in-VM ahjo on relay, and any error. Errors returned here
+// are fatal to the shim — they happen before relay and indicate either a
+// refused PAT (locked Keychain, broken `security`) or a missing repo-aliases
+// entry, both of which the user must fix before continuing.
 func interceptRepoSubcommand(args []string) (newArgs []string, env []string, err error) {
 	if len(args) == 0 {
 		return args, nil, nil
@@ -54,12 +58,16 @@ func interceptRepoSubcommand(args []string) (newArgs []string, env []string, err
 				return interceptRepoAdd(args)
 			case "set-token":
 				return interceptRepoSetToken(args)
+			case "pull":
+				return interceptAliasRead(args, firstNonFlag(args[2:]))
 			}
 		}
 	case "create":
 		return interceptCreate(args)
 	case "shell", "claude":
 		return interceptShellLike(args)
+	case "rm":
+		return interceptRm(args)
 	}
 	return args, nil, nil
 }
@@ -244,19 +252,51 @@ func interceptRepoSetToken(args []string) ([]string, []string, error) {
 // existing public-repo / ssh-agent flow keeps working when the user never
 // stored a PAT.
 func interceptShellLike(args []string) ([]string, []string, error) {
-	alias := firstNonFlag(args[1:])
-	if alias == "" {
-		return args, nil, nil
-	}
-	slug, err := lookupRepoSlug(alias)
-	if err != nil {
-		return args, nil, nil
-	}
-	env, err := keychainEnvForSlug(slug)
+	return interceptAliasRead(args, firstNonFlag(args[1:]))
+}
+
+// interceptAliasRead is the shared "registered alias → relay its Keychain
+// PAT" path for shell / claude / create / repo pull. A Keychain error is
+// fatal: surface it rather than silently relaying without a token the user
+// expects.
+func interceptAliasRead(args []string, alias string) ([]string, []string, error) {
+	env, err := keychainEnvForAlias(alias)
 	if err != nil {
 		return nil, nil, err
 	}
 	return args, env, nil
+}
+
+// interceptRm relays the PAT for `rm <alias>` so the detached
+// `_refresh-base` child that rm spawns (it inherits rm's env) can `git pull`
+// in the base container. rm has only boolean flags. A Keychain error here
+// only warns: removal must not be blocked by a locked Keychain.
+func interceptRm(args []string) ([]string, []string, error) {
+	env, err := keychainEnvForAlias(firstNonFlag(args[1:]))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "warn: %v; continuing without GitHub token (background base refresh may fail)\n", err)
+		return args, nil, nil
+	}
+	return args, env, nil
+}
+
+// keychainEnvForAlias resolves alias (repo or branch) to its repo slug via
+// the repo-aliases file and returns the GH_TOKEN pair from the login
+// Keychain. An empty or unknown alias, or no Keychain row, returns nil, nil.
+// The error never carries the token value.
+func keychainEnvForAlias(alias string) ([]string, error) {
+	if alias == "" {
+		return nil, nil
+	}
+	slug, err := lookupRepoSlug(alias)
+	if err != nil {
+		return nil, nil
+	}
+	env, err := keychainEnvForSlug(slug)
+	if err != nil {
+		return nil, err
+	}
+	return env, nil
 }
 
 // promptStorePAT reads a PAT with hidden input, writes it into the login

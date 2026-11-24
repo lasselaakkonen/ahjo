@@ -143,6 +143,9 @@ func prepareBranchContainer(ctx context.Context, alias string, update, force boo
 			return nil, "", err
 		}
 	}
+	// Remove a PAT older ahjo versions persisted in Incus config; it is now
+	// injected per session by branchEnv.
+	scrubLegacyRepoToken(reg.FindRepo(br.Repo), containerName, baseContainerFor(reg, br.Repo))
 
 	// A stopped container boots with whatever ssh-agent device its config
 	// holds, so strip it before Start; applySSHAgentPolicy below re-creates it
@@ -315,7 +318,9 @@ func branchEnv(containerName string, dcConf *ahjocontainer.Config) (env map[stri
 
 	var approved []string
 	repoEnv := map[string]string{}
+	slug := ""
 	if repo := repoForContainer(containerName); repo != nil {
+		slug = repo.Name
 		approved = repo.ApprovedForwardEnv
 		if len(repo.Aliases) > 0 {
 			skip.RepoAlias = repo.Aliases[0]
@@ -333,6 +338,13 @@ func branchEnv(containerName string, dcConf *ahjocontainer.Config) (env map[stri
 		fmt.Fprintf(cobraOutErr(), "warn: read %s: %v\n", tokenstore.Path(), lerr)
 	}
 	env = resolveForwardEnv(forwardEnvKeys(gcfg.ForwardEnv, allowed), repoEnv, lookup)
+	// The repo PAT is injected per exec (shell, claude, postAttach,
+	// postStart), never stored on the container.
+	if slug != "" {
+		if tok, ok, _ := repoToken(slug); ok {
+			env = withRepoToken(env, tok)
+		}
+	}
 	forwardTerminalEnv(env)
 	return env, skip, nil
 }
@@ -360,6 +372,24 @@ func forwardTerminalEnv(env map[string]string) {
 	if slug, ok := terminal.Current(); ok && terminal.SupportsOSC8Hyperlinks(slug) {
 		env["FORCE_HYPERLINK"] = "1"
 	}
+}
+
+// baseContainerFor returns the default-branch container name of repoSlug,
+// or "" when the repo row is missing.
+func baseContainerFor(reg *registry.Registry, repoSlug string) string {
+	if r := reg.FindRepo(repoSlug); r != nil {
+		return r.BaseContainerName
+	}
+	return ""
+}
+
+// slugForContainer returns the slug of the repo that owns containerName, or
+// "" when there is none.
+func slugForContainer(containerName string) string {
+	if repo := repoForContainer(containerName); repo != nil {
+		return repo.Name
+	}
+	return ""
 }
 
 // repoForContainer maps an Incus container name back to the registry repo

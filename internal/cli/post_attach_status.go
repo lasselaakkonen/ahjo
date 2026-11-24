@@ -120,13 +120,14 @@ func offerCleanupAfterMerge(br *registry.Branch, containerName string, bs *top.B
 
 // deleteRemoteBranch runs `git push origin --delete <branch>` inside the
 // container so it picks up the in-container credential helper (gh's
-// stored PAT) rather than needing host-side auth. safe.directory mirrors
-// what applyGitStatus uses — incus exec runs as root over a /repo owned
-// by ubuntu.
+// credential helper, fed the repo PAT on this exec's env) rather than
+// needing host-side auth. safe.directory mirrors what applyGitStatus uses —
+// incus exec runs as root over a /repo owned by ubuntu. GIT_TERMINAL_PROMPT=0
+// keeps a missing credential a fast failure, not a hung prompt.
 func deleteRemoteBranch(container, branch string) error {
-	_, err := incus.Exec(container, "git", "-c", "safe.directory=/repo",
-		"-C", "/repo", "push", "origin", "--delete", branch)
-	return err
+	tok, _, _ := repoToken(slugForContainer(container))
+	return incus.ExecAs(container, 0, withRepoToken(map[string]string{"GIT_TERMINAL_PROMPT": "0"}, tok), "",
+		"git", "-c", "safe.directory=/repo", "-C", "/repo", "push", "origin", "--delete", branch)
 }
 
 // fetchPostAttachStatus runs the git-status and (optionally) PR-status

@@ -110,8 +110,9 @@ step_env() {
 
 # 2. repo add (live PAT + stack prompt), with --as. Validates the repoAddSetup
 #    phases: container built + stopped, /repo cloned at the default branch,
-#    ahjo-ssh proxy wired, the per-repo GH_TOKEN promoted to container env, and
-#    the extra --as alias landing in the generated alias map.
+#    ahjo-ssh proxy wired, the per-repo PAT NOT stored in container config
+#    (it is injected per exec), and the extra --as alias landing in the
+#    generated alias map.
 step_repo_add() {
 	section "2. repo add — $REPO_ALIAS (--as $AHJO_E2E_REPO_AS)"
 	note "When prompted: paste a GitHub PAT (repo scope), then ACCEPT the"
@@ -132,11 +133,8 @@ step_repo_add() {
 	# writes for the cross-host shim); it's also used functionally as the repo
 	# handle in step_create_base.
 	assert_alias_maps "$AHJO_E2E_REPO_AS"
-	if [ "$AHJO_E2E_EXPECT_GH_TOKEN" = 1 ]; then
-		assert_container_env "$REPO_CONTAINER" GH_TOKEN
-	else
-		note "AHJO_E2E_EXPECT_GH_TOKEN=0 — skipping GH_TOKEN env check"
-	fi
+	assert_container_env_unset "$REPO_CONTAINER" GH_TOKEN
+	assert_container_env_unset "$REPO_CONTAINER" GITHUB_TOKEN
 	# repo ls must list the freshly-registered repo — a ground-truth read of the
 	# registry the rest of the run depends on. The --as alias is in r.Aliases, so
 	# the joined alias column carries it.
@@ -147,8 +145,8 @@ step_repo_add() {
 
 # 3. create <branch>, with --as. Validates the COW clone: branch container
 #    running, /repo checked out on the new branch, ahjo-ssh re-wired with the
-#    branch's port, the warm-installed tool inherited via reflink, GH_TOKEN
-#    carried over by `incus copy`, and the extra --as branch alias registered.
+#    branch's port, the warm-installed tool inherited via reflink, no PAT in
+#    the copied container config, and the extra --as branch alias registered.
 step_create() {
 	section "3. create — $AHJO_E2E_BRANCH (--as $AHJO_E2E_BRANCH_AS)"
 	ahjo create "$REPO_ALIAS" "$AHJO_E2E_BRANCH" --as "$AHJO_E2E_BRANCH_AS"
@@ -163,9 +161,8 @@ step_create() {
 	# The --as alias resolves to this branch — proven again functionally by
 	# `ahjo ssh $AHJO_E2E_BRANCH_AS` in step_ssh.
 	assert_alias_maps "$AHJO_E2E_BRANCH_AS"
-	if [ "$AHJO_E2E_EXPECT_GH_TOKEN" = 1 ]; then
-		assert_container_env "$BRANCH_CONTAINER" GH_TOKEN
-	fi
+	assert_container_env_unset "$BRANCH_CONTAINER" GH_TOKEN
+	assert_container_env_unset "$BRANCH_CONTAINER" GITHUB_TOKEN
 }
 
 # 3.1 doctor — read-only environment diagnostics. Driver coverage for `ahjo
@@ -381,7 +378,8 @@ step_ls_top() {
 }
 
 # 8. shell — interactive attach. Operator corroborates the attach + env
-#    forwarding; the harness separately asserts the config-level GH_TOKEN.
+#    forwarding (GH_TOKEN is injected into the attach only); the harness
+#    separately asserts it is still absent from container config.
 step_shell() {
 	section "8. shell — $BRANCH_ALIAS (interactive)"
 	cat <<EOF
@@ -393,12 +391,11 @@ Inside the shell, please run:
 EOF
 	prompt_enter "next: \`ahjo shell $BRANCH_ALIAS\`"
 	ahjo shell "$BRANCH_ALIAS" || true
-	operator_check "did the shell attach as ubuntu in /repo, with CLAUDE_CODE_OAUTH_TOKEN set"
-	# forward_env (CLAUDE_CODE_OAUTH_TOKEN) is attach-only; GH_TOKEN is config,
-	# so the harness can corroborate it independently of the attach.
-	if [ "$AHJO_E2E_EXPECT_GH_TOKEN" = 1 ]; then
-		assert_container_env "$BRANCH_CONTAINER" GH_TOKEN
-	fi
+	operator_check "did the shell attach as ubuntu in /repo, with CLAUDE_CODE_OAUTH_TOKEN and GH_TOKEN set"
+	# Both CLAUDE_CODE_OAUTH_TOKEN and GH_TOKEN are attach-only env. The attach
+	# must not have written the PAT back into container config.
+	assert_container_env_unset "$BRANCH_CONTAINER" GH_TOKEN
+	assert_container_env_unset "$BRANCH_CONTAINER" GITHUB_TOKEN
 }
 
 # 9. ssh — alternate attach path, machine-asserted. `ahjo ssh` execs
@@ -475,13 +472,13 @@ step_repo_pull() {
 	assert_repo_synced_with_origin "$REPO_CONTAINER" "$DEFAULT_BRANCH"
 }
 
-# 14.1 repo set-token — rotate the per-repo GitHub PAT and re-forward it onto
-#      the repo's containers as environment.GH_TOKEN/GITHUB_TOKEN. Driver
-#      coverage for `ahjo repo set-token`. Linux-only: the in-VM Linux path reads
-#      the token from stdin and writes it to the token store + every existing
-#      repo container; the macOS path instead consumes the value the shim relays
-#      from the login Keychain (GH_TOKEN env), a round trip that's operator
-#      territory, not machine-assertable from in-VM. Runs after `repo pull` (the
+# 14.1 repo set-token — rotate the per-repo GitHub PAT. Driver coverage for
+#      `ahjo repo set-token`. Linux-only: the in-VM Linux path reads the token
+#      from stdin and writes it to the per-repo token store; it must not touch
+#      any container's config (the PAT is injected per exec). The macOS path
+#      instead stores in the login Keychain and relays the value to the in-VM
+#      ahjo, a round trip that's operator territory, not machine-assertable
+#      from in-VM. Runs after `repo pull` (the
 #      last token-dependent network step) and before teardown, with a
 #      recognizable sentinel so overwriting the real PAT here is harmless.
 step_set_token() {
@@ -493,16 +490,16 @@ step_set_token() {
 	local sentinel="ghp_e2e_settoken_${BRANCH_SLUG}_sentinel"
 	printf '%s\n' "$sentinel" | ahjo repo set-token "$AHJO_E2E_REPO_AS" ||
 		fail "ahjo repo set-token failed"
-	# Ground truth: both names installRepoToken sets must equal the sentinel on
-	# the repo container. `incus config get` reads it directly (works on the
-	# stopped COW source too), past ahjo's own stdout.
-	local key got
-	for key in GH_TOKEN GITHUB_TOKEN; do
-		got="$(incusq incus config get "$REPO_CONTAINER" "environment.$key" 2>&1 | tr -d '[:space:]')"
-		[ "$got" = "$sentinel" ] ||
-			fail "set-token did not forward environment.$key to $REPO_CONTAINER (got '$got', want the sentinel)"
-	done
-	pass "repo set-token forwarded the new token to $REPO_CONTAINER (GH_TOKEN + GITHUB_TOKEN)"
+	# Ground truth: the sentinel lands in the per-repo token store
+	# (paths.SlugEnvPath: ~/.ahjo-shared/repo-env/<slug>.env, under the
+	# isolated HOME on Linux) ...
+	local envfile="$HOME/.ahjo-shared/repo-env/${REPO_SLUG}.env"
+	grep -qxF "GH_TOKEN=$sentinel" "$envfile" 2>/dev/null ||
+		fail "set-token did not store the sentinel as GH_TOKEN in $envfile"
+	pass "repo set-token stored the new token in $envfile"
+	# ... and neither PAT name is stored in the repo container's Incus config.
+	assert_container_env_unset "$REPO_CONTAINER" GH_TOKEN
+	assert_container_env_unset "$REPO_CONTAINER" GITHUB_TOKEN
 }
 
 # 15. repo rm --force — tear down repo + every branch container.

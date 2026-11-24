@@ -45,11 +45,6 @@ AHJO_E2E_BRANCH="${AHJO_E2E_BRANCH:-e2e-test-branch}"
 # go.sum → the go stack installs `go`). Asserted present after `repo add`.
 AHJO_E2E_WARM_TOOL="${AHJO_E2E_WARM_TOOL:-go}"
 
-# Whether to assert a per-repo GH_TOKEN landed as container env. True when the
-# operator pastes a PAT at the `repo add` prompt (the default lifecycle path);
-# set to 0 if you intend to run with --yes / no PAT.
-AHJO_E2E_EXPECT_GH_TOKEN="${AHJO_E2E_EXPECT_GH_TOKEN:-1}"
-
 # Ports / mirror target used by the forward/expose/mirror checkpoints.
 AHJO_E2E_FWD_PORT="${AHJO_E2E_FWD_PORT:-8000}"
 AHJO_E2E_EXPOSE_PORT="${AHJO_E2E_EXPOSE_PORT:-3000}"
@@ -439,23 +434,21 @@ assert_proxy_device() {
 	pass "proxy device $name on $c (listen='${listen:-*}' connect='${connect:-*}')"
 }
 
-# assert_container_env <container> <KEY>: the container carries `environment.<KEY>`
-# config with a non-empty value — the exact mechanism installRepoToken uses for
-# GH_TOKEN/GITHUB_TOKEN (ConfigSet "environment.GH_TOKEN"). Read via
-# `incus config get`, which is ground truth past ahjo's stdout and works on a
-# stopped container (so it covers the repo container right after `repo add`),
-# and which `incus copy` carries into branch containers.
-#
-# NOTE: attach-time forward_env vars (CLAUDE_CODE_OAUTH_TOKEN) are injected only
-# by the shell/claude attach and are NOT container config — they won't show here.
-# Eyeball those inside `ahjo shell` via `printenv` (lifecycle step 6).
-assert_container_env() {
+# assert_container_env_unset <container> <KEY>: the container's Incus config has
+# no (or an empty) `environment.<KEY>`. Used for GH_TOKEN/GITHUB_TOKEN: ahjo
+# injects the repo PAT per exec (`incus exec --env`) and must never store it in
+# container config, where `incus copy` would carry it into every branch
+# container. Read via `incus config get`, which is ground truth past ahjo's
+# stdout and works on a stopped container (so it covers the repo container
+# right after `repo add`). The value is never printed: on failure only the key
+# is named.
+assert_container_env_unset() {
 	local out
-	out="$(incusq incus config get "$1" "environment.$2" 2>&1)" ||
-		fail "read environment.$2 config from $1 failed" "$out"
-	[ -n "$(printf '%s' "$out" | tr -d '[:space:]')" ] ||
-		fail "container $1 has no environment.$2 (empty/unset)" "$out"
-	pass "container $1 carries environment.$2"
+	out="$(incusq incus config get "$1" "environment.$2" 2>/dev/null)" ||
+		fail "read environment.$2 config from $1 failed"
+	[ -z "$(printf '%s' "$out" | tr -d '[:space:]')" ] ||
+		fail "container $1 still stores environment.$2 in its Incus config (must be injected per exec only)"
+	pass "container $1 has no environment.$2 in its config"
 }
 
 # assert_tool_present <container> <bin>: resolvable on PATH, or present at the

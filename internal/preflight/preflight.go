@@ -234,36 +234,33 @@ func checkSharedRepoEnvOnMac() (Problem, bool) {
 	}, true
 }
 
-// checkRepoTokenForwarding probes each registered repo's default-branch
-// container for the two pieces of in-container plumbing that make raw
-// `git clone/fetch/push/pull` over HTTPS work without per-call env juggling:
+// checkRepoTokenForwarding covers the container side of GitHub auth for
+// each registered repo:
 //
-//  1. environment.GH_TOKEN set on the container (so every `incus exec`
-//     inherits it, not just attach-time helpers).
-//  2. credential.https://github.com.helper configured in the in-container
-//     /home/ubuntu/.gitconfig (written by `gh auth setup-git`).
+//  1. On every host (Mac VM included): no container still carries the PAT
+//     in its Incus config. Older ahjo versions persisted it as
+//     environment.GH_TOKEN / environment.GITHUB_TOKEN; it is now injected
+//     per exec and never stored. See checkPersistedRepoToken.
+//  2. On standalone Linux, for repos with a per-repo PAT:
+//     credential.https://github.com.helper configured in the in-container
+//     /home/ubuntu/.gitconfig (written by `gh auth setup-git`), so git
+//     over HTTPS picks up the injected GH_TOKEN. On Mac users' VM the PAT
+//     lives in the host Keychain, which the in-VM side cannot survey, so
+//     the Mac-side doctor block is the source of truth there.
 //
-// Skips repos whose container is missing or stopped — both checks need
-// the container to exist (1) and run (2). A missing token-store entry
-// is reported by checkAnyGHToken already; this check covers the
-// container-side propagation of an existing token.
+// A missing token-store entry is reported by checkAnyGHToken already.
 func checkRepoTokenForwarding() []Problem {
 	if _, err := exec.LookPath("incus"); err != nil {
-		return nil
-	}
-	// On Mac users' VM the per-repo PAT lives in the Keychain on the host.
-	// The Mac shim injects GH_TOKEN onto every `ahjo shell` / `ahjo claude`
-	// relay; container env may legitimately be empty between sessions.
-	// Surveying it from the in-VM side produces false negatives, so the
-	// Mac-side doctor block is the source of truth.
-	if _, isMac := paths.MacHostHome(); isMac {
 		return nil
 	}
 	reg, err := registry.Load()
 	if err != nil || len(reg.Repos) == 0 {
 		return nil
 	}
-	var ps []Problem
+	ps := checkPersistedRepoToken(reg)
+	if _, isMac := paths.MacHostHome(); isMac {
+		return ps
+	}
 	for i := range reg.Repos {
 		repo := reg.Repos[i]
 		if repo.BaseContainerName == "" {
@@ -274,30 +271,68 @@ func checkRepoTokenForwarding() []Problem {
 		if _, found, _ := tokenstore.GetAt(paths.SlugEnvPath(repo.Name), tokenstore.GHTokenEnv); !found {
 			continue
 		}
-		ps = append(ps, checkContainerEnvGHToken(repo))
 		ps = append(ps, checkContainerCredentialHelper(repo))
 	}
 	return ps
 }
 
-func checkContainerEnvGHToken(repo registry.Repo) Problem {
-	val, err := incus.ConfigGet(repo.BaseContainerName, "environment.GH_TOKEN")
-	if err != nil {
-		return Problem{
-			Severity: Warn,
-			Title:    fmt.Sprintf("could not read environment.GH_TOKEN on %s", repo.BaseContainerName),
-			Detail:   err.Error(),
+// checkPersistedRepoToken warns for each existing container (base and branch
+// containers of every repo) whose Incus config still holds the PAT under a
+// key older ahjo versions wrote. Clean containers produce no row, and a key
+// that cannot be read is skipped: this is a leftover sweep, not a probe of
+// incus health.
+func checkPersistedRepoToken(reg *registry.Registry) []Problem {
+	var ps []Problem
+	for i := range reg.Repos {
+		repo := reg.Repos[i]
+		alias := repo.Name
+		if len(repo.Aliases) > 0 {
+			alias = repo.Aliases[0]
+		}
+		names := []string{repo.BaseContainerName}
+		for j := range reg.Branches {
+			if reg.Branches[j].Repo == repo.Name {
+				names = append(names, reg.Branches[j].IncusName)
+			}
+		}
+		seen := map[string]struct{}{}
+		for _, name := range names {
+			if name == "" {
+				continue
+			}
+			if _, dup := seen[name]; dup {
+				continue
+			}
+			seen[name] = struct{}{}
+			if exists, err := incus.ContainerExists(name); err != nil || !exists {
+				continue
+			}
+			gh, err1 := incus.ConfigGet(name, "environment.GH_TOKEN")
+			github, err2 := incus.ConfigGet(name, "environment.GITHUB_TOKEN")
+			if err1 != nil && err2 != nil {
+				continue
+			}
+			if p, ok := persistedTokenProblem(name, alias, gh, github); ok {
+				ps = append(ps, p)
+			}
 		}
 	}
-	if val == "" {
-		return Problem{
-			Severity: Warn,
-			Title:    fmt.Sprintf("environment.GH_TOKEN not set on %s", repo.BaseContainerName),
-			Detail:   "per-repo PAT exists but is not forwarded into the container",
-			Fix:      fmt.Sprintf("ahjo repo set-token %s  # re-applies environment.GH_TOKEN to every container", repo.Aliases[0]),
-		}
+	return ps
+}
+
+// persistedTokenProblem is checkPersistedRepoToken's decision: a Warn when
+// either legacy key holds a value. gh / github are the raw config values;
+// they are only tested for emptiness and never copied into the Problem.
+func persistedTokenProblem(name, alias, gh, github string) (Problem, bool) {
+	if gh == "" && github == "" {
+		return Problem{}, false
 	}
-	return Problem{Severity: OK, Title: fmt.Sprintf("environment.GH_TOKEN forwarded on %s", repo.BaseContainerName)}
+	return Problem{
+		Severity: Warn,
+		Title:    fmt.Sprintf("GitHub PAT still stored in Incus config on %s", name),
+		Detail:   "older ahjo versions persisted the PAT as environment.GH_TOKEN; it is now injected per session",
+		Fix:      fmt.Sprintf("ahjo repo set-token %s  # or any ahjo shell/claude on the repo; then rotate the PAT", alias),
+	}, true
 }
 
 func checkContainerCredentialHelper(repo registry.Repo) Problem {

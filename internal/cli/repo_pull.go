@@ -164,8 +164,9 @@ func refreshRepoBase(repoName string) (retErr error) {
 		return nil
 	}
 
+	tok, _, _ := repoToken(repo.Name)
 	logStep("→ git pull --ff-only (in %s)", repo.BaseContainerName)
-	if err := execGitPullFFOnly(ctx, repo.BaseContainerName); err != nil {
+	if err := execGitPullFFOnly(ctx, repo.BaseContainerName, tok); err != nil {
 		return err
 	}
 
@@ -180,7 +181,7 @@ func refreshRepoBase(repoName string) (retErr error) {
 	// auth missing in the subprocess env) shouldn't roll back the pull or
 	// fail the overall refresh — log it and let the next `ahjo create`
 	// surface the real installer error in the user's foreground.
-	hostEnv := refreshHostEnv(repo)
+	hostEnv := withRepoToken(refreshHostEnv(repo), tok)
 	warmCtx, cancelWarm := context.WithTimeout(ctx, refreshWarmTimeout)
 	defer cancelWarm()
 	if err := execWarmInstallCtx(warmCtx, repo.BaseContainerName, hostEnv); err != nil {
@@ -210,7 +211,8 @@ func refreshRepoBase(repoName string) (retErr error) {
 // dcConf load failures are non-fatal: we fall back to global ForwardEnv only,
 // log a note, and let warm-install run with whatever env we have. The
 // container's own `environment.*` config keys (set at `repo add` time) still
-// apply to every incus exec regardless.
+// apply to every incus exec regardless. The repo PAT is not one of them: the
+// caller adds it with withRepoToken.
 func refreshHostEnv(repo *registry.Repo) map[string]string {
 	var global []string
 	if cfg, err := config.Load(); err != nil {
@@ -285,16 +287,18 @@ func execWarmInstallCtx(ctx context.Context, containerName string, hostEnv map[s
 // exec.CommandContext for cancellation; the per-pull deadline is layered
 // onto ctx so the rest of the function can still observe a separate parent
 // cancel.
-func execGitPullFFOnly(parentCtx context.Context, container string) error {
+//
+// tok, when non-empty, is passed as --env GH_TOKEN/GITHUB_TOKEN for this exec
+// only. The returned errors never format the argv, so the token cannot leak
+// into the refresh-base log.
+func execGitPullFFOnly(parentCtx context.Context, container, tok string) error {
 	ctx, cancel := context.WithTimeout(parentCtx, refreshPullTimeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "incus", "exec", container,
-		"--user", "1000",
-		"--cwd", paths.RepoMountPath,
-		"--",
-		"git", "pull", "--ff-only",
-	)
+	args := []string{"exec", container, "--user", "1000", "--cwd", paths.RepoMountPath}
+	args = append(args, repoTokenEnvArgs(tok)...)
+	args = append(args, "--", "git", "pull", "--ff-only")
+	cmd := exec.CommandContext(ctx, "incus", args...)
 	cmd.Stdin = nil
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
@@ -382,8 +386,9 @@ func runRepoPull(ctx context.Context, repoAlias string) error {
 	}
 
 	fmt.Printf("→ git pull --ff-only (in %s)\n", repo.BaseContainerName)
+	tok, _, _ := repoToken(repo.Name)
 	return incus.ExecAsContext(
-		ctx, repo.BaseContainerName, 1000, nil, paths.RepoMountPath,
+		ctx, repo.BaseContainerName, 1000, withRepoToken(nil, tok), paths.RepoMountPath,
 		"git", "pull", "--ff-only",
 	)
 }

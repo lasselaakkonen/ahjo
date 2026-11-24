@@ -46,7 +46,7 @@ These are the *intentional* leaks — every other path is closed.
 | `forward_env` | VM → container | names listed in `~/.ahjo/config.toml` (default: `CLAUDE_CODE_OAUTH_TOKEN` + `GH_TOKEN`, sourced from `~/.ahjo/.env`) plus per-repo names approved in `registry.toml`; names requested only by the in-container config are not forwarded |
 | Host keys dir | VM → container, read-only | per-branch sshd keys + `authorized_keys` (single-file bind mount at `/home/ubuntu/.ssh/authorized_keys`) |
 | SSH agent socket | Mac → VM → container | conditional — suppressed (proxy device and ssh-config `ForwardAgent`) when an HTTPS+PAT origin covers the repo; **see "GitHub credentials" below** |
-| Per-repo GH PAT | Mac Keychain (or Linux disk) → VM → container | one `GH_TOKEN` per repo, injected on each relay; **see below** |
+| Per-repo GH PAT | Mac Keychain (or Linux disk) → VM → container | one `GH_TOKEN` per repo, injected per exec into ahjo-started processes, never stored in Incus config; **see below** |
 | `/dev/loop-control` + `/dev/loop0..7` | host → container, read-write | opt-in per repo via `customizations.ahjo.nested_incus`, and only after host-side consent (TTY prompt or `--allow-nested-incus`); only loop devices not bound on the host are passed. Off by default. See **Elevated runtime: `nested_incus`** below. |
 | `ahjo mirror` file stream | container → VM → host directory | opt-in, while a mirror is on: file events and contents from `/repo`, written by a host-side daemon into the directory you named. Nothing is mounted into the container. See **Mirror** below. |
 | `security.nesting=true` (Incus config) | host kernel → container | opt-in: requested when the repo declares `ahjo/docker` in its Features or sets `customizations.ahjo.nested_incus`, and applied only after host-side consent (TTY prompt, `--allow-nesting` or `--allow-nested-incus`). Off by default. See **Elevated runtime: `security.nesting`** below. |
@@ -149,7 +149,9 @@ See the [Incus docs on `raw.idmap`](https://linuxcontainers.org/incus/docs/main/
 
 ## GitHub credentials
 
-ahjo handles SSH and HTTPS remotes differently. SSH leans on agent forwarding (next section). HTTPS uses a per-repo PAT prompted at `ahjo repo add` — and at the first `ahjo create <owner/repo> <branch>`, whose auto-add would otherwise clone before any PAT is in hand — or set later with `ahjo repo set-token <alias>`. On macOS the prompt is the host-side shim (one shared routine for `repo add` and `create`, so they can't drift), because the PAT must land in the host Keychain, not on VM disk. The token is forwarded into containers as `GH_TOKEN` / `GITHUB_TOKEN` and wired into git via `gh auth setup-git`.
+ahjo handles SSH and HTTPS remotes differently. SSH leans on agent forwarding (next section). HTTPS uses a per-repo PAT prompted at `ahjo repo add` — and at the first `ahjo create <owner/repo> <branch>`, whose auto-add would otherwise clone before any PAT is in hand — or set later with `ahjo repo set-token <alias>`. On macOS the prompt is the host-side shim (one shared routine for `repo add` and `create`, so they can't drift), because the PAT must land in the host Keychain, not on VM disk. The token is wired into git via `gh auth setup-git` (only the token-free credential-helper line lands in the container's `~/.gitconfig`) and injected as `GH_TOKEN` / `GITHUB_TOKEN` into each `ahjo`-started process — `ahjo shell`, `ahjo claude`, lifecycle hooks, warm install, and ahjo's own `git fetch` / `pull` / `clone` / `push --delete` and `gh pr list` — for that exec only (`incus exec --env`). It is not stored in the container's Incus config, so `incus copy` never carries it into branch containers and a rotated or deleted token is gone from the next session on. Devcontainer Feature `install.sh` scripts (third-party code running as root) do not receive it. `ahjo ssh` / IDE sessions do not receive it either.
+
+Containers created by older ahjo versions stored the PAT as `environment.GH_TOKEN` / `environment.GITHUB_TOKEN`. ahjo removes those keys on the next `ahjo shell` / `ahjo claude` / `ahjo create` / `ahjo repo set-token` for the repo, and `ahjo doctor` warns while any container still has them. Rotate a PAT that an older version stored this way.
 
 Where the PAT lives:
 
@@ -160,7 +162,7 @@ Where the PAT lives:
 
 On Mac the shim is the only writer; the in-VM ahjo never touches disk for the PAT. A `grep ~/ -r 'ghp_\|github_pat_'` finds nothing — the Keychain DB is encrypted. `ahjo repo rm` (or `ahjo rm` of the default branch) drops a marker the shim sweeps post-relay so Keychain rows don't outlive the repo.
 
-What this does **not** defend against: code running as you on the Mac (it can call `security` itself, or read the live container's env); the PAT inside the container (any process there sees `GH_TOKEN`). The Keychain move closes accidental disk leakage — Time Machine, `rsync ~`, secret scanners — not an active adversary with shell.
+What this does **not** defend against: code running as you on the Mac (it can call `security` itself, or read the live container's env); the PAT inside the container during a session that received it (any process there can see `GH_TOKEN`); a Feature, hook, or earlier session that modified the container (a shell rc, a replaced `gh`) capturing the PAT at the next attach; `incus exec --env` values appearing in host-side `ps` for the life of each exec. The Keychain move closes accidental disk leakage — Time Machine, `rsync ~`, secret scanners — not an active adversary with shell.
 
 ## The SSH-agent hole
 

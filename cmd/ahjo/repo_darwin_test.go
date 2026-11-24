@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/lasselaakkonen/ahjo/internal/paths"
@@ -243,6 +244,7 @@ func TestIsBareOwnerRepo(t *testing.T) {
 // non-owner/repo alias, or no positional, when the alias is unregistered. The
 // alias file is faked (empty) and the Keychain is faked to fail on any read.
 func TestInterceptCreate_DefersNonFirstAdd(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	cases := []struct {
 		name string
 		args []string
@@ -266,5 +268,103 @@ func TestInterceptCreate_DefersNonFirstAdd(t *testing.T) {
 				t.Fatalf("interceptCreate(%v) args = %v, want unchanged", c.args, newArgs)
 			}
 		})
+	}
+}
+
+// withRepoAliases points HOME at a temp dir and writes a repo-aliases file
+// (alias<TAB>slug lines) under its .ahjo-shared, the file lookupRepoSlug
+// reads.
+func withRepoAliases(t *testing.T, lines ...string) {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	dir := filepath.Join(home, ".ahjo-shared")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	body := strings.Join(lines, "\n") + "\n"
+	if err := os.WriteFile(paths.RepoAliasesPath(), []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(paths.RepoAliasesPath(), dir) {
+		t.Fatalf("RepoAliasesPath %s not under temp HOME", paths.RepoAliasesPath())
+	}
+}
+
+func TestLookupRepoSlug_RepoAndBranchAliases(t *testing.T) {
+	withRepoAliases(t, "# comment", "o/r\to-r", "o/r@feat\to-r")
+	for _, alias := range []string{"o/r", "o/r@feat"} {
+		slug, err := lookupRepoSlug(alias)
+		if err != nil || slug != "o-r" {
+			t.Fatalf("lookupRepoSlug(%q) = %q, %v; want o-r", alias, slug, err)
+		}
+	}
+	if _, err := lookupRepoSlug("other/repo"); err == nil {
+		t.Fatal("lookupRepoSlug(unknown) = nil error, want miss")
+	}
+}
+
+// Alias extraction for the subcommands step 11 added: the alias each one
+// resolves must be the positional after the subcommand, never a flag.
+func TestAliasExtractionForTokenRelays(t *testing.T) {
+	cases := []struct {
+		name string
+		got  string
+		want string
+	}{
+		{"repo pull alias", firstNonFlag([]string{"o/r"}), "o/r"},
+		{"rm alias", firstNonFlag([]string{"o/r@feat"}), "o/r@feat"},
+		{"rm skips bool flags", firstNonFlag([]string{"--force", "--force-default", "o/r@feat"}), "o/r@feat"},
+		{"rm help only", firstNonFlag([]string{"--help"}), ""},
+		{"create registered branch alias form", findCreateAlias([]string{"--no-fetch", "o/r", "feat"}), "o/r"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if c.got != c.want {
+				t.Fatalf("got %q, want %q", c.got, c.want)
+			}
+		})
+	}
+}
+
+// Unknown aliases must pass through untouched with no env and no Keychain
+// call, for every subcommand that now relays the PAT. The aliases file
+// exists but does not list the alias.
+func TestInterceptRepoSubcommand_UnknownAliasPassesThrough(t *testing.T) {
+	withRepoAliases(t, "known/repo\tknown-repo")
+	cases := [][]string{
+		{"repo", "pull", "o/r"},
+		{"rm", "o/r@feat"},
+		{"rm", "--force", "o/r@feat"},
+		{"rm"},
+		{"create", "o/r@feat", "x"},
+		{"create", "myrepo", "x"},
+		{"shell", "o/r@feat"},
+		{"claude", "o/r@feat"},
+		{"repo", "pull"},
+	}
+	for _, args := range cases {
+		t.Run(strings.Join(args, " "), func(t *testing.T) {
+			newArgs, env, err := interceptRepoSubcommand(args)
+			if err != nil {
+				t.Fatalf("error: %v", err)
+			}
+			if env != nil {
+				t.Fatalf("env = %v, want nil", env)
+			}
+			if !reflect.DeepEqual(newArgs, args) {
+				t.Fatalf("args = %v, want unchanged %v", newArgs, args)
+			}
+		})
+	}
+}
+
+func TestKeychainEnvForAlias_MissesReturnNil(t *testing.T) {
+	withRepoAliases(t, "known/repo\tknown-repo")
+	for _, alias := range []string{"", "unknown/repo", "unknown/repo@b"} {
+		env, err := keychainEnvForAlias(alias)
+		if err != nil || env != nil {
+			t.Fatalf("keychainEnvForAlias(%q) = %v, %v; want nil, nil", alias, env, err)
+		}
 	}
 }

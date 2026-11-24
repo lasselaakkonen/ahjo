@@ -356,3 +356,45 @@ func TestReadMetadataCustomizationsAhjoNesting(t *testing.T) {
 		})
 	}
 }
+
+// TestInstallArgvWithholdsRepoToken pins that a Feature's install.sh, which
+// runs third-party code as root, never receives the repo PAT: not from
+// RuntimeEnv(), not from the ahjo process env, and not from a Feature
+// option that happens to use the same name.
+func TestInstallArgvWithholdsRepoToken(t *testing.T) {
+	t.Setenv("GH_TOKEN", "ghp_fromprocessenv")
+	t.Setenv("GITHUB_TOKEN", "ghp_fromprocessenv")
+	cases := []struct {
+		name string
+		envv map[string]string
+	}{
+		{"RuntimeEnv only", RuntimeEnv()},
+		{"option named like the PAT", func() map[string]string {
+			e := RuntimeEnv()
+			e["GH_TOKEN"] = "ghp_fromoption"
+			e["GITHUB_TOKEN"] = "ghp_fromoption"
+			e["VERSION"] = "1.2"
+			return e
+		}()},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			argv := installArgv("c1", "/tmp/feature-x", c.envv)
+			for _, a := range argv {
+				if strings.HasPrefix(a, "GH_TOKEN=") || strings.HasPrefix(a, "GITHUB_TOKEN=") {
+					t.Fatalf("install.sh argv carries %q: %v", a, argv)
+				}
+			}
+			if argv[0] != "exec" || argv[1] != "c1" {
+				t.Fatalf("argv prefix = %v, want exec c1", argv[:2])
+			}
+			tail := strings.Join(argv[len(argv)-3:], " ")
+			if tail != "-- bash /tmp/feature-x/install.sh" {
+				t.Fatalf("argv tail = %q", tail)
+			}
+			if !strings.Contains(strings.Join(argv, " "), "--env _REMOTE_USER=ubuntu") {
+				t.Fatalf("RuntimeEnv missing from argv: %v", argv)
+			}
+		})
+	}
+}

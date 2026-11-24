@@ -9,7 +9,9 @@ import (
 	"testing"
 
 	"github.com/lasselaakkonen/ahjo/internal/config"
+	"github.com/lasselaakkonen/ahjo/internal/paths"
 	"github.com/lasselaakkonen/ahjo/internal/registry"
+	"github.com/lasselaakkonen/ahjo/internal/tokenstore"
 )
 
 func TestShouldForwardAgent(t *testing.T) {
@@ -222,44 +224,173 @@ func TestSplitBranchAlias(t *testing.T) {
 	}
 }
 
-func TestInstallRepoToken_SetsBothEnvKeys(t *testing.T) {
-	got := map[string]string{}
-	setter := func(k, v string) error {
-		got[k] = v
-		return nil
+func TestWithRepoToken(t *testing.T) {
+	cases := []struct {
+		name string
+		env  map[string]string
+		tok  string
+		want map[string]string
+	}{
+		{"empty token leaves env unchanged", map[string]string{"A": "1"}, "", map[string]string{"A": "1"}},
+		{"empty token nil env stays nil", nil, "", nil},
+		{"nil env allocates", nil, "ghp_abc", map[string]string{"GH_TOKEN": "ghp_abc", "GITHUB_TOKEN": "ghp_abc"}},
+		{"sets both alongside others", map[string]string{"GIT_TERMINAL_PROMPT": "0"}, "ghp_abc",
+			map[string]string{"GIT_TERMINAL_PROMPT": "0", "GH_TOKEN": "ghp_abc", "GITHUB_TOKEN": "ghp_abc"}},
+		{"existing GH_TOKEN kept, GITHUB_TOKEN follows it", map[string]string{"GH_TOKEN": "ghp_mine"}, "ghp_abc",
+			map[string]string{"GH_TOKEN": "ghp_mine", "GITHUB_TOKEN": "ghp_mine"}},
+		{"existing GITHUB_TOKEN kept", map[string]string{"GITHUB_TOKEN": "ghp_other"}, "ghp_abc",
+			map[string]string{"GH_TOKEN": "ghp_abc", "GITHUB_TOKEN": "ghp_other"}},
+		{"existing empty GH_TOKEN replaced", map[string]string{"GH_TOKEN": ""}, "ghp_abc",
+			map[string]string{"GH_TOKEN": "ghp_abc", "GITHUB_TOKEN": "ghp_abc"}},
 	}
-	if err := installRepoToken(setter, "ghp_abc"); err != nil {
-		t.Fatalf("installRepoToken: %v", err)
-	}
-	want := map[string]string{
-		"environment.GH_TOKEN":     "ghp_abc",
-		"environment.GITHUB_TOKEN": "ghp_abc",
-	}
-	if len(got) != len(want) {
-		t.Fatalf("setter calls = %v, want %v", got, want)
-	}
-	for k, v := range want {
-		if got[k] != v {
-			t.Fatalf("setter[%q] = %q, want %q", k, got[k], v)
-		}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := withRepoToken(c.env, c.tok)
+			if c.want == nil {
+				if got != nil {
+					t.Fatalf("got %v, want nil", got)
+				}
+				return
+			}
+			if len(got) != len(c.want) {
+				t.Fatalf("got %v, want %v", got, c.want)
+			}
+			for k, v := range c.want {
+				if got[k] != v {
+					t.Fatalf("got[%q] = %q, want %q (full: %v)", k, got[k], v, got)
+				}
+			}
+		})
 	}
 }
 
-func TestInstallRepoToken_PropagatesSetterError(t *testing.T) {
-	// First setter call fails — installRepoToken returns immediately,
-	// so the second key is never written. Mirrors how a config-set
-	// against a stopped/missing container would surface.
-	calls := 0
-	wantErr := errors.New("incus config set: exit 1")
-	setter := func(_, _ string) error {
-		calls++
-		return wantErr
+func TestRepoTokenEnvArgs(t *testing.T) {
+	if got := repoTokenEnvArgs(""); got != nil {
+		t.Fatalf("empty token: got %v, want nil", got)
 	}
-	if err := installRepoToken(setter, "ghp_abc"); !errors.Is(err, wantErr) {
-		t.Fatalf("err = %v, want %v", err, wantErr)
+	got := strings.Join(repoTokenEnvArgs("ghp_abc"), " ")
+	if want := "--env GH_TOKEN=ghp_abc --env GITHUB_TOKEN=ghp_abc"; got != want {
+		t.Fatalf("got %q, want %q", got, want)
 	}
-	if calls != 1 {
-		t.Fatalf("setter called %d times, want 1 (early return on error)", calls)
+}
+
+// fakeConfig is an in-memory stand-in for one container's Incus config,
+// feeding scrubPersistedToken's get/unset accessors.
+type fakeConfig struct {
+	vals     map[string]string
+	getErr   error
+	unsetErr error
+	unsets   []string
+}
+
+func (f *fakeConfig) get(k string) (string, error) {
+	if f.getErr != nil {
+		return "", f.getErr
+	}
+	return f.vals[k], nil
+}
+
+func (f *fakeConfig) unset(k string) error {
+	f.unsets = append(f.unsets, k)
+	if f.unsetErr != nil {
+		return f.unsetErr
+	}
+	delete(f.vals, k)
+	return nil
+}
+
+func TestScrubPersistedToken_NothingSet(t *testing.T) {
+	f := &fakeConfig{vals: map[string]string{"environment.HOME": "/home/ubuntu"}}
+	removed, err := scrubPersistedToken(f.get, f.unset)
+	if err != nil || removed {
+		t.Fatalf("removed=%v err=%v, want false, nil", removed, err)
+	}
+	if len(f.unsets) != 0 {
+		t.Fatalf("unset calls = %v, want none", f.unsets)
+	}
+}
+
+func TestScrubPersistedToken_OneSet(t *testing.T) {
+	f := &fakeConfig{vals: map[string]string{"environment.GITHUB_TOKEN": "ghp_abc"}}
+	removed, err := scrubPersistedToken(f.get, f.unset)
+	if err != nil || !removed {
+		t.Fatalf("removed=%v err=%v, want true, nil", removed, err)
+	}
+	if len(f.unsets) != 1 || f.unsets[0] != "environment.GITHUB_TOKEN" {
+		t.Fatalf("unset calls = %v, want [environment.GITHUB_TOKEN]", f.unsets)
+	}
+}
+
+func TestScrubPersistedToken_BothSet(t *testing.T) {
+	f := &fakeConfig{vals: map[string]string{
+		"environment.GH_TOKEN":     "ghp_abc",
+		"environment.GITHUB_TOKEN": "ghp_abc",
+	}}
+	removed, err := scrubPersistedToken(f.get, f.unset)
+	if err != nil || !removed {
+		t.Fatalf("removed=%v err=%v, want true, nil", removed, err)
+	}
+	if len(f.unsets) != 2 || len(f.vals) != 0 {
+		t.Fatalf("unset calls = %v, remaining = %v", f.unsets, f.vals)
+	}
+}
+
+func TestScrubPersistedToken_GetError(t *testing.T) {
+	wantErr := errors.New("incus config get: exit 1")
+	f := &fakeConfig{getErr: wantErr}
+	removed, err := scrubPersistedToken(f.get, f.unset)
+	if !errors.Is(err, wantErr) || removed {
+		t.Fatalf("removed=%v err=%v, want false, %v", removed, err, wantErr)
+	}
+	if len(f.unsets) != 0 {
+		t.Fatalf("unset calls = %v, want none after get error", f.unsets)
+	}
+}
+
+func TestScrubPersistedToken_UnsetError(t *testing.T) {
+	wantErr := errors.New("incus config unset: exit 1")
+	f := &fakeConfig{vals: map[string]string{"environment.GH_TOKEN": "ghp_abc"}, unsetErr: wantErr}
+	removed, err := scrubPersistedToken(f.get, f.unset)
+	if !errors.Is(err, wantErr) || removed {
+		t.Fatalf("removed=%v err=%v, want false, %v", removed, err, wantErr)
+	}
+	if strings.Contains(err.Error(), "ghp_abc") {
+		t.Fatalf("error leaks token: %v", err)
+	}
+}
+
+// TestRepoTokenPrecedence pins that a per-repo PAT beats a global GH_TOKEN
+// in the process env, and that the env is the fallback. Runs only where
+// paths.MacHostHome() is false (always on darwin, and on a Linux host
+// without the Lima virtiofs mount).
+func TestRepoTokenPrecedence(t *testing.T) {
+	if _, isMac := paths.MacHostHome(); isMac {
+		t.Skip("inside the Mac Lima VM the per-repo file is never consulted")
+	}
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("GH_TOKEN", "")
+
+	if _, found, err := repoToken("o-r"); err != nil || found {
+		t.Fatalf("no sources: found=%v err=%v, want false, nil", found, err)
+	}
+
+	t.Setenv("GH_TOKEN", "ghp_global")
+	if tok, found, err := repoToken("o-r"); err != nil || !found || tok != "ghp_global" {
+		t.Fatalf("env only: tok=%q found=%v err=%v, want ghp_global", tok, found, err)
+	}
+
+	if err := os.MkdirAll(paths.RepoEnvDir(), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := tokenstore.SetAt(paths.SlugEnvPath("o-r"), tokenstore.GHTokenEnv, "ghp_repo"); err != nil {
+		t.Fatal(err)
+	}
+	if tok, found, err := repoToken("o-r"); err != nil || !found || tok != "ghp_repo" {
+		t.Fatalf("per-repo + env: tok=%q found=%v err=%v, want ghp_repo", tok, found, err)
+	}
+	// Another repo without its own file still falls back to the env.
+	if tok, _, _ := repoToken("o-other"); tok != "ghp_global" {
+		t.Fatalf("other repo: tok=%q, want ghp_global", tok)
 	}
 }
 

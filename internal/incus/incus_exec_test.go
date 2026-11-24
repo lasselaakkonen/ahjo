@@ -130,6 +130,11 @@ func TestArgvConstruction(t *testing.T) {
 			want: []string{"incus", "config", "get", "c1", "image.os"},
 		},
 		{
+			name: "ConfigUnset",
+			call: func() { _ = ConfigUnset("c1", "environment.GH_TOKEN") },
+			want: []string{"incus", "config", "unset", "c1", "environment.GH_TOKEN"},
+		},
+		{
 			name: "ConfigDeviceSet",
 			call: func() { _ = ConfigDeviceSet("c1", "eth0", "limits.ingress", "100Mbit") },
 			want: []string{"incus", "config", "device", "set", "c1", "eth0", "limits.ingress=100Mbit"},
@@ -305,6 +310,68 @@ func TestConfigGetTrims(t *testing.T) {
 	}
 	if got != "btrfs" {
 		t.Fatalf("ConfigGet=%q want %q", got, "btrfs")
+	}
+}
+
+// captureStderr swaps os.Stderr for a pipe while fn runs and returns what
+// was written to it.
+func captureStderr(t *testing.T, fn func()) string {
+	t.Helper()
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("pipe: %v", err)
+	}
+	orig := os.Stderr
+	os.Stderr = w
+	done := make(chan string)
+	go func() {
+		b, _ := io.ReadAll(r)
+		done <- string(b)
+	}()
+	defer func() { os.Stderr = orig }()
+	fn()
+	_ = w.Close()
+	return <-done
+}
+
+func TestConfigSetFailureRedactsValue(t *testing.T) {
+	const secret = "ghp_s3cr3tTokenValue"
+	withFakeExec(t, fakeRun{
+		stderr: "Error: invalid config environment.GH_TOKEN=" + secret + " (" + secret + ")\n",
+		exit:   1,
+	})
+	var err error
+	stderr := captureStderr(t, func() {
+		err = ConfigSet("c1", "environment.GH_TOKEN", secret)
+	})
+	if err == nil {
+		t.Fatal("ConfigSet: want error, got nil")
+	}
+	if strings.Contains(err.Error(), secret) {
+		t.Errorf("error leaks value: %q", err.Error())
+	}
+	if want := "incus config set c1 environment.GH_TOKEN: exit 1"; err.Error() != want {
+		t.Errorf("error = %q, want %q", err.Error(), want)
+	}
+	if strings.Contains(stderr, secret) {
+		t.Errorf("stderr leaks value: %q", stderr)
+	}
+	if !strings.Contains(stderr, "<redacted>") {
+		t.Errorf("stderr = %q, want <redacted> marker", stderr)
+	}
+}
+
+func TestConfigSetFailureNonEnvKeyKeepsOutput(t *testing.T) {
+	withFakeExec(t, fakeRun{stderr: "Error: bad value true\n", exit: 1})
+	var err error
+	stderr := captureStderr(t, func() {
+		err = ConfigSet("c1", "security.nesting", "true")
+	})
+	if err == nil || strings.Contains(err.Error(), "=true") {
+		t.Fatalf("error = %v, want exit error without value", err)
+	}
+	if !strings.Contains(stderr, "bad value true") {
+		t.Errorf("stderr = %q, want incus output unchanged for non-environment key", stderr)
 	}
 }
 

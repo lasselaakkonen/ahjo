@@ -402,6 +402,12 @@ func repoAddSetup(ctx context.Context, slug, primary string, aliases []string, s
 			hostEnv[k] = v
 		}
 	}
+	// The repo PAT rides along on the per-exec env for warm-install and the
+	// lifecycle hooks only. applyRepoFeatures is deliberately not given
+	// hostEnv: Feature install.sh runs third-party code as root.
+	if tok, ok, _ := repoToken(slug); ok {
+		hostEnv = withRepoToken(hostEnv, tok)
+	}
 
 	// Apply user-declared devcontainer Features (Phase 2b). Runs
 	// before warm-install so a Feature that installs a runtime (Node,
@@ -563,8 +569,9 @@ func resolveRepoAuth(slug, primary string, src repoSource, yes bool) (tok string
 }
 
 // cloneRepo is the container-side clone phase of repoAddSetup, run with the
-// token and URL resolveRepoAuth chose. When a token is in hand it forwards it
-// onto the container and configures gh's credential helper; then it clones
+// token and URL resolveRepoAuth chose. When a token is in hand it configures
+// gh's credential helper (the token itself is injected per exec, never
+// stored on the container); then it clones
 // url into /repo as the ubuntu user and checks out an explicit
 // --default-base. Returns the resolved default branch (detected from the
 // clone's HEAD when defaultBase was empty).
@@ -572,17 +579,18 @@ func resolveRepoAuth(slug, primary string, src repoSource, yes bool) (tok string
 // The git clone + checkout run via ExecAsContext so a canceled ctx (Ctrl-C on
 // a slow clone — the longest part of repo add) tears them down.
 func cloneRepo(ctx context.Context, containerName, tok string, hasToken bool, url, defaultBase string) (resolvedBase string, err error) {
+	if !hasToken {
+		tok = ""
+	}
 	if hasToken {
-		// Promote the token onto the container as environment.GH_TOKEN/
-		// GITHUB_TOKEN and configure git's HTTPS credential helper. `incus
-		// copy` carries environment.* and the in-$HOME .gitconfig into every
-		// branch container, so this runs once.
-		if err := installRepoToken(func(k, v string) error { return incus.ConfigSet(containerName, k, v) }, tok); err != nil {
-			return "", fmt.Errorf("forward GH_TOKEN to container: %w", err)
-		}
+		// Configure git's HTTPS credential helper. Nothing is promoted onto
+		// the container: the PAT is injected per exec (this one, the clone
+		// below, and every later shell / claude / fetch / pull). Only the
+		// token-free helper line lands in $HOME/.gitconfig, which `incus
+		// copy` carries into every branch container, so this runs once.
 		if err := incus.ExecAs(
 			containerName, 1000,
-			map[string]string{"HOME": "/home/ubuntu", "GH_TOKEN": tok},
+			withRepoToken(map[string]string{"HOME": "/home/ubuntu"}, tok),
 			"/home/ubuntu",
 			"gh", "auth", "setup-git",
 		); err != nil {
@@ -599,7 +607,9 @@ func cloneRepo(ctx context.Context, containerName, tok string, hasToken bool, ur
 	// GIT_TERMINAL_PROMPT=0 turns a missing-credentials misconfig into a
 	// fast clone failure instead of a hung `Username:` prompt the user
 	// can't always see (e.g., when ahjo is invoked from a TUI surface).
-	if err := incus.ExecAsContext(ctx, containerName, 1000, map[string]string{"GIT_TERMINAL_PROMPT": "0"}, "/", "git", "clone", url, paths.RepoMountPath); err != nil {
+	// The clone authenticates through gh's credential helper, which reads
+	// GH_TOKEN from this exec's env.
+	if err := incus.ExecAsContext(ctx, containerName, 1000, withRepoToken(map[string]string{"GIT_TERMINAL_PROMPT": "0"}, tok), "/", "git", "clone", url, paths.RepoMountPath); err != nil {
 		return "", wrapCloneErr(err)
 	}
 

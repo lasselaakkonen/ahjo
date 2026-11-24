@@ -40,6 +40,21 @@
   `ForwardAgent yes`. Set `forward_ssh_agent = true` to restore the old
   behaviour (agent in `ahjo ssh`/`ahjo ide` sessions and during `repo add`).
 
+- The per-repo GitHub PAT is no longer persisted in the container's Incus
+  config (`environment.GH_TOKEN` / `environment.GITHUB_TOKEN`). It is injected
+  per exec into `ahjo shell`, `ahjo claude`, lifecycle hooks, warm install and
+  ahjo's own git operations, and devcontainer Feature `install.sh` scripts no
+  longer receive it. On macOS the shim now also relays it for `ahjo repo pull`
+  and `ahjo rm` (background base refresh).
+- Containers created by older versions are cleaned on the next `ahjo shell` /
+  `ahjo claude` / `ahjo create` / `ahjo repo set-token` for the repo, and
+  `ahjo doctor` reports any container that still stores the PAT. A running
+  container's PID 1 keeps the old value in its environment until it restarts,
+  so restart long-running containers, and rotate PATs that older versions
+  stored.
+- `incus config set` errors no longer include the value, and `environment.*`
+  values are redacted from incus's own error output.
+
 ### Changed (mirror)
 
 - Upgrade: the first ahjo command after updating stops any mirror of the old design, removes its `mirror` device and unit, and reverts the target. Run `ahjo mirror <alias>` again to resume. A process in that container that still holds a file open under `/mirror` may keep it until the container restarts.
