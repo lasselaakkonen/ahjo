@@ -131,7 +131,7 @@ func refreshRepoBase(repoName string) (retErr error) {
 	}
 	if !strings.EqualFold(status, "Running") {
 		logStep("→ incus start %s (was %s)", repo.BaseContainerName, status)
-		if err := incus.Start(repo.BaseContainerName); err != nil {
+		if err := startContainer(repo.BaseContainerName); err != nil {
 			return fmt.Errorf("start %s: %w", repo.BaseContainerName, err)
 		}
 		if err := incus.WaitReady(ctx, repo.BaseContainerName, refreshReadyTimeout); err != nil {
@@ -336,7 +336,7 @@ func runRepoPull(ctx context.Context, repoAlias string) error {
 	}
 	if !strings.EqualFold(status, "Running") {
 		fmt.Printf("→ incus start %s\n", repo.BaseContainerName)
-		if err := incus.Start(repo.BaseContainerName); err != nil {
+		if err := startContainer(repo.BaseContainerName); err != nil {
 			return err
 		}
 		if err := incus.WaitReady(ctx, repo.BaseContainerName, 30*time.Second); err != nil {

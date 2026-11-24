@@ -319,6 +319,37 @@ func TestHasDevice(t *testing.T) {
 	}
 }
 
+func TestListDeviceNames(t *testing.T) {
+	t.Run("parses names", func(t *testing.T) {
+		fe := withFakeExec(t, fakeRun{stdout: "root\nahjo-loop-control\n\n  ahjo-loop-3  \n"})
+		got, err := ListDeviceNames("c1")
+		if err != nil {
+			t.Fatalf("ListDeviceNames: %v", err)
+		}
+		want := []string{"root", "ahjo-loop-control", "ahjo-loop-3"}
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("got %v want %v", got, want)
+		}
+		wantArgv := []string{"incus", "config", "device", "list", "c1"}
+		if !reflect.DeepEqual(fe.Calls[0], wantArgv) {
+			t.Fatalf("argv %v want %v", fe.Calls[0], wantArgv)
+		}
+	})
+	t.Run("not found tolerated", func(t *testing.T) {
+		withFakeExec(t, fakeRun{stderr: "Error: Instance not found", exit: 1})
+		got, err := ListDeviceNames("c1")
+		if err != nil || got != nil {
+			t.Fatalf("got %v, %v want nil, nil", got, err)
+		}
+	})
+	t.Run("other failure surfaces", func(t *testing.T) {
+		withFakeExec(t, fakeRun{stderr: "Error: boom", exit: 1})
+		if _, err := ListDeviceNames("c1"); err == nil {
+			t.Fatal("expected error")
+		}
+	})
+}
+
 func TestStoragePoolDriver(t *testing.T) {
 	tests := []struct {
 		name   string

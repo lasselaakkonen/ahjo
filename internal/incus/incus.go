@@ -255,9 +255,11 @@ func AddDiskDevice(container, device, source, path string, readonly bool) error 
 // or "unix-block". Skips the add when the device already exists, so callers
 // can use it as an idempotent wire step (matches AddDiskDevice).
 //
-// Used by the nested_incus capability to expose /dev/loop-control +
-// /dev/loop0..7 into a container so nested Incus can back its storage
-// pool with a loop-mounted .img. See internal/cli/repo.go::wireLoopDevices.
+// Used by the nested_incus capability (after host-side consent) to expose
+// /dev/loop-control and the currently unbound /dev/loopN nodes into a
+// container so nested Incus can back its storage pool with a loop-mounted
+// .img. Callers must not pass loop devices that are bound on the host: the
+// node is a read-write block device. See internal/cli/loopdev.go.
 func AddUnixDevice(container, device, devType, source string) error {
 	return addDeviceIfAbsent(container, device, []string{
 		"config", "device", "add", container, device, devType,
@@ -882,6 +884,22 @@ func FilePush(name, hostPath, containerPath string) (pushed bool, err error) {
 // the TUI to show which branch is currently mirroring, and by destroy paths
 // to detect a mirror that needs `mirror off` first.
 func HasDevice(container, device string) (bool, error) {
+	names, err := ListDeviceNames(container)
+	if err != nil {
+		return false, err
+	}
+	for _, n := range names {
+		if n == device {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// ListDeviceNames returns the names of the devices configured directly on
+// `container` (`incus config device list`). A container that does not exist
+// ("not found") yields (nil, nil), matching HasDevice's tolerance.
+func ListDeviceNames(container string) ([]string, error) {
 	cmd := execCommand(context.Background(), "incus", "config", "device", "list", container)
 	out, err := cmd.Output()
 	if err != nil {
@@ -889,18 +907,19 @@ func HasDevice(container, device string) (bool, error) {
 		if errors.As(err, &ee) {
 			low := strings.ToLower(string(ee.Stderr))
 			if strings.Contains(low, "not found") {
-				return false, nil
+				return nil, nil
 			}
-			return false, fmt.Errorf("incus config device list %s: exit %d", container, ee.ExitCode())
+			return nil, fmt.Errorf("incus config device list %s: exit %d", container, ee.ExitCode())
 		}
-		return false, fmt.Errorf("incus config device list %s: %w", container, err)
+		return nil, fmt.Errorf("incus config device list %s: %w", container, err)
 	}
+	var names []string
 	for _, line := range strings.Split(string(out), "\n") {
-		if strings.TrimSpace(line) == device {
-			return true, nil
+		if n := strings.TrimSpace(line); n != "" {
+			names = append(names, n)
 		}
 	}
-	return false, nil
+	return names, nil
 }
 
 // ContainerStatus returns the lifecycle status string from `incus list`
