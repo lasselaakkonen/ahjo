@@ -11,6 +11,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/lasselaakkonen/ahjo/internal/config"
 	"github.com/lasselaakkonen/ahjo/internal/incus"
 	"github.com/lasselaakkonen/ahjo/internal/lockfile"
 	"github.com/lasselaakkonen/ahjo/internal/paths"
@@ -88,28 +89,30 @@ func syncRepoHasToken(repoName string) {
 		return
 	}
 	defer release()
-	if err := setRepoHasTokenLocked(repoName); err != nil {
+	if _, err := setRepoHasTokenLocked(repoName); err != nil {
 		fmt.Fprintf(cobraOutErr(), "warn: record has_token for %s: %v\n", repoName, err)
 	}
 }
 
 // setRepoHasTokenLocked reloads the registry, sets HasToken on repoName,
 // saves, and regenerates the ssh-config. The caller holds the lockfile.
-// A repo that vanished since the caller looked is not an error.
-func setRepoHasTokenLocked(repoName string) error {
+// Returns the reloaded registry. A repo that vanished since the caller looked
+// is not an error (the caller checks the returned registry if it cares); one
+// already flagged is left untouched.
+func setRepoHasTokenLocked(repoName string) (*registry.Registry, error) {
 	reg, err := registry.Load()
 	if err != nil {
-		return err
+		return nil, err
 	}
 	repo := reg.FindRepo(repoName)
 	if repo == nil || repo.HasToken {
-		return nil
+		return reg, nil
 	}
 	repo.HasToken = true
 	if err := reg.Save(); err != nil {
-		return err
+		return nil, err
 	}
-	return regenerateSSHConfig(reg)
+	return reg, regenerateSSHConfig(reg)
 }
 
 func newRepoCmd() *cobra.Command {
@@ -324,6 +327,12 @@ need a restart for any currently-attached shells to see the new value;
 new ` + "`incus exec`" + ` invocations (and therefore new ` + "`ahjo shell`" + ` / ` + "`ahjo claude`" + `
 sessions) pick it up immediately.
 
+For an HTTPS GitHub origin the token replaces the host ssh-agent: ahjo
+records that the repo has a PAT, removes the ssh-agent device from every
+existing container of the repo, and regenerates the ssh-config so
+` + "`ahjo ssh`" + ` / ` + "`ahjo ide`" + ` stop forwarding the agent too. Override with
+` + "`forward_ssh_agent`" + ` in config.toml.
+
 Prefer fine-grained PATs scoped to a single repo:
   → ` + repoauth.PATSettingsURL,
 		Args: cobra.ExactArgs(1),
@@ -367,22 +376,64 @@ func runRepoSetToken(alias string) error {
 		}
 	}
 
+	// Record the PAT in the registry (the container-proof input to the
+	// ssh-agent policy) and regenerate the ssh-config so ahjo ssh / ahjo ide
+	// stop forwarding the agent when policy now suppresses it. Lock released
+	// before the slow per-container Incus loop.
+	release, err := lockfile.Acquire()
+	if err != nil {
+		return err
+	}
+	reg, err = setRepoHasTokenLocked(repo.Name)
+	release()
+	if err != nil {
+		return fmt.Errorf("record has_token: %w", err)
+	}
+	repo = reg.FindRepo(repo.Name)
+	if repo == nil {
+		return fmt.Errorf("repo %q was removed while setting its token", alias)
+	}
+
+	cfg, err := config.Load()
+	if err != nil {
+		fmt.Fprintf(cobraOutErr(), "warn: load config (using auto ssh-agent policy): %v\n", err)
+		cfg = nil
+	}
+	suppress := !shouldForwardAgent(repo, true, cfg)
+
 	// Re-apply environment.GH_TOKEN to every container in this repo (the
 	// default-branch container plus each branch). Already-running
 	// containers won't pick this up in shells that are already attached;
 	// new `incus exec` invocations do. The credential helper line in
 	// .gitconfig doesn't depend on the token value, so no second
 	// `gh auth setup-git` is needed here.
+	//
+	// When the policy now suppresses the agent, also strip the ssh-agent
+	// device from each container, running or stopped, so neither an attached
+	// session nor the next start keeps it. A container whose strip could not
+	// be confirmed fails the command (fail closed).
 	containers := repoContainerNames(reg, repo.Name)
-	updated := 0
+	updated, stripped := 0, 0
+	var stripFailed []string
 	for _, name := range containers {
 		exists, err := incus.ContainerExists(name)
 		if err != nil {
 			fmt.Fprintf(cobraOutErr(), "warn: probe %s: %v\n", name, err)
+			if suppress {
+				stripFailed = append(stripFailed, name)
+			}
 			continue
 		}
 		if !exists {
 			continue
+		}
+		if suppress {
+			if err := stripSSHAgent(name); err != nil {
+				fmt.Fprintf(cobraOutErr(), "warn: %v\n", err)
+				stripFailed = append(stripFailed, name)
+			} else {
+				stripped++
+			}
 		}
 		if err := installRepoToken(func(k, v string) error { return incus.ConfigSet(name, k, v) }, tok); err != nil {
 			fmt.Fprintf(cobraOutErr(), "warn: forward GH_TOKEN to %s: %v\n", name, err)
@@ -392,6 +443,13 @@ func runRepoSetToken(alias string) error {
 	}
 	if updated > 0 {
 		fmt.Fprintf(cobraOut(), "  → forwarded to %d container(s); restart any already-attached shells to pick up the new value\n", updated)
+	}
+	if stripped > 0 {
+		fmt.Fprintf(cobraOut(), "  → ssh-agent removed from %d container(s) (HTTPS+PAT origin)\n", stripped)
+	}
+	if len(stripFailed) > 0 {
+		return fmt.Errorf("could not remove the ssh-agent device from %s; the agent may still be reachable there — fix Incus and rerun `ahjo repo set-token %s`",
+			strings.Join(stripFailed, ", "), alias)
 	}
 	return nil
 }
