@@ -344,7 +344,7 @@ Add the `ahjo/docker` built-in Feature to your `.ahjo/ahjocontainer.json`:
 }
 ```
 
-This installs Docker Engine and the Compose plugin via `get.docker.com` and automatically enables the kernel capability Docker needs (`security.nesting`). No other config — no `customizations.ahjo.nested_incus`, no `privileged`, no bind mounts.
+This installs Docker Engine and the Compose plugin via `get.docker.com` and enables the kernel capability Docker needs (`security.nesting`) after you approve it: `ahjo repo add` asks `Allow? [y/N]` on a terminal, and non-interactive runs (scripts, `--yes`) need `--allow-nesting`, otherwise `repo add` fails. `--yes` does not approve it. No other config — no `customizations.ahjo.nested_incus`, no `privileged`, no bind mounts.
 
 Options: `version` (default `latest`), `channel` (`stable`/`test`), `daemon_args` (merged into `daemon.json` as a JSON fragment).
 
@@ -466,7 +466,7 @@ sudo ln -sf "$PWD/ahjo" /usr/local/bin/ahjo
 | `ahjo init [-y]` | One-time setup. Mac: Lima + VM, then drop `ahjo-linux-<arch>` into the VM and relay the in-VM bring-up. In VM (or directly on Linux): Incus + `ahjo-base` image (built from `images:ubuntu/24.04` by applying the embedded `ahjo-runtime` devcontainer Feature) + `~/.ahjo/` skeleton. Resumable. |
 | `ahjo update [-y]` | Refresh in-place. Mac: push the current `ahjo-linux-<arch>` into the VM (no-op if the version already matches). VM: rebuild the `ahjo-base` image by force-replaying the `ahjo-runtime` Feature on top of the local `ahjo-osbase` mirror of upstream Ubuntu. Run after editing the host binary or the embedded Feature. |
 | `ahjo doctor` | Read-only host check. Reports anything `init` would fix. |
-| `ahjo repo add <git-url> [--as <alias>] [--default-base <branch>] [--container-config <stack\|path>] [-y]` | Register a repo: clone it at `/repo` inside a fresh `ahjo-base` container (the COW source for every branch container) and warm-install dependencies. Auto alias is `<owner>/<repo>` from the URL; `--as` adds a second alias. On collision (e.g. github vs gitlab `acme/api`), ahjo suffixes `-2`/`-3`/… `--container-config` picks a bundled stack (`node`/`python`/`go`/`rust`), a repo-local `.ahjo/<name>.json`, or a host path; `-y` skips the GitHub PAT prompt (set one later with `ahjo repo set-token`). If the repo's config requests `forward_env` names beyond the global list, ahjo asks `[y/N]` per name before running any repo-controlled code; `-y` and non-TTY stdin approve nothing. |
+| `ahjo repo add <git-url> [--as <alias>] [--default-base <branch>] [--container-config <stack\|path>] [--allow-nesting] [--allow-nested-incus] [-y]` | Register a repo: clone it at `/repo` inside a fresh `ahjo-base` container (the COW source for every branch container) and warm-install dependencies. Auto alias is `<owner>/<repo>` from the URL; `--as` adds a second alias. On collision (e.g. github vs gitlab `acme/api`), ahjo suffixes `-2`/`-3`/… `--container-config` picks a bundled stack (`node`/`python`/`go`/`rust`), a repo-local `.ahjo/<name>.json`, or a host path; `-y` skips the GitHub PAT prompt (set one later with `ahjo repo set-token`). If the repo's config requests `forward_env` names beyond the global list, ahjo asks `[y/N]` per name before running any repo-controlled code; `-y` and non-TTY stdin approve nothing. `--allow-nesting` pre-approves `security.nesting` for Features that request it (e.g. `ahjo/docker`); `--allow-nested-incus` pre-approves `customizations.ahjo.nested_incus` (unbound host loop devices + nesting). Without them ahjo prompts on a terminal and fails non-interactively; `-y` approves neither. |
 | `ahjo repo ls` | List registered repos with their aliases. |
 | `ahjo repo rm <alias> [--force]` | Drop a repo by any of its aliases: stops + deletes every branch container in the repo (including the default-branch COW source), frees ports, and removes the registry rows. Refuses if non-default branch containers exist unless `--force` (which also deletes them, losing any in-flight work). |
 | `ahjo repo set-token <alias>` | Set/rotate the GitHub PAT forwarded into containers for one repo. Hidden-input prompt; stored at `~/.ahjo/repo-env/<slug>.env` (mode 0600). Use a fine-grained PAT scoped to the repo so autonomous agents can't reach anything else. |
@@ -607,7 +607,7 @@ ahjo has three state layers: the host binary, the `ahjo-base` Incus image, and t
 
 ### Running Docker inside a container throws errors
 
-Docker-in-container requires `security.nesting` — a kernel capability that ahjo keeps off by default to limit attack surface. It is enabled automatically when you declare the `ahjo/docker` built-in Feature in your `.ahjo/ahjocontainer.json`:
+Docker-in-container requires `security.nesting` — a kernel capability that ahjo keeps off by default to limit attack surface. It is enabled, after you confirm (or pass `--allow-nesting` to `ahjo repo add`), when you declare the `ahjo/docker` built-in Feature in your `.ahjo/ahjocontainer.json`:
 
 ```jsonc
 {
