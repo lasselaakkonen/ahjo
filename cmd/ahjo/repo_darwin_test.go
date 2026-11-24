@@ -3,9 +3,165 @@
 package main
 
 import (
+	"errors"
+	"os"
+	"path/filepath"
 	"reflect"
 	"testing"
+
+	"github.com/lasselaakkonen/ahjo/internal/paths"
 )
+
+// isolateShim points HOME at a temp dir (so lookupRepoSlug reads a fake
+// repo-aliases file, never the user's), writes aliases (alias→slug), and
+// replaces the Keychain read with a fake. Returns a pointer to the list of
+// (slug) lookups the fake saw.
+func isolateShim(t *testing.T, aliases map[string]string, get func(slug, key string) (string, bool, error)) *[]string {
+	t.Helper()
+	t.Setenv("HOME", t.TempDir())
+	if err := os.MkdirAll(paths.SharedDir(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	var body string
+	for a, slug := range aliases {
+		body += a + "\t" + slug + "\n"
+	}
+	if err := os.WriteFile(filepath.Join(paths.SharedDir(), paths.RepoAliasesFile), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var calls []string
+	old := keychainGet
+	keychainGet = func(slug, key string) (string, bool, error) {
+		calls = append(calls, slug)
+		return get(slug, key)
+	}
+	t.Cleanup(func() { keychainGet = old })
+	return &calls
+}
+
+func noKeychain(t *testing.T) func(string, string) (string, bool, error) {
+	return func(slug, key string) (string, bool, error) {
+		t.Errorf("unexpected Keychain read for %q", slug)
+		return "", false, nil
+	}
+}
+
+func TestFindRepoAddURL_ContainerConfig(t *testing.T) {
+	cases := []struct {
+		name string
+		rest []string
+		want string
+	}{
+		{"separate value", []string{"--container-config", "node", "https://github.com/o/r"}, "https://github.com/o/r"},
+		{"equals form", []string{"--container-config=node", "https://github.com/o/r"}, "https://github.com/o/r"},
+		{"after url", []string{"https://github.com/o/r", "--container-config", "node"}, "https://github.com/o/r"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := findRepoAddURL(c.rest); got != c.want {
+				t.Fatalf("findRepoAddURL(%v) = %q, want %q", c.rest, got, c.want)
+			}
+		})
+	}
+}
+
+func TestFirstNonFlag_ContainerConfig(t *testing.T) {
+	cases := []struct {
+		name string
+		rest []string
+		want string
+	}{
+		{"separate value", []string{"--container-config", "node", "owner/repo"}, "owner/repo"},
+		{"equals form", []string{"--container-config=node", "owner/repo"}, "owner/repo"},
+		{"with --as", []string{"--as", "x", "--container-config", "node", "owner/repo"}, "owner/repo"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := firstNonFlag(c.rest); got != c.want {
+				t.Fatalf("firstNonFlag(%v) = %q, want %q", c.rest, got, c.want)
+			}
+		})
+	}
+}
+
+// A registered alias (repo or branch) gets its Keychain PAT injected into
+// `create`, with no prompt.
+func TestInterceptCreate_RegisteredAliasInjectsToken(t *testing.T) {
+	for _, alias := range []string{"owner/repo", "owner/repo@feat", "myrepo"} {
+		t.Run(alias, func(t *testing.T) {
+			calls := isolateShim(t, map[string]string{alias: "owner-repo"},
+				func(slug, key string) (string, bool, error) {
+					if key != ghTokenKey {
+						t.Errorf("key = %q, want %q", key, ghTokenKey)
+					}
+					return "tok123", true, nil
+				})
+			args := []string{"create", alias, "x"}
+			newArgs, env, err := interceptCreate(args)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(newArgs, args) {
+				t.Fatalf("args = %v, want unchanged", newArgs)
+			}
+			if want := []string{"GH_TOKEN=tok123"}; !reflect.DeepEqual(env, want) {
+				t.Fatalf("env = %v, want %v", env, want)
+			}
+			if !reflect.DeepEqual(*calls, []string{"owner-repo"}) {
+				t.Fatalf("Keychain lookups = %v, want [owner-repo]", *calls)
+			}
+		})
+	}
+}
+
+func TestInterceptCreate_RegisteredAliasSkipsContainerConfigValue(t *testing.T) {
+	isolateShim(t, map[string]string{"owner/repo": "owner-repo"},
+		func(slug, key string) (string, bool, error) { return "tok", true, nil })
+	_, env, err := interceptCreate([]string{"create", "--as", "x", "owner/repo", "b"})
+	if err != nil || len(env) != 1 {
+		t.Fatalf("env = %v, err = %v; want injected token", env, err)
+	}
+}
+
+func TestInterceptCreate_RegisteredAliasMissIsSilent(t *testing.T) {
+	isolateShim(t, map[string]string{"owner/repo": "owner-repo"},
+		func(slug, key string) (string, bool, error) { return "", false, nil })
+	args := []string{"create", "owner/repo", "x"}
+	newArgs, env, err := interceptCreate(args)
+	if err != nil || env != nil || !reflect.DeepEqual(newArgs, args) {
+		t.Fatalf("got (%v, %v, %v), want unchanged args, nil env, nil err", newArgs, env, err)
+	}
+}
+
+func TestInterceptCreate_RegisteredAliasKeychainErrorIsFatal(t *testing.T) {
+	boom := errors.New("keychain locked")
+	isolateShim(t, map[string]string{"owner/repo": "owner-repo"},
+		func(slug, key string) (string, bool, error) { return "", false, boom })
+	_, _, err := interceptCreate([]string{"create", "owner/repo", "x"})
+	if !errors.Is(err, boom) {
+		t.Fatalf("err = %v, want wrapped %v", err, boom)
+	}
+}
+
+func TestKeychainEnvForSlug(t *testing.T) {
+	isolateShim(t, nil, func(slug, key string) (string, bool, error) {
+		switch slug {
+		case "hit":
+			return "t", true, nil
+		case "empty":
+			return "", true, nil
+		}
+		return "", false, nil
+	})
+	if env, err := keychainEnvForSlug("hit"); err != nil || !reflect.DeepEqual(env, []string{"GH_TOKEN=t"}) {
+		t.Fatalf("hit: env=%v err=%v", env, err)
+	}
+	for _, slug := range []string{"empty", "miss"} {
+		if env, err := keychainEnvForSlug(slug); err != nil || env != nil {
+			t.Fatalf("%s: env=%v err=%v, want nil, nil", slug, env, err)
+		}
+	}
+}
 
 func TestFindCreateAlias(t *testing.T) {
 	cases := []struct {
@@ -84,8 +240,8 @@ func TestIsBareOwnerRepo(t *testing.T) {
 
 // interceptCreate must defer (args unchanged, nil env, no Keychain/file access)
 // for anything that isn't a bare-owner/repo first-add: a branch alias, a
-// non-owner/repo alias, or no positional. These all return at the
-// isBareOwnerRepo gate before any lookupRepoSlug/Keychain call.
+// non-owner/repo alias, or no positional, when the alias is unregistered. The
+// alias file is faked (empty) and the Keychain is faked to fail on any read.
 func TestInterceptCreate_DefersNonFirstAdd(t *testing.T) {
 	cases := []struct {
 		name string
@@ -98,6 +254,7 @@ func TestInterceptCreate_DefersNonFirstAdd(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
+			isolateShim(t, nil, noKeychain(t))
 			newArgs, env, err := interceptCreate(c.args)
 			if err != nil {
 				t.Fatalf("interceptCreate(%v) error: %v", c.args, err)
