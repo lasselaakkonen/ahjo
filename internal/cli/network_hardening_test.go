@@ -117,6 +117,65 @@ func TestComputeEgressDesiredHardBlocks(t *testing.T) {
 	}
 }
 
+// TestComputeEgressDesiredLimaGateways checks that the VM's default gateways,
+// which are the Mac, stay blocked under a broad opt-in, and that a native
+// Linux host (no gateways passed) leaves its router to the opt-in.
+func TestComputeEgressDesiredLimaGateways(t *testing.T) {
+	wide := []string{"192.168.0.0/16"}
+	d := mustDesired(t, egressInputs{
+		HostAddrs:    []netip.Addr{netip.MustParseAddr("192.168.64.5")},
+		LimaHost:     netip.MustParseAddr("192.168.5.2"),
+		LimaGateways: []netip.Addr{netip.MustParseAddr("192.168.5.2"), netip.MustParseAddr("192.168.64.1")},
+		BridgeIPv4:   testBridgeIPv4,
+		AllowCIDRs:   wide,
+	})
+	for _, s := range []string{"192.168.5.2", "192.168.64.1", "192.168.64.5"} {
+		if d.allows(s) {
+			t.Errorf("%s is allowed under opt-in %v, want hard-blocked", s, wide)
+		}
+	}
+	for _, s := range []string{"192.168.64.2", "192.168.1.10"} {
+		if !d.allows(s) {
+			t.Errorf("%s is blocked, want allowed by the opt-in", s)
+		}
+	}
+	if !slices.Contains(d.OptInHardBlocked, netip.MustParsePrefix("192.168.64.1/32")) {
+		t.Errorf("OptInHardBlocked = %v, lacks the gateway", d.OptInHardBlocked)
+	}
+	sum := d.hardBlockSummary()
+	if !strings.Contains(sum, "Mac gateways 192.168.64.1") || !strings.Contains(sum, "host.lima.internal 192.168.5.2") {
+		t.Errorf("summary does not name the Mac gateway and host.lima.internal: %s", sum)
+	}
+	if n := strings.Count(sum, "192.168.5.2"); n != 1 {
+		t.Errorf("summary names 192.168.5.2 %d times, want once: %s", n, sum)
+	}
+
+	// Only host.lima.internal as gateway: no separate gateway entry.
+	only := mustDesired(t, egressInputs{
+		LimaHost:     netip.MustParseAddr("192.168.5.2"),
+		LimaGateways: []netip.Addr{netip.MustParseAddr("192.168.5.2")},
+		BridgeIPv4:   testBridgeIPv4,
+	})
+	if strings.Contains(only.hardBlockSummary(), "gateways") {
+		t.Errorf("summary lists a gateway already named as host.lima.internal: %s", only.hardBlockSummary())
+	}
+
+	// Native Linux: no gateways passed, so the router inside the opt-in is
+	// reachable and the summary says nothing about gateways.
+	n := mustDesired(t, egressIn([]netip.Addr{netip.MustParseAddr("192.168.1.20")}, wide))
+	for _, s := range []string{"192.168.1.1", "192.168.64.1"} {
+		if !n.allows(s) {
+			t.Errorf("native Linux: %s is blocked, want allowed by the opt-in", s)
+		}
+	}
+	if n.allows("192.168.1.20") {
+		t.Error("native Linux: host address 192.168.1.20 is allowed, want hard-blocked")
+	}
+	if strings.Contains(n.hardBlockSummary(), "gateways") {
+		t.Errorf("native Linux summary mentions gateways: %s", n.hardBlockSummary())
+	}
+}
+
 func TestComputeEgressDesiredHashStable(t *testing.T) {
 	a := []netip.Addr{netip.MustParseAddr("203.0.113.7"), netip.MustParseAddr("10.20.30.1")}
 	b := []netip.Addr{netip.MustParseAddr("10.20.30.1"), netip.MustParseAddr("203.0.113.7"), netip.MustParseAddr("203.0.113.7")}
@@ -163,6 +222,11 @@ func TestComputeEgressDesiredHashTracksHardBlocks(t *testing.T) {
 	noLima.LimaHost = netip.Addr{}
 	if mustDesired(t, noLima).Hash == h {
 		t.Error("dropping host.lima.internal did not change the hash")
+	}
+	gw := base
+	gw.LimaGateways = []netip.Addr{netip.MustParseAddr("192.168.64.1")}
+	if mustDesired(t, gw).Hash == h {
+		t.Error("a Lima default gateway inside an opt-in did not change the hash")
 	}
 	host := base
 	host.HostAddrs = []netip.Addr{netip.MustParseAddr("10.1.2.3")}
@@ -301,6 +365,7 @@ func TestNetworkHardeningShow(t *testing.T) {
 		"10.0.0.0/8", "100.64.0.0/10", "169.254.0.0/16", "192.168.0.0/16", "224.0.0.0/3",
 		"opt-in (network.allow_cidrs): 10.1.0.0/16, 172.20.5.0/24",
 		"always blocked, even inside an opt-in: the incusbr0 subnet",
+		"host.lima.internal and every default gateway",
 	} {
 		if !strings.Contains(s, want) {
 			t.Errorf("Show lacks %q:\n%s", want, s)
