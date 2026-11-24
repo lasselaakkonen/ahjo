@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -26,6 +27,11 @@ import (
 
 	"github.com/lasselaakkonen/ahjo/internal/incus"
 )
+
+var envNameRE = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+
+// ValidEnvName reports whether s is a POSIX-style env var name.
+func ValidEnvName(s string) bool { return envNameRE.MatchString(s) }
 
 // ConfigPath is the single canonical in-repo path for ahjo's per-repo
 // config. No fallback: the path is custom on purpose, so any IDE/Codespaces

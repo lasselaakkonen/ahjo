@@ -232,3 +232,28 @@ func TestLoadFromHost_AbsentReturnsFalse(t *testing.T) {
 		t.Fatalf("want (nil, false, nil); got (%v, %v)", cfg, ok)
 	}
 }
+
+func TestValidEnvName(t *testing.T) {
+	cases := []struct {
+		in   string
+		want bool
+	}{
+		{"", false},
+		{"A=B", false},
+		{"\x1b[31mX", false},
+		{"1ABC", false},
+		{"A B", false},
+		{"A-B", false},
+		{"A\n", false},
+		{"A", true},
+		{"_", true},
+		{"_x1", true},
+		{"GH_TOKEN", true},
+		{"lower_case9", true},
+	}
+	for _, c := range cases {
+		if got := ValidEnvName(c.in); got != c.want {
+			t.Errorf("ValidEnvName(%q) = %v, want %v", c.in, got, c.want)
+		}
+	}
+}
