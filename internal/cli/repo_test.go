@@ -81,6 +81,62 @@ func TestForwardAgentForSSHConfig(t *testing.T) {
 	}
 }
 
+// stubConfigGet replaces the Incus config probe repoHasToken falls back to.
+func stubConfigGet(t *testing.T, f func(container, key string) (string, error)) {
+	t.Helper()
+	orig := configGet
+	configGet = f
+	t.Cleanup(func() { configGet = orig })
+}
+
+func TestRepoHasToken(t *testing.T) {
+	// Isolate every token source repoToken consults: the env var, and (off
+	// macOS-in-VM) the per-repo env file under $HOME/.ahjo-shared.
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("GH_TOKEN", "")
+	var probed []string
+	stubConfigGet(t, func(container, key string) (string, error) {
+		probed = append(probed, container+" "+key)
+		switch container {
+		case "ahjo-pat":
+			return "ghp_x", nil
+		case "ahjo-broken":
+			return "", errors.New("incus unreachable")
+		}
+		return "", nil
+	})
+
+	if repoHasToken(nil) {
+		t.Fatalf("nil repo: want false")
+	}
+	if !repoHasToken(&registry.Repo{Name: "flagged", HasToken: true}) {
+		t.Fatalf("HasToken=true: want true")
+	}
+	if repoHasToken(&registry.Repo{Name: "plain"}) {
+		t.Fatalf("no flag, no env, no base: want false")
+	}
+	if len(probed) != 0 {
+		t.Fatalf("repo without BaseContainerName must not probe Incus, got %q", probed)
+	}
+	if !repoHasToken(&registry.Repo{Name: "legacy", BaseContainerName: "ahjo-pat"}) {
+		t.Fatalf("base container with environment.GH_TOKEN: want true")
+	}
+	if probed[0] != "ahjo-pat environment.GH_TOKEN" {
+		t.Fatalf("probed %q, want the base container's environment.GH_TOKEN", probed[0])
+	}
+	if repoHasToken(&registry.Repo{Name: "nopat", BaseContainerName: "ahjo-nopat"}) {
+		t.Fatalf("base container without GH_TOKEN: want false")
+	}
+	if repoHasToken(&registry.Repo{Name: "broken", BaseContainerName: "ahjo-broken"}) {
+		t.Fatalf("probe error must count as no token")
+	}
+
+	t.Setenv("GH_TOKEN", "x")
+	if !repoHasToken(&registry.Repo{Name: "plain"}) {
+		t.Fatalf("flag false with GH_TOKEN in env: want true")
+	}
+}
+
 func TestIsHTTPSRemote(t *testing.T) {
 	cases := []struct {
 		remote string

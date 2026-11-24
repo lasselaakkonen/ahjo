@@ -100,17 +100,15 @@ func runCreate(ctx context.Context, repoAlias, branch, base, asAlias string, noF
 	}
 	// Forward the ssh-agent only when the repo actually needs it: an HTTPS+PAT
 	// origin authenticates git via the token, so the agent would be pure attack
-	// surface. cloneFromBase already strips an inherited device; the else here
-	// also covers a repo that has since become PAT-covered.
-	tok, hasToken, _ := repoToken(repo.Name)
-	hasToken = hasToken && tok != ""
-	if shouldForwardAgent(repo, hasToken, cfg) {
-		if err := attachSSHAgent(ctx, containerName); err != nil {
-			return fmt.Errorf("attach ssh-agent: %w", err)
-		}
-	} else if err := incus.RemoveDevice(containerName, "ssh-agent"); err != nil {
-		fmt.Fprintf(cobraOutErr(), "warn: remove ssh-agent device: %v\n", err)
+	// surface. cloneFromBase already stripped the device inherited from the
+	// base before Start; this attaches it when policy allows (and strips again
+	// on the suppress path, which is a no-op).
+	if err := applySSHAgentPolicy(ctx, containerName, repo, cfg); err != nil {
+		return err
 	}
+	// No lock is held here (createReserveBranch released it), so a PAT visible
+	// to this invocation can be recorded for the ssh-config.
+	syncRepoHasToken(repo.Name)
 
 	if !noFetch {
 		fmt.Printf("→ git fetch origin (in container)\n")
@@ -287,11 +285,15 @@ func cloneFromBase(ctx context.Context, repo *registry.Repo, br *registry.Branch
 	}
 	// The base's ahjo-ssh proxy listens on the base's port; remove so shell
 	// can re-add with this branch's port. Likewise drop the inherited
-	// ssh-agent proxy — it points at the (possibly stale) base-time
-	// SSH_AUTH_SOCK, and bind=container proxies must be added post-start
-	// anyway. attachSSHAgent re-creates it after Start.
+	// ssh-agent proxy before the copy is ever started: it points at the
+	// (possibly stale) base-time SSH_AUTH_SOCK, would be live from first
+	// boot, and bind=container proxies must be added post-start anyway.
+	// applySSHAgentPolicy re-creates it after Start when policy allows. A
+	// failed strip aborts (fail closed) rather than booting with the device.
 	_ = incus.RemoveDevice(containerName, "ahjo-ssh")
-	_ = incus.RemoveDevice(containerName, "ssh-agent")
+	if err := stripSSHAgent(containerName); err != nil {
+		return err
+	}
 
 	// raw.idmap doesn't survive `incus copy` — reapply.
 	if err := applyRawIdmap(containerName); err != nil {
