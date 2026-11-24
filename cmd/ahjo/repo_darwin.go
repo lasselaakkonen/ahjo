@@ -288,8 +288,8 @@ func keychainEnvForAlias(alias string) ([]string, error) {
 	if alias == "" {
 		return nil, nil
 	}
-	slug, err := lookupRepoSlug(alias)
-	if err != nil {
+	slug, ok := resolveAliasSlug(alias)
+	if !ok {
 		return nil, nil
 	}
 	env, err := keychainEnvForSlug(slug)
@@ -297,6 +297,22 @@ func keychainEnvForAlias(alias string) ([]string, error) {
 		return nil, err
 	}
 	return env, nil
+}
+
+// resolveAliasSlug maps alias to its repo slug. The aliases file lists only
+// branches that already exist, so `shell|claude <repo>@<new-branch>` (which
+// auto-creates the branch in the VM) misses; fall back to the repo part so
+// the fetch and the first session still get the PAT.
+func resolveAliasSlug(alias string) (string, bool) {
+	if slug, err := lookupRepoSlug(alias); err == nil {
+		return slug, true
+	}
+	if i := strings.LastIndex(alias, "@"); i > 0 {
+		if slug, err := lookupRepoSlug(alias[:i]); err == nil {
+			return slug, true
+		}
+	}
+	return "", false
 }
 
 // promptStorePAT reads a PAT with hidden input, writes it into the login
@@ -421,7 +437,8 @@ func findCreateAlias(rest []string) string {
 }
 
 // firstNonFlag returns the first positional argument, skipping flag values
-// for the small set of string flags shared across repo subcommands.
+// for the small set of string flags shared across repo subcommands, plus
+// claude's --container-config.
 func firstNonFlag(rest []string) string {
 	stringFlags := map[string]bool{"--default-base": true, "--as": true, "--container-config": true}
 	for i := 0; i < len(rest); i++ {

@@ -52,6 +52,9 @@
   container's PID 1 keeps the old value in its environment until it restarts,
   so restart long-running containers, and rotate PATs that older versions
   stored.
+- Known limitation on macOS: `ahjo top` does not relay the PAT, so PR status
+  for private repos shows an error there. It used to work through the stored
+  key.
 - `incus config set` errors no longer include the value, and `environment.*`
   values are redacted from incus's own error output.
 - macOS: the shim no longer puts the PAT on the `limactl shell` command line
