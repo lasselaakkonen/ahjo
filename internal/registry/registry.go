@@ -59,6 +59,12 @@ type Repo struct {
 	// set is auto-trusted and never appears here. Phase 2a reserves the
 	// schema; the consent prompt and OCI fetch land in Phase 2b.
 	FeatureConsent map[string]bool `toml:"feature_consent,omitempty" json:"feature_consent,omitempty"`
+	// ApprovedForwardEnv lists the env var names this repo's
+	// customizations.ahjo.forward_env may receive, as approved by the user
+	// (interactively at `repo add`, or via `ahjo repo approve-env`). Names in
+	// the global config.ForwardEnv never appear here. The in-container
+	// ahjocontainer.json is untrusted; this list is the gate.
+	ApprovedForwardEnv []string `toml:"approved_forward_env,omitempty" json:"approved_forward_env,omitempty"`
 }
 
 // Branch is a per-branch container holding a checkout at /repo. Replaces
