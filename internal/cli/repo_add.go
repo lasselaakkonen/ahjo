@@ -53,7 +53,10 @@ HTTPS credential helper to read it. ahjo does not auto-rewrite SSH ↔ HTTPS.
 The same per-repo PAT is also solicited on the first ` + "`ahjo create <owner/repo>`" + `
 (so its auto-add clones over HTTPS too). For an HTTPS origin covered by a PAT
 the host ssh-agent is not forwarded into the repo's containers — git uses the
-token instead; override with ` + "`forward_ssh_agent`" + ` in config.toml.
+token instead; override with ` + "`forward_ssh_agent`" + ` in config.toml. This
+applies from the setup container's first boot (Features, warm-install and
+lifecycle hooks run without the agent) and to ` + "`ahjo ssh`" + ` / ` + "`ahjo ide`" + `
+sessions, whose generated ssh-config sets ForwardAgent to match.
 
 Env vars requested by the repo's customizations.ahjo.forward_env are not
 forwarded until you approve them: ahjo asks [y/N] per name (before any
@@ -220,6 +223,17 @@ func repoAddSetup(ctx context.Context, slug, primary string, aliases []string, s
 	}
 	fmt.Printf("Adding repo %s (aliases: %s)\n", slug, strings.Join(aliases, ", "))
 
+	// Resolve the PAT and the clone URL before any container exists, so the
+	// ssh-agent decision is made from them before the container runs any
+	// repo-controlled code (Features, warm-install, lifecycle hooks). pending
+	// stands in for the not-yet-written registry row; it has no
+	// BaseContainerName, so repoHasToken does not probe Incus for it.
+	tok, hasToken, url, err := resolveRepoAuth(slug, primary, src, yes)
+	if err != nil {
+		return err
+	}
+	pending := &registry.Repo{Name: slug, Remote: url, HasToken: hasToken}
+
 	pp, err := ports.Load()
 	if err != nil {
 		return err
@@ -266,6 +280,11 @@ func repoAddSetup(ctx context.Context, slug, primary string, aliases []string, s
 		return err
 	}
 
+	// A fresh container has no ssh-agent device unless a profile supplied
+	// one; strip anyway so no start site boots with it.
+	if err := stripSSHAgent(containerName); err != nil {
+		return err
+	}
 	fmt.Printf("→ incus start %s\n", containerName)
 	if err := incus.Start(containerName); err != nil {
 		return err
@@ -273,9 +292,10 @@ func repoAddSetup(ctx context.Context, slug, primary string, aliases []string, s
 	if err := incus.WaitReady(ctx, containerName, 30*time.Second); err != nil {
 		return err
 	}
-	// ssh-agent proxy must be attached post-start.
-	if err := attachSSHAgent(ctx, containerName); err != nil {
-		return fmt.Errorf("attach ssh-agent: %w", err)
+	// ssh-agent proxy must be attached post-start, and only when policy
+	// allows: an HTTPS+PAT origin never gets it, not even during setup.
+	if err := applySSHAgentPolicy(ctx, containerName, pending, cfg); err != nil {
+		return err
 	}
 	// Paste-shim wiring: best-effort, never blocks repo add.
 	if err := attachPasteShim(containerName); err != nil {
@@ -299,7 +319,7 @@ func repoAddSetup(ctx context.Context, slug, primary string, aliases []string, s
 		return fmt.Errorf("seed git identity: %w", err)
 	}
 
-	url, defaultBase, err := cloneRepo(ctx, containerName, slug, primary, src, defaultBase, yes)
+	defaultBase, err = cloneRepo(ctx, containerName, tok, hasToken, url, defaultBase)
 	if err != nil {
 		return err
 	}
@@ -413,14 +433,23 @@ func repoAddSetup(ctx context.Context, slug, primary string, aliases []string, s
 		if err := incus.ConfigSet(containerName, "security.nesting", "true"); err != nil {
 			return fmt.Errorf("enable security.nesting: %w", err)
 		}
+		// Strip before the restart like every other start site; the policy
+		// call below re-creates the device when allowed.
+		if err := stripSSHAgent(containerName); err != nil {
+			return err
+		}
 		fmt.Printf("→ security.nesting enabled; restarting %s\n", containerName)
 		if err := incus.Restart(ctx, containerName, 30*time.Second); err != nil {
 			return fmt.Errorf("restart after enabling nesting: %w", err)
 		}
 		// bind=container proxy devices need a live container namespace;
 		// re-attach both after the restart for parity with the initial
-		// post-start wiring above. Both are best-effort.
-		if err := attachSSHAgent(ctx, containerName); err != nil {
+		// post-start wiring above. Both are best-effort, except that a
+		// failed ssh-agent strip aborts (fail closed).
+		if err := applySSHAgentPolicy(ctx, containerName, pending, cfg); err != nil {
+			if errors.Is(err, errAgentStrip) {
+				return err
+			}
 			fmt.Fprintf(cobraOutErr(), "warn: re-attach ssh-agent after nesting restart: %v\n", err)
 		}
 		if err := attachPasteShim(containerName); err != nil {
@@ -475,57 +504,43 @@ func repoAddSetup(ctx context.Context, slug, primary string, aliases []string, s
 		fmt.Fprintf(cobraOutErr(), "warn: could not start sshd: %v\n", err)
 	}
 
+	// Drop the ssh-agent device before stopping so the stopped base never
+	// carries it: a later `incus start` of the base (repo pull, clean-check)
+	// or an `incus copy` must not inherit a live agent route.
+	if err := stripSSHAgent(containerName); err != nil {
+		return err
+	}
 	// Stop so future `incus copy` is fast (btrfs CoW requires stopped source).
 	fmt.Printf("→ incus stop %s\n", containerName)
 	if err := incus.Stop(containerName); err != nil {
 		return err
 	}
 
-	return commitRegistry(slug, primary, aliases, url, defaultBase, containerName, port, consent, approvedEnv)
+	return commitRegistry(slug, primary, aliases, url, defaultBase, containerName, port, consent, approvedEnv, hasToken)
 }
 
-// cloneRepo is the token-resolution + clone phase of repoAddSetup. It runs
-// the per-repo GitHub-token prompt, forwards the token onto the container and
-// configures gh's credential helper when one is in hand, picks the clone URL
-// (HTTPS-with-PAT vs SSH-then-HTTPS), clones /repo as the ubuntu user, and
-// checks out an explicit --default-base. Returns the recorded remote URL and
-// the resolved default branch (detected from the clone's HEAD when defaultBase
-// was empty).
-//
-// The git clone + checkout run via ExecAsContext so a canceled ctx (Ctrl-C on
-// a slow clone — the longest part of repo add) tears them down.
-func cloneRepo(ctx context.Context, containerName, slug, primary string, src repoSource, defaultBase string, yes bool) (url, resolvedBase string, err error) {
+// resolveRepoAuth is the token-resolution phase of repoAddSetup. It runs the
+// per-repo GitHub-token prompt, reads the token back through repoToken, and
+// picks the clone URL (HTTPS-with-PAT vs SSH-then-HTTPS). None of this needs
+// the container (pickGitHubURL probes from the host), which is what lets
+// repoAddSetup make the ssh-agent decision before the container first boots.
+// Returns the token, whether one is in hand, and the URL to clone and record
+// as the repo's remote.
+func resolveRepoAuth(slug, primary string, src repoSource, yes bool) (tok string, hasToken bool, url string, err error) {
 	// Per-repo GitHub token prompt. Non-fatal: skipped on --yes / non-TTY /
 	// already-set / empty paste. See `ahjo repo set-token` to add later.
 	// Resolved before the clone URL is chosen so an inferred GitHub alias can
 	// clone over HTTPS (and use the PAT) instead of falling onto the SSH key.
 	if err := promptRepoGHToken(slug, primary, yes); err != nil {
-		return "", "", err
+		return "", false, "", err
 	}
 	// repoToken sees this prompt's paste, the Mac shim's pre-relay Keychain
 	// inject, a global `ahjo env set GH_TOKEN`, or a prior repo-set-token run.
-	tok, hasToken, err := repoToken(slug)
+	tok, hasToken, err = repoToken(slug)
 	if err != nil {
-		return "", "", err
+		return "", false, "", err
 	}
 	hasToken = hasToken && tok != ""
-	if hasToken {
-		// Promote the token onto the container as environment.GH_TOKEN/
-		// GITHUB_TOKEN and configure git's HTTPS credential helper. `incus
-		// copy` carries environment.* and the in-$HOME .gitconfig into every
-		// branch container, so this runs once.
-		if err := installRepoToken(func(k, v string) error { return incus.ConfigSet(containerName, k, v) }, tok); err != nil {
-			return "", "", fmt.Errorf("forward GH_TOKEN to container: %w", err)
-		}
-		if err := incus.ExecAs(
-			containerName, 1000,
-			map[string]string{"HOME": "/home/ubuntu", "GH_TOKEN": tok},
-			"/home/ubuntu",
-			"gh", "auth", "setup-git",
-		); err != nil {
-			return "", "", fmt.Errorf("gh auth setup-git: %w", err)
-		}
-	}
 
 	// Pick the clone URL now that we know whether a PAT is in hand. An
 	// explicit URL is used verbatim; an inferred GitHub alias clones over
@@ -544,18 +559,48 @@ func cloneRepo(ctx context.Context, containerName, slug, primary string, src rep
 			"(no PAT set). git push/fetch will rely on the forwarded agent and `gh` "+
 			"won't work. Set a repo-scoped PAT with `ahjo repo set-token %s`.\n", url, primary)
 	}
+	return tok, hasToken, url, nil
+}
+
+// cloneRepo is the container-side clone phase of repoAddSetup, run with the
+// token and URL resolveRepoAuth chose. When a token is in hand it forwards it
+// onto the container and configures gh's credential helper; then it clones
+// url into /repo as the ubuntu user and checks out an explicit
+// --default-base. Returns the resolved default branch (detected from the
+// clone's HEAD when defaultBase was empty).
+//
+// The git clone + checkout run via ExecAsContext so a canceled ctx (Ctrl-C on
+// a slow clone — the longest part of repo add) tears them down.
+func cloneRepo(ctx context.Context, containerName, tok string, hasToken bool, url, defaultBase string) (resolvedBase string, err error) {
+	if hasToken {
+		// Promote the token onto the container as environment.GH_TOKEN/
+		// GITHUB_TOKEN and configure git's HTTPS credential helper. `incus
+		// copy` carries environment.* and the in-$HOME .gitconfig into every
+		// branch container, so this runs once.
+		if err := installRepoToken(func(k, v string) error { return incus.ConfigSet(containerName, k, v) }, tok); err != nil {
+			return "", fmt.Errorf("forward GH_TOKEN to container: %w", err)
+		}
+		if err := incus.ExecAs(
+			containerName, 1000,
+			map[string]string{"HOME": "/home/ubuntu", "GH_TOKEN": tok},
+			"/home/ubuntu",
+			"gh", "auth", "setup-git",
+		); err != nil {
+			return "", fmt.Errorf("gh auth setup-git: %w", err)
+		}
+	}
 
 	// /repo is at the container root, where uid 1000 can't `mkdir`. Create
 	// it as ubuntu:ubuntu first so `git clone` runs unprivileged.
 	if err := incus.ExecAs(containerName, 0, nil, "/", "install", "-d", "-m", "0755", "-o", "ubuntu", "-g", "ubuntu", paths.RepoMountPath); err != nil {
-		return "", "", fmt.Errorf("create %s: %w", paths.RepoMountPath, err)
+		return "", fmt.Errorf("create %s: %w", paths.RepoMountPath, err)
 	}
 	fmt.Printf("→ git clone %s %s (in container as ubuntu)\n", url, paths.RepoMountPath)
 	// GIT_TERMINAL_PROMPT=0 turns a missing-credentials misconfig into a
 	// fast clone failure instead of a hung `Username:` prompt the user
 	// can't always see (e.g., when ahjo is invoked from a TUI surface).
 	if err := incus.ExecAsContext(ctx, containerName, 1000, map[string]string{"GIT_TERMINAL_PROMPT": "0"}, "/", "git", "clone", url, paths.RepoMountPath); err != nil {
-		return "", "", wrapCloneErr(err)
+		return "", wrapCloneErr(err)
 	}
 
 	// A plain `git clone` checks out the remote's HEAD branch. When the user
@@ -573,16 +618,16 @@ func cloneRepo(ctx context.Context, containerName, slug, primary string, src rep
 	if defaultBase == "" {
 		defaultBase, err = detectContainerDefaultBranch(containerName)
 		if err != nil {
-			return "", "", fmt.Errorf("detect default branch (pass --default-base to override): %w", err)
+			return "", fmt.Errorf("detect default branch (pass --default-base to override): %w", err)
 		}
 	}
 	if explicitBase {
 		fmt.Printf("→ git checkout -B %s origin/%s (in container)\n", defaultBase, defaultBase)
 		if err := incus.ExecAsContext(ctx, containerName, 1000, nil, paths.RepoMountPath, "git", "checkout", "-B", defaultBase, "origin/"+defaultBase); err != nil {
-			return "", "", fmt.Errorf("checkout --default-base %q (does the branch exist on the remote?): %w", defaultBase, err)
+			return "", fmt.Errorf("checkout --default-base %q (does the branch exist on the remote?): %w", defaultBase, err)
 		}
 	}
-	return url, defaultBase, nil
+	return defaultBase, nil
 }
 
 // repoAddResolveConfigs is the container-config-resolution phase of
@@ -689,8 +734,9 @@ func repoAddResolveConfigs(containerName, containerConfig string, yes bool, elev
 // repoAddSetup reads as a sequence of named phases rather than one long body.
 //
 // approvedEnv is the forward_env names approved at the consent prompt; it
-// becomes the repo row's ApprovedForwardEnv (sorted).
-func commitRegistry(slug, primary string, aliases []string, url, defaultBase, containerName string, port int, consent map[string]bool, approvedEnv []string) error {
+// becomes the repo row's ApprovedForwardEnv (sorted). hasToken records that a
+// PAT covers the repo (the registry input to the ssh-agent policy).
+func commitRegistry(slug, primary string, aliases []string, url, defaultBase, containerName string, port int, consent map[string]bool, approvedEnv []string, hasToken bool) error {
 	// Acquire lock for final registry write — both repo + default branch
 	// rows go in atomically so a partial state is impossible.
 	release, err := lockfile.Acquire()
@@ -722,6 +768,7 @@ func commitRegistry(slug, primary string, aliases []string, url, defaultBase, co
 		Remote:            url,
 		DefaultBase:       defaultBase,
 		BaseContainerName: containerName,
+		HasToken:          hasToken,
 	}
 	if len(consent) > 0 {
 		repoRow.FeatureConsent = consent
