@@ -745,7 +745,7 @@ func commitRegistry(slug, primary string, aliases []string, url, defaultBase, co
 	if err := reg.Save(); err != nil {
 		return err
 	}
-	if err := sshpkg.RegenerateConfig(reg); err != nil {
+	if err := regenerateSSHConfig(reg); err != nil {
 		return err
 	}
 	fmt.Printf("Repo %s ready (default: %s, ssh port %d). Try: ahjo shell %s\n",

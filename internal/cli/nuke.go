@@ -13,7 +13,6 @@ import (
 	"github.com/lasselaakkonen/ahjo/internal/paths"
 	"github.com/lasselaakkonen/ahjo/internal/ports"
 	"github.com/lasselaakkonen/ahjo/internal/registry"
-	sshpkg "github.com/lasselaakkonen/ahjo/internal/ssh"
 )
 
 func newNukeCmd() *cobra.Command {
@@ -119,7 +118,7 @@ func runNuke(yes bool) error {
 		}
 	}
 
-	if err := sshpkg.RegenerateConfig(reg); err != nil {
+	if err := regenerateSSHConfig(reg); err != nil {
 		fmt.Fprintf(cobraOutErr(), "warn: regenerate ssh-config: %v\n", err)
 	}
 

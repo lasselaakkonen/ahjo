@@ -171,7 +171,7 @@ func createReserveBranch(cfg *config.Config, repoAlias, branch, asAlias string) 
 	}
 	if existing := reg.FindBranch(repo.Name, branch); existing != nil {
 		// Idempotent: re-render ssh-config + exit OK.
-		if err := sshpkg.RegenerateConfig(reg); err != nil {
+		if err := regenerateSSHConfig(reg); err != nil {
 			return nil, nil, err
 		}
 		fmt.Printf("branch %s already exists (container %s)\n", existing.Aliases[0], existing.IncusName)
@@ -248,7 +248,7 @@ func createReserveBranch(cfg *config.Config, repoAlias, branch, asAlias string) 
 	if err := reg.Save(); err != nil {
 		return nil, nil, err
 	}
-	if err := sshpkg.RegenerateConfig(reg); err != nil {
+	if err := regenerateSSHConfig(reg); err != nil {
 		return nil, nil, err
 	}
 	return &br, repo, nil

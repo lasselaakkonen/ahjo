@@ -47,6 +47,40 @@ func TestShouldForwardAgent(t *testing.T) {
 	}
 }
 
+// forwardAgentForSSHConfig must decide from the registry flag alone: a
+// GH_TOKEN in the environment belongs to whichever repo the Mac shim resolved,
+// not to every repo rendered into the shared ssh-config.
+func TestForwardAgentForSSHConfig(t *testing.T) {
+	t.Setenv("GH_TOKEN", "ghp_belongs_to_some_other_repo")
+	boolPtr := func(b bool) *bool { return &b }
+	covered := &registry.Repo{Remote: "https://github.com/o/r.git", HasToken: true}
+	uncovered := &registry.Repo{Remote: "https://github.com/o/r.git"}
+	ssh := &registry.Repo{Remote: "git@github.com:o/r.git", HasToken: true}
+	cases := []struct {
+		name    string
+		repo    *registry.Repo
+		forward *bool
+		want    bool
+	}{
+		{"https+has_token suppresses", covered, nil, false},
+		{"https without has_token forwards despite env GH_TOKEN", uncovered, nil, true},
+		{"ssh+has_token forwards", ssh, nil, true},
+		{"forward_ssh_agent=false wins on ssh", ssh, boolPtr(false), false},
+		{"forward_ssh_agent=true wins on covered https", covered, boolPtr(true), true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			f := forwardAgentForSSHConfig(&config.Config{ForwardSSHAgent: c.forward})
+			if got := f(c.repo); got != c.want {
+				t.Fatalf("forwardAgentForSSHConfig(forward=%v)(%+v) = %v, want %v", c.forward, c.repo, got, c.want)
+			}
+		})
+	}
+	if !forwardAgentForSSHConfig(nil)(uncovered) {
+		t.Fatalf("nil cfg must mean the auto policy (forward an uncovered repo)")
+	}
+}
+
 func TestIsHTTPSRemote(t *testing.T) {
 	cases := []struct {
 		remote string
