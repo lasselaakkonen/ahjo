@@ -128,7 +128,11 @@ func EnsureRepo(ctx context.Context, repoAlias, containerConfig string) (*regist
 	// here is what stops `ahjo create owner/repo branch` from grabbing the
 	// host SSH key when a PAT is available.
 	fmt.Printf("repo %q not registered; adding from GitHub...\n", repoAlias)
-	if err := runRepoAdd(ctx, repoAlias, "", "", false, containerConfig); err != nil {
+	// Zero elevationFlags: on a TTY the user gets the nesting /
+	// nested_incus prompts; off a TTY the gate's error tells them to run
+	// `ahjo repo add ... --allow-...` first. `create` deliberately has no
+	// --allow-* flags of its own.
+	if err := runRepoAdd(ctx, repoAlias, "", "", false, containerConfig, elevationFlags{}); err != nil {
 		return nil, err
 	}
 

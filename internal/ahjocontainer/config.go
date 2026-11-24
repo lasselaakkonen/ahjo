@@ -99,11 +99,13 @@ type AhjoCustomizations struct {
 	ForwardEnv []string             `json:"forward_env"`
 	AutoExpose AhjoAutoExposeConfig `json:"auto_expose"`
 
-	// NestedIncus opts the container into running nested Incus / LXC /
-	// any tool that needs loop-mounted block-backed filesystems. When
-	// true, ahjo wires /dev/loop-control + /dev/loop0..7 into the
-	// container at repo-add time. Capability bump — see
-	// CONTAINER-ISOLATION.md for the kernel-attack-surface trade-off.
+	// NestedIncus asks for the container to run nested Incus / LXC /
+	// any tool that needs loop-mounted block-backed filesystems. The repo
+	// can only request it: `ahjo repo add` grants it (host loop devices
+	// plus security.nesting) only after the user confirms on a terminal
+	// or passes --allow-nested-incus, and aborts otherwise. Capability
+	// bump — see CONTAINER-ISOLATION.md for the kernel-attack-surface
+	// trade-off.
 	NestedIncus bool `json:"nested_incus"`
 }
 

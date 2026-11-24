@@ -15,32 +15,48 @@ import (
 	"github.com/lasselaakkonen/ahjo/internal/devcontainer"
 )
 
+// featuresRequestingNesting returns the sorted refs of the built-in
+// Features in ffs that request security.nesting on the container. Only
+// `ahjo/*` Features (Registry=="ahjo") may request Incus instance-config
+// changes; the same field in an OCI Feature is silently ignored. This is
+// the allowlist mechanism: OCI/third-party Features cannot escalate
+// container privileges by setting customizations.ahjo.nesting in their
+// devcontainer-feature.json.
+//
+// A built-in requesting nesting is not by itself a grant: the repo chose
+// to declare it, so applyRepoFeatures asks the host-side user (or the
+// --allow-nesting flag) via its confirmNesting callback before any
+// install.sh runs. The refs come from the embedded built-in registry, so
+// they are safe to print in that prompt.
+func featuresRequestingNesting(ffs []devcontainer.FetchedFeature) []string {
+	var refs []string
+	for _, ff := range ffs {
+		if ff.Ref.Registry == "ahjo" && ff.Metadata != nil && ff.Metadata.Customizations.Ahjo.Nesting {
+			refs = append(refs, ff.Ref.String())
+		}
+	}
+	sort.Strings(refs)
+	return refs
+}
+
 // featuresRequestNesting reports whether any built-in Feature in ffs
-// requests security.nesting on the container. Only `ahjo/*` Features
-// (Registry=="ahjo") may request Incus instance-config changes; the same
-// field in an OCI Feature is silently ignored. This is the allowlist
-// mechanism: OCI/third-party Features cannot escalate container privileges
-// by setting customizations.ahjo.nesting in their devcontainer-feature.json.
+// requests security.nesting. Thin wrapper over featuresRequestingNesting.
 //
 // Callers use this after Resolve to decide whether to enable nesting and
 // restart the container before warm-install/lifecycle hooks run, so that
 // dockerd (or any tool that needs userns nesting) is available to
 // postCreateCommand.
 func featuresRequestNesting(ffs []devcontainer.FetchedFeature) bool {
-	for _, ff := range ffs {
-		if ff.Ref.Registry == "ahjo" && ff.Metadata != nil && ff.Metadata.Customizations.Ahjo.Nesting {
-			return true
-		}
-	}
-	return false
+	return len(featuresRequestingNesting(ffs)) > 0
 }
 
 // applyRepoFeatures runs the trust-prompt → fetch → resolve → apply
 // pipeline for cfg.Features against containerName. Returns whether any
 // resolved built-in Feature requested security.nesting on the container
-// (so the caller can enable nesting and restart before lifecycle hooks
-// run), plus the per-glob consent map captured during the prompt (callers
-// persist it onto the Repo row in registry.toml at the end of repo-add).
+// and confirmNesting approved it (so the caller can enable nesting and
+// restart before lifecycle hooks run), plus the per-glob consent map
+// captured during the prompt (callers persist it onto the Repo row in
+// registry.toml at the end of repo-add).
 //
 // No-op when cfg.Features is empty. Auto-trusts the curated upstream
 // (`ghcr.io/devcontainers/features/*`); already-consented globs in
@@ -58,11 +74,18 @@ func featuresRequestNesting(ffs []devcontainer.FetchedFeature) bool {
 // (literal pass-through; the spec's `${...}` interpolation is not
 // honored, matching how cfg.ApplyContainerEnv handles devcontainer.json
 // containerEnv).
+//
+// confirmNesting is called after Resolve and before any Feature is
+// applied, only when a resolved built-in requests security.nesting, with
+// the sorted refs of those Features. A non-nil error aborts before any
+// install.sh runs. A nil callback means "deny": requesting nesting with no
+// way to approve it is an error, never a silent grant.
 func applyRepoFeatures(
 	ctx context.Context,
 	containerName string,
 	cfg *ahjocontainer.Config,
 	existingConsent map[string]bool,
+	confirmNesting func(requestedBy []string) error,
 	in io.Reader,
 	out io.Writer,
 ) (requestsNesting bool, newConsent map[string]bool, err error) {
@@ -191,6 +214,20 @@ func applyRepoFeatures(
 		return false, nil, err
 	}
 
+	// Gate security.nesting before any install.sh runs: a Feature that
+	// needs nesting (ahjo/docker) is pointless to install if the user
+	// declines, and declining must abort before repo code gets a chance to
+	// run.
+	nestingRefs := featuresRequestingNesting(ordered)
+	if len(nestingRefs) > 0 {
+		if confirmNesting == nil {
+			return false, nil, fmt.Errorf("security.nesting (needed by: %s) was not approved", strings.Join(nestingRefs, ", "))
+		}
+		if err := confirmNesting(nestingRefs); err != nil {
+			return false, nil, err
+		}
+	}
+
 	runtimeEnv := devcontainer.RuntimeEnv()
 	for _, ff := range ordered {
 		fmt.Fprintf(out, "→ feature %s (apply)\n", ff.Ref)
@@ -205,5 +242,5 @@ func applyRepoFeatures(
 		// Features compose: Feature N's expanded values are visible
 		// when Feature N+1's containerEnv is expanded.
 	}
-	return featuresRequestNesting(ordered), newConsent, nil
+	return len(nestingRefs) > 0, newConsent, nil
 }
