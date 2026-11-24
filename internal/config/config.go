@@ -5,6 +5,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"net/netip"
 	"os"
 
 	"github.com/BurntSushi/toml"
@@ -37,6 +38,38 @@ type Config struct {
 	// Load() must NOT force a default here.
 	ForwardSSHAgent *bool     `toml:"forward_ssh_agent"`
 	Mac             MacConfig `toml:"mac"` // host-only; ignored in the VM
+	// Network holds container network-egress policy. Global-only on purpose:
+	// it is deliberately NOT readable from a repo's devcontainer.json, because
+	// that file is controlled by the untrusted repo and could otherwise punch
+	// holes in the firewall. Changes only take effect on the next `ahjo update`.
+	Network NetworkConfig `toml:"network"`
+}
+
+// NetworkConfig is the [network] section of config.toml.
+type NetworkConfig struct {
+	// AllowCIDRs lists private IPv4 ranges containers may reach, e.g.
+	// ["10.1.0.0/16"]. Each entry must be an IPv4 prefix of /8 or longer; wider
+	// ranges (0.0.0.0/0 and friends) would defeat the firewall. Default empty.
+	AllowCIDRs []string `toml:"allow_cidrs"`
+}
+
+// minAllowCIDRBits is the shortest prefix accepted in network.allow_cidrs.
+const minAllowCIDRBits = 8
+
+func (n NetworkConfig) validate() error {
+	for _, s := range n.AllowCIDRs {
+		p, err := netip.ParsePrefix(s)
+		if err != nil {
+			return fmt.Errorf("network.allow_cidrs: invalid CIDR %q: %w", s, err)
+		}
+		if !p.Addr().Is4() {
+			return fmt.Errorf("network.allow_cidrs: %q is not an IPv4 CIDR", s)
+		}
+		if p.Bits() < minAllowCIDRBits {
+			return fmt.Errorf("network.allow_cidrs: %q is too wide (prefix must be /%d or longer)", s, minAllowCIDRBits)
+		}
+	}
+	return nil
 }
 
 type Range struct {
@@ -119,6 +152,9 @@ func Load() (*Config, error) {
 	}
 	if c.AutoExpose.MinPort == 0 {
 		c.AutoExpose.MinPort = DefaultAutoExposeMinPort
+	}
+	if err := c.Network.validate(); err != nil {
+		return nil, err
 	}
 	return c, nil
 }
