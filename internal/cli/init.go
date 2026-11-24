@@ -48,12 +48,17 @@ func newInitCmd() *cobra.Command {
   2. apt install incus
   3. incus admin init via preseed (fixed subnet 10.20.30.1/24)
   4. usermod -aG incus-admin (re-exec under sg, no re-shell required)
-  5. ahjo-base image: pull images:ubuntu/24.04, launch a transient
+  5. firewall incusbr0: ahjo-egress ACL (public internet only; no host,
+     Mac, LAN, metadata) with default egress reject, plus port isolation
+     and MAC/IPv4 filtering on the default profile's eth0 (no sibling
+     traffic). Opt-in private ranges: [network] allow_cidrs in
+     ~/.ahjo/config.toml
+  6. ahjo-base image: pull images:ubuntu/24.04, launch a transient
      container, apply the embedded ahjo-runtime devcontainer Feature,
      publish as ahjo-base
-  6. create ~/.ahjo/ skeleton
-  7. install Claude Code if missing (curl -fsSL https://claude.ai/install.sh | bash — Anthropic's native installer, auto-updating)
-  8. claude setup-token (saves token to ~/.ahjo/.env)
+  7. create ~/.ahjo/ skeleton
+  8. install Claude Code if missing (curl -fsSL https://claude.ai/install.sh | bash — Anthropic's native installer, auto-updating)
+  9. claude setup-token (saves token to ~/.ahjo/.env)
 
 Each step detects whether it's already done and skips, so re-runs are safe.
 The flow runs end-to-end in a single invocation.
@@ -210,6 +215,10 @@ Signed-By: /etc/apt/keyrings/zabbly.asc
 		},
 	}
 	steps = append(steps, []initflow.Step{
+		// After the group join (plain `incus` works from here on, in the
+		// sg re-exec'd process) and before the ahjo-base build, so the
+		// build already runs under the network policy.
+		networkHardeningStep(),
 		{
 			Title: "Build ahjo-base image via the devcontainer Feature pipeline (~5 min on first run)",
 			Skip: func() (bool, string, error) {
