@@ -478,7 +478,7 @@ sudo ln -sf "$PWD/ahjo" /usr/local/bin/ahjo
 | `ahjo nuke [-y]` | Tear down everything `init` built so it can be rebuilt: containers, `ahjo-base` + `ahjo-osbase` images (and any leftover `coi-default` from a pre-Phase-1 install), host keys, port allocations. On macOS this also stops + deletes the Lima VM. Keeps `~/.ahjo/{config.toml,profiles}` and registered repos. |
 | `ahjo --version` | Print the version baked into the binary. (`ahjo version` also works on macOS; on Linux use the `--version` flag.) |
 
-Global config: `~/.ahjo/config.toml` (optional). See [`internal/config/config.go`](internal/config/config.go) for fields — currently `forward_env`, `port_range`, and `auto_expose`.
+Global config: `~/.ahjo/config.toml` (optional). See [`internal/config/config.go`](internal/config/config.go) for fields — currently `forward_env`, `port_range`, `auto_expose`, and `network`.
 
 The `[auto_expose]` section controls automatic forwarding of container TCP
 loopback listeners to the host:
@@ -496,6 +496,21 @@ ensures one `ahjo-auto-<port>` Incus proxy device per qualifying listener
 (allocating Mac-side host ports from the same `port_range` as `ahjo expose`).
 Listeners that disappear get their proxy devices removed and their host
 ports freed; manual `ahjo expose` entries are never touched.
+
+The `[network]` section opts containers in to private address ranges. By
+default containers can reach only the public IPv4 internet: the Mac, the VM,
+your LAN, VPN and Tailscale ranges, cloud metadata and sibling containers are
+blocked (see [Network](docs/CONTAINER-ISOLATION.md#network)).
+
+```toml
+[network]
+allow_cidrs = ["10.1.0.0/16"]   # IPv4 only, /8 or longer; default: none
+```
+
+Run `ahjo update` after editing it; running containers pick the change up on
+their next restart. It is read only from this global file, never from a repo's
+config. Existing installs must run `ahjo update` once to get the network
+restrictions at all.
 
 ## Per-repo config (ahjocontainer.json)
 
@@ -590,6 +605,19 @@ ahjo shell myacc/myrepo@mybranch --update
 ⚠️ `--update` destroys the existing container and creates a fresh one from the repo base. Any uncommitted or unpushed changes inside the container are lost. Push or stash before running it.
 
 See [Run Docker inside a container](#run-docker-inside-a-container) for full details.
+
+### Container can't reach my private git host, VPN or LAN service
+
+Containers can reach only the public internet; private ranges (`10/8`, `172.16/12`, `192.168/16`, `100.64/10`, link-local) and the host are blocked. Add the CIDR of the service to the global `~/.ahjo/config.toml`:
+
+```toml
+[network]
+allow_cidrs = ["10.1.0.0/16"]
+```
+
+Then run `ahjo update` and restart the container. To reach a single service on your Mac, use `ahjo forward <alias> <host-port>` instead of opening a range.
+
+If you installed ahjo before this restriction existed, run `ahjo update` once to apply it; `ahjo doctor` warns while it is missing.
 
 ## Development
 
