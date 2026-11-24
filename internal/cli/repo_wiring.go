@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"os"
 	"strings"
 
@@ -108,8 +109,28 @@ func attachSSHAgent(ctx context.Context, containerName string) error {
 // its own, so the ssh-agent isn't needed for git. GitHub-strict on purpose: a
 // self-hosted HTTPS remote with different PAT semantics shouldn't be silently
 // treated as covered.
+//
+// Parsed rather than prefix-matched so equivalent spellings of the same origin
+// (`https://GitHub.com/…`, `https://github.com:443/…`, `https://user@github.com/…`)
+// are recognised: git and gh treat them all as github.com, so a prefix miss
+// would silently keep the agent forwarded on a PAT-covered repo. Anything that
+// is not exactly host github.com on the default port (e.g.
+// `github.com.evil.example`, `:8443`) stays uncovered.
 func isHTTPSRemote(remote string) bool {
-	return strings.HasPrefix(remote, "https://github.com/")
+	u, err := url.Parse(remote)
+	if err != nil {
+		return false
+	}
+	if !strings.EqualFold(u.Scheme, "https") {
+		return false
+	}
+	if !strings.EqualFold(u.Hostname(), "github.com") {
+		return false
+	}
+	if p := u.Port(); p != "" && p != "443" {
+		return false
+	}
+	return u.Path != "" && u.Path != "/"
 }
 
 // shouldForwardAgent decides whether to proxy the host ssh-agent into a repo's
