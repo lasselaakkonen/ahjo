@@ -9,15 +9,6 @@ import (
 	"testing"
 )
 
-// failReader fails the test if the gate reads input when it must not.
-type failReader struct{ t *testing.T }
-
-func (r failReader) Read([]byte) (int, error) {
-	r.t.Helper()
-	r.t.Fatal("gate read stdin although no prompt was expected")
-	return 0, io.EOF
-}
-
 func newGate(flags elevationFlags, interactive bool, in io.Reader, out io.Writer) *elevationGate {
 	return &elevationGate{flags: flags, interactive: interactive, in: bufio.NewReader(in), out: out}
 }
