@@ -24,6 +24,9 @@ func newUpdateCmd() *cobra.Command {
 		Short: "Refresh the in-VM stack: claude, ahjo-base image (devcontainer Feature pipeline)",
 		Long: `update brings every layer downstream of the host ahjo binary up to date:
 
+  - re-applies the incusbr0 firewall (ahjo-egress ACL, default egress
+    reject, eth0 port isolation) so [network] allow_cidrs changes and new
+    host addresses take effect; skipped when already current
   - re-runs Anthropic's claude installer on the VM (idempotent — pulls latest)
   - rebuilds the ahjo-base image by force-replaying the devcontainer
     Feature pipeline (curated upstream Features + ahjo's embedded
@@ -31,8 +34,10 @@ func newUpdateCmd() *cobra.Command {
     mirror of upstream is reused — re-pulling it would slow update for
     no gain)
 
-It does not touch worktrees, containers, registry entries, or host claude
-credentials. To pick up the new image in an existing container, recreate
+It does not touch worktrees, registry entries, or host claude credentials,
+and it does not recreate containers (the firewall step changes the shared
+incusbr0 network and default profile, which running containers pick up on
+their next restart). To pick up the new image in an existing container, recreate
 it with 'ahjo shell <alias> --update'.
 
 On macOS, the host-side 'ahjo update' first pushes the new ahjo-linux-<arch>
@@ -55,6 +60,7 @@ func vmUpdateSteps(ctx context.Context) []initflow.Step {
 	return []initflow.Step{
 		subuidGrantStep(),
 		inotifySysctlStep(),
+		networkHardeningStep(),
 		{
 			Title: "Refresh Claude Code on the VM (idempotent)",
 			Note:  "re-runs Anthropic's installer; it's a no-op if already current. Note: Anthropic's installer also auto-updates in the background, so this is mainly belt-and-suspenders.",
