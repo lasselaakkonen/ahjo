@@ -50,6 +50,7 @@ func Run() []Problem {
 	}
 	ps = append(ps, checkGitIdentity())
 	ps = append(ps, checkStoragePool())
+	ps = append(ps, checkNetworkHardening())
 	ps = append(ps, checkAhjoBase())
 	return ps
 }
@@ -360,6 +361,37 @@ func checkStoragePool() Problem {
 		}
 	}
 	return Problem{Severity: OK, Title: "incus storage driver: " + driver}
+}
+
+// checkNetworkHardening warns when incusbr0 lacks the egress ACL or the
+// default profile's NIC lacks port isolation (installs that have not run
+// `ahjo update` since the hardening shipped). Like the other incus checks it
+// is skipped when incus is missing, which is also the case on a bare macOS
+// host; the incus-missing failure is already reported by checkBinary.
+func checkNetworkHardening() Problem {
+	if _, err := exec.LookPath("incus"); err != nil {
+		return Problem{Severity: Warn, Title: "skipped: incusbr0 hardening check (incus missing)"}
+	}
+	status, err := incus.CheckNetworkHardening()
+	return networkHardeningProblem(status, err)
+}
+
+// networkHardeningProblem maps a hardening status (or the error from
+// obtaining it) to a Problem. An error is never reported as OK.
+func networkHardeningProblem(status incus.NetworkHardeningStatus, err error) Problem {
+	if err != nil {
+		return Problem{Severity: Warn, Title: "could not check incusbr0 hardening", Detail: err.Error()}
+	}
+	if !status.OK() {
+		return Problem{
+			Severity: Warn,
+			Title:    "incusbr0 egress firewall or container isolation missing",
+			Detail: status.Reason + ". Until fixed, containers can reach the host, " +
+				"the Mac, the LAN and each other.",
+			Fix: "ahjo update",
+		}
+	}
+	return Problem{Severity: OK, Title: "incusbr0 egress firewall and container isolation active"}
 }
 
 func checkAhjoBase() Problem {
