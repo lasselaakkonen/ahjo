@@ -156,8 +156,9 @@ var configGet = incus.ConfigGet
 //     backfilled by syncRepoHasToken);
 //   - a token is visible to this invocation (repoToken: the Mac shim's
 //     injected GH_TOKEN, a global GH_TOKEN, or the Linux per-repo env file);
-//   - the repo's base container carries environment.GH_TOKEN, which
-//     installRepoToken sets at add / set-token time. This identifies PAT repos
+//   - the repo's base container carries environment.GH_TOKEN, which older
+//     ahjo versions persisted at add / set-token time (scrubLegacyRepoToken
+//     records has_token before removing it). This identifies PAT repos
 //     registered before HasToken existed without needing the Keychain. A repo
 //     can set that key itself through containerEnv, but only towards
 //     suppressing the agent on its own containers, which is the safe

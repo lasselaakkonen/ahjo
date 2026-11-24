@@ -201,13 +201,18 @@ func fetchPRRows(container, owner, name, branch string, withRollup bool) ([]prRo
 	if withRollup {
 		fields += ",statusCheckRollup"
 	}
-	out, err := runCapturing("incus", "exec", container, "--",
+	// gh needs the repo PAT; it is injected for this exec only. The argv is
+	// never formatted into the error (runCapturing reports gh's stderr).
+	tok, _, _ := repoToken(slugForContainer(container))
+	args := append([]string{"exec", container}, repoTokenEnvArgs(tok)...)
+	args = append(args, "--",
 		"gh", "pr", "list",
 		"-R", owner+"/"+name,
 		"--head", branch,
 		"--state", "all",
 		"--limit", "1",
 		"--json", fields)
+	out, err := runCapturing("incus", args...)
 	if err != nil {
 		return nil, err
 	}

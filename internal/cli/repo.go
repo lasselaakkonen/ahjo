@@ -51,19 +51,147 @@ func dropRepoToken(slug string) {
 }
 
 // repoToken centralizes "what's the GH PAT for this repo right now?" across
-// the two backends. On Mac users' VM (MacHostHome() truthy) the Mac shim
-// reads from Keychain pre-relay and injects GH_TOKEN; the in-VM code never
-// touches the disk path so a script grepping ~ for `ghp_*` finds nothing.
-// On standalone Linux the per-repo .env file under SharedDir() is the
-// canonical store and the env var is unused.
+// the two backends. Precedence:
+//
+//  1. Standalone Linux (MacHostHome() false): the per-repo .env file under
+//     SharedDir(), when it holds a non-empty GH_TOKEN. A repo-scoped PAT
+//     beats a global one, matching branchEnv's precedence.
+//  2. GH_TOKEN from the process env or ~/.ahjo/.env (tokenstore.Lookup).
+//     On Mac users' VM the process env is the only source:
+//     the Mac shim reads Keychain pre-relay and hands the value to the
+//     in-VM process, which never touches a disk path, so a script grepping
+//     ~ for `ghp_*` finds nothing. On Linux it is the global fallback
+//     (`ahjo env set GH_TOKEN`).
+//  3. Otherwise not found.
+//
+// The token is never stored on a container; callers inject it per exec via
+// withRepoToken.
 func repoToken(slug string) (string, bool, error) {
+	if _, isMac := paths.MacHostHome(); !isMac && slug != "" {
+		v, found, err := tokenstore.GetAt(paths.SlugEnvPath(slug), tokenstore.GHTokenEnv)
+		if err != nil {
+			return "", false, err
+		}
+		if found && v != "" {
+			return v, true, nil
+		}
+	}
 	if v, _ := tokenstore.Lookup(tokenstore.GHTokenEnv); v != "" {
 		return v, true, nil
 	}
-	if _, isMac := paths.MacHostHome(); isMac {
-		return "", false, nil
+	return "", false, nil
+}
+
+// withRepoToken returns env with the repo PAT added for one `incus exec`.
+// tok == "" returns env unchanged. An existing non-empty GH_TOKEN in env is
+// kept; GITHUB_TOKEN is set to the resulting GH_TOKEN unless env already has
+// a non-empty GITHUB_TOKEN. Allocates a map when env is nil. Both names are
+// set because gh reads GH_TOKEN while other tooling reads GITHUB_TOKEN.
+func withRepoToken(env map[string]string, tok string) map[string]string {
+	if tok == "" {
+		return env
 	}
-	return tokenstore.GetAt(paths.SlugEnvPath(slug), tokenstore.GHTokenEnv)
+	if env == nil {
+		env = map[string]string{}
+	}
+	if env[tokenstore.GHTokenEnv] == "" {
+		env[tokenstore.GHTokenEnv] = tok
+	}
+	if env["GITHUB_TOKEN"] == "" {
+		env["GITHUB_TOKEN"] = env[tokenstore.GHTokenEnv]
+	}
+	return env
+}
+
+// repoTokenEnvArgs renders withRepoToken(nil, tok) as `incus exec` argv
+// (`--env GH_TOKEN=… --env GITHUB_TOKEN=…`) for the call sites that build
+// their own `incus exec` command line instead of going through
+// incus.ExecAs. Returns nil when tok is empty. Callers must never format
+// the resulting argv into an error or log line.
+func repoTokenEnvArgs(tok string) []string {
+	if tok == "" {
+		return nil
+	}
+	env := withRepoToken(nil, tok)
+	return []string{
+		"--env", tokenstore.GHTokenEnv + "=" + env[tokenstore.GHTokenEnv],
+		"--env", "GITHUB_TOKEN=" + env["GITHUB_TOKEN"],
+	}
+}
+
+// persistedTokenKeys are the Incus config keys older ahjo versions wrote the
+// repo PAT to. ahjo no longer sets them; they are only ever read and unset.
+var persistedTokenKeys = []string{"environment.GH_TOKEN", "environment.GITHUB_TOKEN"}
+
+// scrubPersistedToken removes PAT keys older ahjo versions stored on the
+// container. Returns true when it removed anything. get and unset are the
+// container-bound accessors (incus.ConfigGet / incus.ConfigUnset in
+// production), injectable so the decision logic is unit-testable.
+func scrubPersistedToken(get func(key string) (string, error), unset func(key string) error) (bool, error) {
+	removed := false
+	for _, k := range persistedTokenKeys {
+		v, err := get(k)
+		if err != nil {
+			return removed, err
+		}
+		if v == "" {
+			continue
+		}
+		if err := unset(k); err != nil {
+			return removed, err
+		}
+		removed = true
+	}
+	return removed, nil
+}
+
+// scrubPersistedRepoToken runs scrubPersistedToken against each named
+// container that exists. Best-effort: failures are warnings on
+// cobraOutErr(). Prints one line per container it changed. Empty and
+// duplicate names are skipped; a missing container is skipped silently so
+// `incus config get` never prints "not found" noise.
+func scrubPersistedRepoToken(names ...string) {
+	seen := make(map[string]struct{}, len(names))
+	for _, name := range names {
+		if name == "" {
+			continue
+		}
+		if _, dup := seen[name]; dup {
+			continue
+		}
+		seen[name] = struct{}{}
+		exists, err := incus.ContainerExists(name)
+		if err != nil {
+			fmt.Fprintf(cobraOutErr(), "warn: probe %s: %v\n", name, err)
+			continue
+		}
+		if !exists {
+			continue
+		}
+		removed, err := scrubPersistedToken(
+			func(k string) (string, error) { return incus.ConfigGet(name, k) },
+			func(k string) error { return incus.ConfigUnset(name, k) },
+		)
+		if err != nil {
+			fmt.Fprintf(cobraOutErr(), "warn: remove persisted GH_TOKEN from %s: %v\n", name, err)
+		}
+		if removed {
+			fmt.Fprintf(cobraOut(), "→ removed persisted GH_TOKEN from %s config (now injected per session)\n", name)
+		}
+	}
+}
+
+// scrubLegacyRepoToken is scrubPersistedRepoToken for call sites that go on
+// to apply the ssh-agent policy. The persisted key is one of repoHasToken's
+// inputs (it identifies PAT repos registered before has_token existed), so
+// record has_token, in the registry and on repo, before removing it. Must be
+// called without the lockfile held.
+func scrubLegacyRepoToken(repo *registry.Repo, names ...string) {
+	if repo != nil && !repo.HasToken && repoHasToken(repo) {
+		syncRepoHasToken(repo.Name)
+		repo.HasToken = true
+	}
+	scrubPersistedRepoToken(names...)
 }
 
 // syncRepoHasToken backfills the registry's HasToken flag for repoName when a
@@ -319,13 +447,14 @@ func newRepoSetTokenCmd() *cobra.Command {
 		Long: `Prompts (with hidden input) for a GitHub token and stores it at
 ~/.ahjo-shared/repo-env/<slug>.env (mode 0600). On macOS the file lives on the
 Mac host (virtiofs-shared into the VM), so PATs survive ` + "`limactl delete`" + `.
-The token is forwarded into every container for this repo via GH_TOKEN.
+The token is injected as GH_TOKEN / GITHUB_TOKEN into each ahjo-started
+process for this repo (` + "`ahjo shell`" + `, ` + "`ahjo claude`" + `, lifecycle hooks, and
+ahjo's own git fetch/pull) for that exec only. It is never stored in a
+container's Incus config. ahjo also removes the token from the config of any
+container an older ahjo version stored it on.
 
-ahjo also re-applies environment.GH_TOKEN/GITHUB_TOKEN on each existing
-container (default-branch + every branch). Already-running containers will
-need a restart for any currently-attached shells to see the new value;
-new ` + "`incus exec`" + ` invocations (and therefore new ` + "`ahjo shell`" + ` / ` + "`ahjo claude`" + `
-sessions) pick it up immediately.
+The new value is used from the next ` + "`ahjo shell`" + ` / ` + "`ahjo claude`" + ` / ` + "`ahjo create`" + ` /
+` + "`ahjo repo pull`" + `. Already-attached shells keep the old value.
 
 For an HTTPS GitHub origin the token replaces the host ssh-agent: ahjo
 records that the repo has a PAT, removes the ssh-agent device from every
@@ -352,9 +481,8 @@ func runRepoSetToken(alias string) error {
 		return fmt.Errorf("no repo with alias %q (try `ahjo repo ls`)", alias)
 	}
 	// On Mac users' VM the shim has already prompted, written Keychain, and
-	// forwarded the value via GH_TOKEN. Skip the in-VM prompt + disk write,
-	// just re-apply environment.GH_TOKEN to existing containers using the env
-	// value. If the env is empty here despite being on Mac, the shim refused
+	// relayed the value into this process's env. Skip the in-VM prompt + disk
+	// write. If the env is empty here despite being on Mac, the shim refused
 	// to relay — surface that as a defensive error rather than re-prompting
 	// (which would route through saveRepoGHToken's Mac guard anyway).
 	var tok string
@@ -401,19 +529,16 @@ func runRepoSetToken(alias string) error {
 	}
 	suppress := !shouldForwardAgent(repo, true, cfg)
 
-	// Re-apply environment.GH_TOKEN to every container in this repo (the
-	// default-branch container plus each branch). Already-running
-	// containers won't pick this up in shells that are already attached;
-	// new `incus exec` invocations do. The credential helper line in
-	// .gitconfig doesn't depend on the token value, so no second
-	// `gh auth setup-git` is needed here.
+	// Nothing to push onto containers: the token is injected per exec. Only
+	// remove the copy older ahjo versions persisted in Incus config (after
+	// has_token is recorded above, since that copy was one of its inputs).
 	//
 	// When the policy now suppresses the agent, also strip the ssh-agent
 	// device from each container, running or stopped, so neither an attached
 	// session nor the next start keeps it. A container whose strip could not
 	// be confirmed fails the command (fail closed).
 	containers := repoContainerNames(reg, repo.Name)
-	updated, stripped := 0, 0
+	stripped := 0
 	var stripFailed []string
 	for _, name := range containers {
 		exists, err := incus.ContainerExists(name)
@@ -435,42 +560,15 @@ func runRepoSetToken(alias string) error {
 				stripped++
 			}
 		}
-		if err := installRepoToken(func(k, v string) error { return incus.ConfigSet(name, k, v) }, tok); err != nil {
-			fmt.Fprintf(cobraOutErr(), "warn: forward GH_TOKEN to %s: %v\n", name, err)
-			continue
-		}
-		updated++
 	}
-	if updated > 0 {
-		fmt.Fprintf(cobraOut(), "  → forwarded to %d container(s); restart any already-attached shells to pick up the new value\n", updated)
-	}
+	scrubPersistedRepoToken(containers...)
+	fmt.Fprintln(cobraOut(), "  → token saved; used from the next ahjo shell / claude / create / repo pull. Already-attached shells keep the old value.")
 	if stripped > 0 {
 		fmt.Fprintf(cobraOut(), "  → ssh-agent removed from %d container(s) (HTTPS+PAT origin)\n", stripped)
 	}
 	if len(stripFailed) > 0 {
 		return fmt.Errorf("could not remove the ssh-agent device from %s; the agent may still be reachable there — fix Incus and rerun `ahjo repo set-token %s`",
 			strings.Join(stripFailed, ", "), alias)
-	}
-	return nil
-}
-
-// installRepoToken pushes the per-repo GH PAT onto a container as
-// environment.GH_TOKEN and environment.GITHUB_TOKEN via setter. Both names
-// are set because tools split on which one they read: gh prefers GH_TOKEN
-// but `git` invoked through gh's credential helper falls through to
-// whichever the OAuth helper hands it, and some legacy tooling in
-// downstream Features still keys off GITHUB_TOKEN. Setting one without the
-// other leaves a confusing half-state where some calls auth and others
-// don't.
-//
-// Returned errors carry the underlying setter error verbatim — the caller
-// decides whether a single config-set failure is fatal (repo add) or
-// best-effort per container (repo set-token).
-func installRepoToken(setter func(key, value string) error, tok string) error {
-	for _, k := range []string{"environment.GH_TOKEN", "environment.GITHUB_TOKEN"} {
-		if err := setter(k, tok); err != nil {
-			return err
-		}
 	}
 	return nil
 }

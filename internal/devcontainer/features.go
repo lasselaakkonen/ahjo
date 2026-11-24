@@ -387,13 +387,7 @@ func Apply(ctx context.Context, container string, f Feature, env map[string]stri
 	runCtx, cancel := context.WithTimeout(ctx, applyTimeout)
 	defer cancel()
 
-	args := []string{"exec", container}
-	for _, k := range sortedKeys(envv) {
-		args = append(args, "--env", k+"="+envv[k])
-	}
-	args = append(args, "--", "bash", containerPath+"/install.sh")
-
-	cmd := exec.CommandContext(runCtx, "incus", args...)
+	cmd := exec.CommandContext(runCtx, "incus", installArgv(container, containerPath, envv)...)
 	cmd.Stdout = out
 	cmd.Stderr = out
 	if err := cmd.Run(); err != nil {
@@ -433,6 +427,22 @@ func Apply(ctx context.Context, container string, f Feature, env map[string]stri
 		}
 	}
 	return nil
+}
+
+// installArgv builds the `incus exec` argv (without the leading "incus") that
+// runs a Feature's install.sh with envv as --env pairs, sorted for
+// reproducibility. GH_TOKEN and GITHUB_TOKEN are dropped from envv first:
+// install.sh runs third-party code as root and must never see the repo PAT.
+// Feature options are spec'd as option names, so no Feature can legitimately
+// need these two keys.
+func installArgv(container, containerPath string, envv map[string]string) []string {
+	delete(envv, "GH_TOKEN")
+	delete(envv, "GITHUB_TOKEN")
+	args := []string{"exec", container}
+	for _, k := range sortedKeys(envv) {
+		args = append(args, "--env", k+"="+envv[k])
+	}
+	return append(args, "--", "bash", containerPath+"/install.sh")
 }
 
 func validate(f Feature) (*Metadata, error) {

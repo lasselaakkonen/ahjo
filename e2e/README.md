@@ -68,22 +68,22 @@ teardown can't poison the next one.
 | Step | Real command | Ground-truth assertion |
 |---|---|---|
 | 1 | `ahjo env set/get/list[--show]/unset` | host-side CRUD round-trips; `list` masks the value, `--show` reveals it; `get` fails after `unset` (no container needed) |
-| 2 | `ahjo repo add <repo> --as <alias>` (live PAT + stack prompt) | container exists & **Stopped**; `/repo` on the default branch (read from `.git/HEAD`); `ahjo-ssh` proxy `connect=tcp:127.0.0.1:22`; `environment.GH_TOKEN` set; the `--as` alias present in the generated alias map; `ahjo repo ls` lists the repo |
-| 3 | `ahjo create <repo> <branch> --as <alias>` | branch container **Running**; `/repo` on the new branch; `ahjo-ssh` re-wired; the warm-install tool present (COW-inherited); `GH_TOKEN` carried by `incus copy`; the `--as` branch alias in the alias map |
+| 2 | `ahjo repo add <repo> --as <alias>` (live PAT + stack prompt) | container exists & **Stopped**; `/repo` on the default branch (read from `.git/HEAD`); `ahjo-ssh` proxy `connect=tcp:127.0.0.1:22`; `environment.GH_TOKEN` / `environment.GITHUB_TOKEN` **not** set (the PAT is injected per exec, never stored); the `--as` alias present in the generated alias map; `ahjo repo ls` lists the repo |
+| 3 | `ahjo create <repo> <branch> --as <alias>` | branch container **Running**; `/repo` on the new branch; `ahjo-ssh` re-wired; the warm-install tool present (COW-inherited); no `GH_TOKEN` / `GITHUB_TOKEN` in the copied container config; the `--as` branch alias in the alias map |
 | 3.1 | `ahjo doctor` | output carries the incus-backed checks — `incus on PATH` and `ahjo-base image present` (exit code not gated: the isolated HOME has no OAuth token / git identity, so a non-zero exit is expected). On macOS the relayed in-VM block supplies the same lines |
 | 3.2 | `ahjo gc` / `ahjo gc --older-than 0` | default 24h window reports `no candidates` (the branch is seconds old); `--older-than 0` reports the branch as a **dry-run** candidate; the branch container still **Running** afterward (report mode never deletes; the default/COW-source branch is always excluded) |
 | 4 | `ahjo forward … :<p>` then `--off` | `ahjo-forward-<p>` proxy `listen=tcp:127.0.0.1:<p>`; absent after `--off` |
 | 5 | `ahjo expose … :<p>`, then `expose … --sync` | `ahjo-expose-<p>` proxy `connect=tcp:127.0.0.1:<p>`; `--sync` runs cleanly and **leaves the manual expose device intact** (sync only reconciles auto-expose entries, never manual ones) |
 | 6 | `ahjo mirror … --target`, `status`, `logs`, `off --no-revert`, `revert` | no `mirror` device and no `/mirror` in the container + host target populated + `/repo/.git` never mirrored; **a file edited inside the container appears on the host** (live watch→push); `status` reports it active; `off --no-revert` removes the device but **keeps** the mirrored file; `mirror revert <target>` then restores the pre-mirror snapshot, **removing** that kept file (the orphan-recovery path) |
 | 7 | `ahjo ls`, `ahjo top` | operator confirms the listing + TUI |
-| 8 | `ahjo shell <branch>` | operator confirms attach + `CLAUDE_CODE_OAUTH_TOKEN` in-shell; harness asserts `environment.GH_TOKEN` |
+| 8 | `ahjo shell <branch>` | operator confirms attach + `CLAUDE_CODE_OAUTH_TOKEN` and `GH_TOKEN` in-shell; harness asserts `environment.GH_TOKEN` / `environment.GITHUB_TOKEN` are still unset in container config |
 | 9 | `ahjo ssh <as-alias>` | connects over the generated ssh-config and runs `id -un` → `ubuntu` (machine-asserted; `StrictHostKeyChecking=yes` proves it reached *this* container) |
 | 10 | `ahjo claude <branch>` | operator confirms `claude` launched in the container |
 | 11 | `ahjo ide <as-alias>` | operator confirms an IDE opened over ssh-remote (or ahjo's clean "no SSH-capable IDEs" error on a headless host) |
 | 12 | `ahjo create <repo-as-alias> <branch2> --base <ref>` | second branch **Running** via the repo's `--as` alias; `/repo` HEAD == `<ref>` (defaults to `origin/<default>~1`, proving `--base` plumbs a ref through) |
 | 13 | `ahjo rm <branch2-alias>` | branch2 container absent; repo + first branch container still present (standalone single-branch teardown) |
 | 14 | `ahjo repo pull <repo>` | default container Running and `HEAD == origin/<default>` |
-| 14.1 | `ahjo repo set-token <alias>` (Linux only) | a sentinel token piped on stdin lands as both `environment.GH_TOKEN` **and** `environment.GITHUB_TOKEN` on the repo container (read back via `incus config get`). Runs after `repo pull` (last token-dependent step) so the overwrite is harmless; **skipped on macOS** (the set-token path consumes the relayed Keychain value — operator territory) |
+| 14.1 | `ahjo repo set-token <alias>` (Linux only) | a sentinel token piped on stdin lands as `GH_TOKEN` in `~/.ahjo-shared/repo-env/<slug>.env`, and neither `environment.GH_TOKEN` nor `environment.GITHUB_TOKEN` is set on the repo container (read back via `incus config get`). Runs after `repo pull` (last token-dependent step) so the overwrite is harmless; **skipped on macOS** (the set-token path consumes the relayed Keychain value — operator territory) |
 | 15 | `ahjo repo rm <repo> --force` | repo + branch containers absent |
 | 16 | `ahjo repo add … --default-base <alt>` (opt-in) | repo container checked out on `<alt>`; **skipped unless `AHJO_E2E_ALT_BRANCH` is set** to a real non-default remote branch |
 
@@ -145,7 +145,6 @@ assertion works on both hosts unchanged.
 | `AHJO_E2E_REPO` | `lasselaakkonen/ahjo-e2e-sandbox` | sandbox repo (HTTPS+PAT alias) |
 | `AHJO_E2E_BRANCH` | `e2e-test-branch` | branch `create` makes |
 | `AHJO_E2E_WARM_TOOL` | `go` | tool the lockfile's warm-install provides |
-| `AHJO_E2E_EXPECT_GH_TOKEN` | `1` | assert per-repo `GH_TOKEN` env landed (set `0` if running `--yes`/no PAT) |
 | `AHJO_E2E_FWD_PORT` | `8000` | `forward` port |
 | `AHJO_E2E_EXPOSE_PORT` | `3000` | `expose` container port |
 | `AHJO_E2E_MIRROR_DIR` | `$HOME/ahjo-e2e-mirror-<slug>` | host mirror target |
@@ -165,14 +164,14 @@ assertion works on both hosts unchanged.
 - **Stopped-container reads.** After `repo add` the repo container is **stopped**
   (it's the COW source), so `incus exec` can't inspect it. The branch assertion
   reads `/repo/.git/HEAD` via `incus file pull`, and the env assertion reads
-  `environment.GH_TOKEN` via `incus config get` — both ground truth, both work
-  on a stopped container.
-- **`GH_TOKEN` vs `CLAUDE_CODE_OAUTH_TOKEN`.** `GH_TOKEN`/`GITHUB_TOKEN` are
-  promoted to **container config** (`installRepoToken`), so the harness can
-  assert them via `incus config get` on any container. `CLAUDE_CODE_OAUTH_TOKEN`
-  is a **`forward_env`** var injected only by the `shell`/`claude` attach — it's
-  not container config and isn't visible to a plain `incus exec`, so it's
-  corroborated by the operator running `printenv` inside `ahjo shell` (step 8).
+  `environment.GH_TOKEN` / `environment.GITHUB_TOKEN` via `incus config get` —
+  both ground truth, both work on a stopped container.
+- **`GH_TOKEN` vs container config.** `GH_TOKEN`/`GITHUB_TOKEN` are injected
+  per exec (`incus exec --env`) into each ahjo-started process and are **never**
+  container config, so the harness asserts their *absence* via
+  `incus config get` on every container. Like `CLAUDE_CODE_OAUTH_TOKEN`, their
+  presence is only visible inside an attach, so it's corroborated by the
+  operator running `printenv` inside `ahjo shell` (step 8).
 - **`ssh` vs `ide`.** `ahjo ssh` execs `ssh` against the generated ssh-config, so
   it *is* machine-assertable: the harness feeds a command on stdin (no TTY → ssh
   runs it non-interactively) and checks the remote `id -un` is `ubuntu`;

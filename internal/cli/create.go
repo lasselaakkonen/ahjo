@@ -112,7 +112,8 @@ func runCreate(ctx context.Context, repoAlias, branch, base, asAlias string, noF
 
 	if !noFetch {
 		fmt.Printf("→ git fetch origin (in container)\n")
-		if err := incus.ExecAs(containerName, 1000, nil, paths.RepoMountPath, "git", "fetch", "origin"); err != nil {
+		tok, _, _ := repoToken(repo.Name)
+		if err := incus.ExecAs(containerName, 1000, withRepoToken(nil, tok), paths.RepoMountPath, "git", "fetch", "origin"); err != nil {
 			fmt.Fprintf(cobraOutErr(), "warn: git fetch: %v\n", err)
 		}
 	}
@@ -266,6 +267,10 @@ func cloneFromBase(ctx context.Context, repo *registry.Repo, br *registry.Branch
 	if err := incus.Stop(repo.BaseContainerName); err != nil {
 		return fmt.Errorf("stop base container %s: %w", repo.BaseContainerName, err)
 	}
+
+	// Drop a PAT older ahjo versions persisted on the base so the copy
+	// below never carries it into a new branch container.
+	scrubLegacyRepoToken(repo, repo.BaseContainerName)
 
 	fmt.Printf("→ incus copy %s %s\n", repo.BaseContainerName, containerName)
 	if err := incus.CopyContainer(ctx, repo.BaseContainerName, containerName); err != nil {

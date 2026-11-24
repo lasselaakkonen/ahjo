@@ -358,6 +358,11 @@ func ConfigGet(container, key string) (string, error) {
 // ConfigSet writes a single container-level config key via `incus config
 // set`. Uses the `<key>=<value>` argv form — the older `<key> <value>`
 // form is deprecated and prints a warning per call on recent incus.
+//
+// The value never appears in the returned error: environment.* keys can
+// carry secrets, and errors end up in logs and terminal scrollback. For the
+// same reason an environment.* value is redacted from incus's own output
+// before it is echoed to stderr on failure.
 func ConfigSet(container, key, value string) error {
 	cmd := execCommand(context.Background(), "incus", "config", "set", container, key+"="+value)
 	out, err := cmd.CombinedOutput()
@@ -365,12 +370,39 @@ func ConfigSet(container, key, value string) error {
 		os.Stdout.Write(out)
 		return nil
 	}
+	os.Stderr.Write(redactConfigValue(out, key, value))
+	var ee *exec.ExitError
+	if errors.As(err, &ee) {
+		return fmt.Errorf("incus config set %s %s: exit %d", container, key, ee.ExitCode())
+	}
+	return fmt.Errorf("incus config set %s %s: %w", container, key, err)
+}
+
+// redactConfigValue replaces value with "<redacted>" in out when key is an
+// environment.* key. Values shorter than 4 bytes are left alone: replacing
+// "1" or "on" everywhere would mangle the message and such values are not
+// secrets.
+func redactConfigValue(out []byte, key, value string) []byte {
+	if !strings.HasPrefix(key, "environment.") || len(value) < 4 {
+		return out
+	}
+	return []byte(strings.ReplaceAll(string(out), value, "<redacted>"))
+}
+
+// ConfigUnset removes a single container-level config key via `incus config
+// unset`. Unsetting a key that is not set is a no-op in Incus.
+func ConfigUnset(container, key string) error {
+	cmd := execCommand(context.Background(), "incus", "config", "unset", container, key)
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		return nil
+	}
 	os.Stderr.Write(out)
 	var ee *exec.ExitError
 	if errors.As(err, &ee) {
-		return fmt.Errorf("incus config set %s %s=%s: exit %d", container, key, value, ee.ExitCode())
+		return fmt.Errorf("incus config unset %s %s: exit %d", container, key, ee.ExitCode())
 	}
-	return fmt.Errorf("incus config set %s %s=%s: %w", container, key, value, err)
+	return fmt.Errorf("incus config unset %s %s: %w", container, key, err)
 }
 
 // Stop stops a container. Tolerant of "not running" / "already stopped" /
