@@ -41,6 +41,10 @@ port out to the host). The default makes the host's localhost:<port> appear as
 localhost:<port> inside the container, so code and configs that hardcode a
 loopback address work unmodified.
 
+This is the way to reach a service on the host from a container: containers
+cannot connect to host addresses directly (the host, the Mac, and private
+networks are blocked), so a service not forwarded here is unreachable.
+
 The host app must listen on 127.0.0.1 or 0.0.0.0. On macOS, Lima's user-mode
 network forwards the container's gateway to the Mac's loopback; an app bound to
 a specific non-loopback interface (e.g. 192.168.x.x) may not be reachable. The

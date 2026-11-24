@@ -30,9 +30,9 @@ On Linux hosts the middle layer collapses — Incus runs directly on the host, n
 
 ## What each boundary protects
 
-**Mac → Lima VM.** The VM is a separate kernel under `vz`. Container/Incus state lives only in the VM. Code running in any container can't touch your Mac filesystem, browser session, keychain, or the rest of your home directory. `vzNAT` networking means containers can't dial Bonjour services or `localhost` apps on the Mac. The VM disk defaults to 100 GiB (set at `ahjo init`, sparse so it grows on demand) — runaway dependencies stop there.
+**Mac → Lima VM.** The VM is a separate kernel under `vz`. Container/Incus state lives only in the VM. Code running in any container can't touch your Mac filesystem, browser session, keychain, or the rest of your home directory. Containers can't dial `localhost` apps on the Mac (reached from the VM as `host.lima.internal`, 192.168.5.2) or other hosts on your network: the `ahjo-egress` network ACL on `incusbr0` rejects that traffic. See [Network](#network); existing installs need one `ahjo update` to get it. The VM disk defaults to 100 GiB (set at `ahjo init`, sparse so it grows on demand) — runaway dependencies stop there.
 
-**Lima VM → Incus container.** Each branch is its own Linux container with its own filesystem, process tree, and user (`ubuntu`, the upstream cloud-image canonical user at UID 1000). Containers cannot see each other. They share only what ahjo wires in: the in-container `/repo` checkout (which lives in the container's own rootfs, not a host bind-mount), generated SSH host keys (read-only mount), and the env vars listed in `forward_env` (e.g. `CLAUDE_CODE_OAUTH_TOKEN`). A container has no view of the VM's `~/.ahjo/`, no view of other containers, and no Incus admin privileges.
+**Lima VM → Incus container.** Each branch is its own Linux container with its own filesystem, process tree, and user (`ubuntu`, the upstream cloud-image canonical user at UID 1000). Containers cannot reach each other over the network: port isolation on each container's `eth0` blocks bridge traffic between siblings (see [Network](#network)). They share only what ahjo wires in: the in-container `/repo` checkout (which lives in the container's own rootfs, not a host bind-mount), generated SSH host keys (read-only mount), and the env vars listed in `forward_env` (e.g. `CLAUDE_CODE_OAUTH_TOKEN`). A container has no view of the VM's `~/.ahjo/`, no view of other containers, and no Incus admin privileges.
 
 **Per-branch state.** Each container has its own `127.0.0.1:<port>` exposed by Incus' proxy device, its own SSH host keys under `~/.ahjo/host-keys/<slug>/`, and its own port allocations in `~/.ahjo/ports.json`. Two branches of the same repo cannot collide on ports, sockets, host-key fingerprints, or `node_modules`.
 
@@ -51,6 +51,63 @@ These are the *intentional* leaks — every other path is closed.
 | `security.nesting=true` (Incus config) | host kernel → container | opt-in: enabled automatically when the repo declares `ahjo/docker` in its Features, or when `customizations.ahjo.nested_incus` is set. Off by default. See **Elevated runtime: `security.nesting`** below. |
 
 Nothing else crosses — no `~/.ssh/`, no `~/.gitconfig`, no shell history, no `~/Library`.
+
+## Network
+
+Containers sit on the Incus bridge `incusbr0`, which NATs out through the Lima VM (or the Linux host). Left alone, that bridge lets code in a container dial anything the VM can: the Mac's loopback services, the VM itself, your LAN, VPN peers, cloud metadata, and the other containers. `ahjo init` and `ahjo update` close this with two Incus settings, applied by one idempotent step:
+
+- **Egress ACL.** A network ACL named `ahjo-egress` is attached to `incusbr0` with a default egress action of `reject`. It allows only public IPv4 plus any CIDRs you opt in (below). `reject` rather than `drop`, so blocked connections fail immediately instead of hanging.
+- **Port isolation.** `security.port_isolation`, `security.mac_filtering` and `security.ipv4_filtering` are set on `eth0` of the `default` profile, so containers on the bridge cannot talk to each other. Bridge ACLs cannot filter container-to-container traffic, so this part is required, not optional.
+
+### What is blocked
+
+| Range | What it protects |
+| --- | --- |
+| `192.168.0.0/16` | The Mac's loopback services, reached as `host.lima.internal` (192.168.5.2); home and office LANs |
+| `10.0.0.0/8` | The Lima VM and the `incusbr0` gateway (and so anything listening on them, such as sshd); corporate LANs and VPNs |
+| `172.16.0.0/12` | Private networks, including Docker bridge ranges on the host |
+| `100.64.0.0/10` | CGNAT and Tailscale |
+| `169.254.0.0/16` | Link-local, including cloud metadata at 169.254.169.254 |
+| `127.0.0.0/8` | Loopback |
+| `0.0.0.0/8`, `192.0.0.0/24`, `198.18.0.0/15`, `224.0.0.0/3` | Address space that is never a legitimate internet destination: "this network", IETF protocol assignments, benchmarking, multicast and reserved |
+| Every IPv4 address on a host interface | A Linux host with a public IP: that address is outside the ranges above, yet dialing it reaches the host's own listeners |
+| Other containers | Sibling containers on the same bridge, via port isolation |
+
+IPv6 is not an exposure: the bridge has no IPv6 address and the ACL has no IPv6 allow rules, so the default reject applies.
+
+### What stays open
+
+- The public internet over IPv4, so `git`, package managers and `apt` keep working.
+- DNS and DHCP, which Incus accepts ahead of the ACL.
+- Every channel ahjo itself uses between host and container: sshd, `ahjo expose`, auto-expose, `ahjo forward`, the paste daemon and the SSH-agent socket. These are Incus proxy devices on `127.0.0.1`, relayed between namespaces rather than routed over the bridge, so the ACL does not touch them.
+
+To reach a service on the host from a container, use `ahjo forward`: direct connections to host addresses are blocked.
+
+### Opting in to private ranges
+
+If containers need a private git host, an internal registry or something behind a VPN, list its CIDR in the global config:
+
+```toml
+# ~/.ahjo/config.toml
+[network]
+allow_cidrs = ["10.1.0.0/16"]
+```
+
+Entries must be IPv4 and `/8` or longer. Run `ahjo update` to apply the change; running containers pick it up on their next restart. Prefer a narrow prefix: an opt-in wins over the block list, so everything inside it becomes reachable from every container.
+
+This setting is read only from the global `~/.ahjo/config.toml`, deliberately not from a repo's `devcontainer.json` (`customizations.ahjo`). That file is controlled by the repo, and the repo is the thing the container boundary is there to contain; if it could widen its own network access, the firewall would be a suggestion.
+
+### What this does not solve
+
+- **Public internet egress stays open.** Code in a container can still send data to any public host. The firewall limits what it can reach, not what it can send out.
+- **DNS** is still answered by the host's dnsmasq, so port 53 on the host stays reachable.
+- **Ports you open on purpose** with `ahjo forward`, and the paste daemon, are reachable from the container by design.
+- **The host-address block list is a snapshot** from the last `ahjo init` or `ahjo update`. An address the host gains later is not blocked until the next update.
+- **Existing installs and running containers.** Nothing changes until `ahjo update` has run, and running containers pick up the new settings on their next restart. `ahjo doctor` warns when the step is missing.
+
+### The Lima VM is not a boundary
+
+Under ahjo's threat model, in-container code is hostile and the Incus container boundary is the only boundary. The Lima VM is not a security boundary against that code: it holds the forwarded SSH-agent socket, per-repo tokens and `~/.ahjo` state, and a container escape lands there. The network policy above is defence in depth around the container boundary, not a replacement for it.
 
 ## Workspace UID mapping
 
