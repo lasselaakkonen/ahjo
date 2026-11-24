@@ -21,7 +21,7 @@ import (
 // live-updatable on a bridged NIC, so Incus may remove and re-add eth0 on
 // running containers. The wording holds either way and warns about the
 // disruptive case.
-const networkHardeningPost = "  → the firewall applies to running containers right away; Incus may re-attach their network interface, " +
+const networkHardeningPost = "  → the firewall is expected to apply to running containers right away; Incus may re-attach their network interface, " +
 	"which drops open connections; restart a container if it loses network"
 
 // bridgeIPv4Key is the incusbr0 config key holding the gateway address and
@@ -371,7 +371,7 @@ func networkHardeningStep() initflow.Step {
 		Note: "containers may reach the public internet and nothing else: not the host, the Mac, the LAN, " +
 			"VPN/Tailscale ranges, cloud metadata, or sibling containers. Allow a private range with " +
 			"[network] allow_cidrs in ~/.ahjo/config.toml, then `ahjo update`. Host services stay reachable " +
-			"only through `ahjo forward`. The firewall applies to running containers right away, and Incus may " +
+			"only through `ahjo forward`. The firewall is expected to apply to running containers right away, and Incus may " +
 			"re-attach their network interface, dropping open connections. On a native Linux host this changes the " +
 			"shared " + incus.BridgeNetwork + " network and " + incus.DefaultProfile + " profile, so it also affects " +
 			"instances there that ahjo did not create.",
