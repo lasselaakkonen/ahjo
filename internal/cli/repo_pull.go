@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -130,12 +131,23 @@ func refreshRepoBase(repoName string) (retErr error) {
 		return fmt.Errorf("base container %s not found (deleted out-of-band?)", repo.BaseContainerName)
 	}
 	if !strings.EqualFold(status, "Running") {
+		// Strip before start so the base never boots with a stored ssh-agent
+		// device, then re-apply policy: an SSH-origin pull needs the agent.
+		if err := stripSSHAgent(repo.BaseContainerName); err != nil {
+			return err
+		}
 		logStep("→ incus start %s (was %s)", repo.BaseContainerName, status)
 		if err := startContainer(repo.BaseContainerName); err != nil {
 			return fmt.Errorf("start %s: %w", repo.BaseContainerName, err)
 		}
 		if err := incus.WaitReady(ctx, repo.BaseContainerName, refreshReadyTimeout); err != nil {
 			return fmt.Errorf("wait %s ready: %w", repo.BaseContainerName, err)
+		}
+		if err := applyBaseSSHAgentPolicy(ctx, repo); err != nil {
+			if errors.Is(err, errAgentStrip) {
+				return err
+			}
+			logStep("warn: %s: %v (git pull may fail to authenticate)", repo.BaseContainerName, err)
 		}
 	}
 
@@ -296,6 +308,19 @@ func execGitPullFFOnly(parentCtx context.Context, container string) error {
 	return fmt.Errorf("git pull --ff-only in %s: %w", container, err)
 }
 
+// applyBaseSSHAgentPolicy runs applySSHAgentPolicy on repo's (running) base
+// container for `repo pull` and the background refresh. A config.toml that
+// fails to load means the auto policy. The caller already holds the
+// lockfile, so this never backfills has_token (syncRepoHasToken would
+// deadlock on the lock).
+func applyBaseSSHAgentPolicy(ctx context.Context, repo *registry.Repo) error {
+	cfg, err := config.Load()
+	if err != nil {
+		cfg = nil
+	}
+	return applySSHAgentPolicy(ctx, repo.BaseContainerName, repo, cfg)
+}
+
 // logStep prints one timestamped line to whatever stdout the detached
 // subprocess was wired to (the refresh-base log file under ~/.ahjo/). Kept
 // flat (no level/structured fields) because the consumer is `tail -f`.
@@ -335,12 +360,24 @@ func runRepoPull(ctx context.Context, repoAlias string) error {
 		return err
 	}
 	if !strings.EqualFold(status, "Running") {
+		// Strip before start so the base never boots with a stored ssh-agent
+		// device, then re-apply policy: an SSH-origin pull needs the agent.
+		// An already-running base keeps its device as is.
+		if err := stripSSHAgent(repo.BaseContainerName); err != nil {
+			return err
+		}
 		fmt.Printf("→ incus start %s\n", repo.BaseContainerName)
 		if err := startContainer(repo.BaseContainerName); err != nil {
 			return err
 		}
 		if err := incus.WaitReady(ctx, repo.BaseContainerName, 30*time.Second); err != nil {
 			return err
+		}
+		if err := applyBaseSSHAgentPolicy(ctx, repo); err != nil {
+			if errors.Is(err, errAgentStrip) {
+				return err
+			}
+			fmt.Fprintf(cobraOutErr(), "warn: %s: %v (git pull may fail to authenticate)\n", repo.BaseContainerName, err)
 		}
 	}
 

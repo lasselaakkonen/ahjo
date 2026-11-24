@@ -281,6 +281,13 @@ func startStopForTop(br *registry.Branch) (string, error) {
 		}
 		return "stopped " + containerName, nil
 	}
+	// Strip any ssh-agent device left in the stopped config so the container
+	// never boots with it. No re-attach here: the next ahjo shell / ahjo
+	// claude attaches when policy allows, and ahjo ssh / ahjo ide get the
+	// agent through the ssh-config's ForwardAgent, not this device.
+	if err := stripSSHAgent(containerName); err != nil {
+		return "", err
+	}
 	if err := startContainer(containerName); err != nil {
 		return "", err
 	}

@@ -42,6 +42,11 @@ func ensureRepoCleanOrForce(ctx context.Context, br *registry.Branch, action str
 		if !promptYesNo(fmt.Sprintf("%s is %s — start it to check /repo for unsaved work?", br.IncusName, strings.ToLower(status))) {
 			return fmt.Errorf("cannot verify /repo in %s is clean (container not started); pass --force to %s without checking", br.IncusName, action)
 		}
+		// The clean-check only runs `git status`; it never needs the agent,
+		// so strip any stored device and do not re-attach.
+		if err := stripSSHAgent(br.IncusName); err != nil {
+			return fmt.Errorf("prepare %s for clean-check: %w", br.IncusName, err)
+		}
 		if err := startContainer(br.IncusName); err != nil {
 			return fmt.Errorf("start %s for clean-check: %w", br.IncusName, err)
 		}
