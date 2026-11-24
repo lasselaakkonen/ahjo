@@ -6,46 +6,109 @@ import (
 	"fmt"
 	"io"
 	"net/netip"
+	"slices"
 	"strings"
 
 	"github.com/lasselaakkonen/ahjo/internal/config"
 	"github.com/lasselaakkonen/ahjo/internal/incus"
 	"github.com/lasselaakkonen/ahjo/internal/initflow"
+	"github.com/lasselaakkonen/ahjo/internal/lima"
 )
 
-// networkHardeningPost is printed after the step applies changes. It is one
-// constant so the wording can be corrected once live testing shows exactly
-// when running containers pick up profile and network changes.
-const networkHardeningPost = "  → running containers pick this up on their next restart"
+// networkHardeningPost is printed after the step applies changes. Incus
+// applies a network ACL to running instances at once, but has not been
+// observed doing so on a live system yet; and security.port_isolation is not
+// live-updatable on a bridged NIC, so Incus may remove and re-add eth0 on
+// running containers. The wording holds either way and warns about the
+// disruptive case.
+const networkHardeningPost = "  → the firewall applies to running containers right away; Incus may re-attach their network interface, " +
+	"which drops open connections; restart a container if it loses network"
+
+// bridgeIPv4Key is the incusbr0 config key holding the gateway address and
+// subnet length, e.g. "10.20.30.1/24".
+const bridgeIPv4Key = "ipv4.address"
+
+// egressInputs is what the desired ACL is computed from, read from the host,
+// Incus and config by loadEgressDesired.
+type egressInputs struct {
+	// HostAddrs are the IPv4 addresses on the host's interfaces.
+	HostAddrs []netip.Addr
+	// LimaHost is host.lima.internal inside a Lima VM; invalid (the zero
+	// Addr) on a native Linux host.
+	LimaHost netip.Addr
+	// BridgeIPv4 is incusbr0's raw bridgeIPv4Key value.
+	BridgeIPv4 string
+	// AllowCIDRs is the user's network.allow_cidrs.
+	AllowCIDRs []string
+}
 
 // egressDesired is the ACL content the step converges on.
 type egressDesired struct {
 	HostAddrs []netip.Addr
-	OptIn     []netip.Prefix
-	Blocked   []netip.Prefix
-	Allowed   []netip.Prefix
-	// RulesYAML is the rendered rule body; Hash is computed over it.
+	LimaHost  netip.Addr
+	// BridgeSubnet is incusbr0's subnet, masked (10.20.30.0/24).
+	BridgeSubnet netip.Prefix
+	OptIn        []netip.Prefix
+	Blocked      []netip.Prefix
+	// Hard are the blocks no opt-in overrides.
+	Hard []netip.Prefix
+	// OptInHardBlocked is the part of OptIn that Hard keeps blocked.
+	OptInHardBlocked []netip.Prefix
+	Allowed          []netip.Prefix
+	// RulesYAML is the rendered rule body; Hash is computed over it, so a
+	// change to any input that changes the allowed set changes the hash.
 	RulesYAML string
 	Hash      string
 }
 
-// computeEgressDesired derives the ACL from the host's IPv4 addresses and the
-// user's network.allow_cidrs. An invalid opt-in fails with ParseOptIn's error.
-func computeEgressDesired(hostAddrs []netip.Addr, allowCIDRs []string) (egressDesired, error) {
-	optIn, err := initflow.ParseOptIn(allowCIDRs)
+// parseBridgeSubnet turns incusbr0's ipv4.address ("10.20.30.1/24") into its
+// subnet. The bridge is NATed IPv4 by construction (the preseed sets it), so
+// an empty, "none" or unparsable value means something is off, and the step
+// fails rather than leaving the subnet out of the hard blocks.
+func parseBridgeSubnet(v string) (netip.Prefix, error) {
+	v = strings.TrimSpace(v)
+	if v == "" || v == "none" || v == "auto" {
+		return netip.Prefix{}, fmt.Errorf("network %s has %s=%q, want an IPv4 gateway/prefix such as 10.20.30.1/24; ahjo needs the bridge subnet to block container-to-host traffic. Check `incus network get %s %s`",
+			incus.BridgeNetwork, bridgeIPv4Key, v, incus.BridgeNetwork, bridgeIPv4Key)
+	}
+	p, err := netip.ParsePrefix(v)
+	if err != nil || !p.Addr().Is4() {
+		return netip.Prefix{}, fmt.Errorf("network %s has %s=%q, want an IPv4 gateway/prefix such as 10.20.30.1/24. Check `incus network get %s %s`",
+			incus.BridgeNetwork, bridgeIPv4Key, v, incus.BridgeNetwork, bridgeIPv4Key)
+	}
+	return p.Masked(), nil
+}
+
+// computeEgressDesired derives the ACL from in. An invalid opt-in fails with
+// ParseOptIn's error, an unusable bridge address with parseBridgeSubnet's.
+func computeEgressDesired(in egressInputs) (egressDesired, error) {
+	optIn, err := initflow.ParseOptIn(in.AllowCIDRs)
 	if err != nil {
 		return egressDesired{}, err
 	}
-	blocked := initflow.BlockedPrefixes(hostAddrs)
-	allowed := initflow.AllowedEgress(blocked, optIn)
+	subnet, err := parseBridgeSubnet(in.BridgeIPv4)
+	if err != nil {
+		return egressDesired{}, err
+	}
+	addrs := slices.Clone(in.HostAddrs)
+	if in.LimaHost.IsValid() {
+		addrs = append(addrs, in.LimaHost)
+	}
+	blocked := initflow.BlockedPrefixes()
+	hard := initflow.HardBlockedPrefixes(addrs, subnet)
+	allowed := initflow.AllowedEgress(blocked, optIn, hard)
 	rules := initflow.EgressACLYAML(allowed)
 	return egressDesired{
-		HostAddrs: hostAddrs,
-		OptIn:     optIn,
-		Blocked:   blocked,
-		Allowed:   allowed,
-		RulesYAML: rules,
-		Hash:      rulesHash(rules),
+		HostAddrs:        in.HostAddrs,
+		LimaHost:         in.LimaHost,
+		BridgeSubnet:     subnet,
+		OptIn:            optIn,
+		Blocked:          blocked,
+		Hard:             hard,
+		OptInHardBlocked: initflow.OptInHardBlocked(optIn, hard),
+		Allowed:          allowed,
+		RulesYAML:        rules,
+		Hash:             rulesHash(rules),
 	}, nil
 }
 
@@ -62,17 +125,53 @@ func (d egressDesired) aclEditYAML() string {
 	return d.RulesYAML + "config:\n  " + incus.EgressACLHashKey + ": \"" + d.Hash + "\"\n"
 }
 
-// loadEgressDesired reads config and host addresses and computes the target.
+// hardBlockSummary is the Action line listing what stays blocked whatever the
+// opt-ins say.
+func (d egressDesired) hardBlockSummary() string {
+	parts := []string{incus.BridgeNetwork + " subnet " + d.BridgeSubnet.String()}
+	if len(d.HostAddrs) > 0 {
+		parts = append(parts, "host addresses "+joinAddrs(d.HostAddrs))
+	}
+	if d.LimaHost.IsValid() {
+		parts = append(parts, "host.lima.internal "+d.LimaHost.String())
+	}
+	return "  → always blocked, even inside network.allow_cidrs: " + strings.Join(parts, "; ")
+}
+
+// optInHardBlockedLine is the Action line shown when an opt-in covers a hard
+// block, so the user knows why part of their range stays unreachable. "" when
+// no opt-in overlaps one.
+func (d egressDesired) optInHardBlockedLine() string {
+	if len(d.OptInHardBlocked) == 0 {
+		return ""
+	}
+	return "  → network.allow_cidrs covers " + joinPrefixes(d.OptInHardBlocked) +
+		", which stays blocked (host addresses and the " + incus.BridgeNetwork + " subnet); reach a host service with `ahjo forward`"
+}
+
+// loadEgressDesired reads config, host addresses, incusbr0's address and,
+// inside a Lima VM, host.lima.internal, and computes the target.
 func loadEgressDesired() (egressDesired, error) {
 	cfg, err := config.Load()
 	if err != nil {
 		return egressDesired{}, fmt.Errorf("load ~/.ahjo/config.toml: %w", err)
 	}
-	addrs, err := initflow.HostIPv4Addrs()
-	if err != nil {
+	in := egressInputs{AllowCIDRs: cfg.Network.AllowCIDRs}
+	if in.HostAddrs, err = initflow.HostIPv4Addrs(); err != nil {
 		return egressDesired{}, err
 	}
-	return computeEgressDesired(addrs, cfg.Network.AllowCIDRs)
+	if in.BridgeIPv4, err = incus.NetworkGet(incus.BridgeNetwork, bridgeIPv4Key); err != nil {
+		return egressDesired{}, err
+	}
+	// Only a Lima guest has a Mac to block. lima.IsGuest is a stat, so a
+	// native Linux host skips the DNS lookup. Inside Lima the name is pinned
+	// in /etc/hosts, so failing to resolve it means something is off.
+	if lima.IsGuest() {
+		if in.LimaHost, err = incus.LimaHostIPv4(); err != nil {
+			return egressDesired{}, fmt.Errorf("resolve host.lima.internal inside the Lima VM: %w", err)
+		}
+	}
+	return computeEgressDesired(in)
 }
 
 // checkHardeningPreconditions fails when the objects the preseed creates are
@@ -169,8 +268,9 @@ func networkHardeningShow(allowCIDRs []string, cfgErr error) string {
 		incus.BridgeNetwork, incus.NetworkACLsKey, incus.EgressACL, strings.Join(kvArgs(incus.HardenedNetworkDefaults()), " "))
 	fmt.Fprintf(&b, "incus profile device set %s %s %s\n",
 		incus.DefaultProfile, incus.BridgeNIC, strings.Join(kvArgs(incus.HardenedNICKeys()), " "))
-	fmt.Fprintf(&b, "blocked: %s\n", joinPrefixes(initflow.BlockedPrefixes(nil)))
-	b.WriteString("  + a /32 for every IPv4 address on a host interface (read when the step runs)\n")
+	fmt.Fprintf(&b, "blocked: %s\n", joinPrefixes(initflow.BlockedPrefixes()))
+	fmt.Fprintf(&b, "always blocked, even inside an opt-in: the %s subnet, every IPv4 address on a host interface, host.lima.internal (read when the step runs)\n",
+		incus.BridgeNetwork)
 	switch {
 	case cfgErr != nil:
 		fmt.Fprintf(&b, "opt-in (network.allow_cidrs): config error, the step will fail: %v\n", cfgErr)
@@ -222,11 +322,17 @@ func networkHardeningStep() initflow.Step {
 	return initflow.Step{
 		Title: "Firewall " + incus.BridgeNetwork + " egress and isolate containers (" + incus.EgressACL + " ACL)",
 		Skip: func() (bool, string, error) {
-			d, err := resolve()
+			o, err := incus.ObserveNetworkHardening()
 			if err != nil {
 				return false, "", err
 			}
-			o, err := incus.ObserveNetworkHardening()
+			// Preconditions first: resolve reads incusbr0's address, and a
+			// missing network should fail with the precondition's message,
+			// not a bare `incus network get` error.
+			if err := checkHardeningPreconditions(o); err != nil {
+				return false, "", err
+			}
+			d, err := resolve()
 			if err != nil {
 				return false, "", err
 			}
@@ -235,15 +341,19 @@ func networkHardeningStep() initflow.Step {
 		Note: "containers may reach the public internet and nothing else: not the host, the Mac, the LAN, " +
 			"VPN/Tailscale ranges, cloud metadata, or sibling containers. Allow a private range with " +
 			"[network] allow_cidrs in ~/.ahjo/config.toml, then `ahjo update`. Host services stay reachable " +
-			"only through `ahjo forward`.",
+			"only through `ahjo forward`. The firewall applies to running containers right away, and Incus may " +
+			"re-attach their network interface, dropping open connections. On a native Linux host this changes the " +
+			"shared " + incus.BridgeNetwork + " network and " + incus.DefaultProfile + " profile, so it also affects " +
+			"instances there that ahjo did not create.",
 		Show: networkHardeningShow(allowCIDRs, cfgErr),
 		Action: func(out io.Writer) error {
 			d, err := resolve()
 			if err != nil {
 				return err
 			}
-			if len(d.HostAddrs) > 0 {
-				fmt.Fprintf(out, "  → also blocking host addresses: %s\n", joinAddrs(d.HostAddrs))
+			fmt.Fprintln(out, d.hardBlockSummary())
+			if line := d.optInHardBlockedLine(); line != "" {
+				fmt.Fprintln(out, line)
 			}
 			fmt.Fprintf(out, "  → %d egress allow rules\n", len(d.Allowed))
 

@@ -9,11 +9,13 @@ import (
 )
 
 // fixedBlockedPrefixes are the IPv4 ranges containers on incusbr0 must not
-// reach. Together they cover the Mac (host.lima.internal is 192.168.5.2), the
-// Lima VM and bridge gateway (10.x), the LAN, VPN and Tailscale (CGNAT) ranges,
-// cloud metadata (169.254.169.254), and address space that is never a
-// legitimate internet destination. Everything else is public internet, which
-// stays reachable so package managers and git keep working.
+// reach unless the user opts a range back in. Together they cover the Mac and
+// the Lima VM (Lima's user-mode network, 192.168.5.0/24: host.lima.internal is
+// 192.168.5.2, the VM 192.168.5.15), the incusbr0 gateway (10.x by default),
+// the LAN, VPN and Tailscale (CGNAT) ranges, cloud metadata (169.254.169.254),
+// and address space that is never a legitimate internet destination.
+// Everything else is public internet, which stays reachable so package
+// managers and git keep working.
 var fixedBlockedPrefixes = []netip.Prefix{
 	netip.MustParsePrefix("0.0.0.0/8"),
 	netip.MustParsePrefix("10.0.0.0/8"),
@@ -32,17 +34,34 @@ var fixedBlockedPrefixes = []netip.Prefix{
 // certainly a typo rather than intent.
 const minOptInBits = 8
 
-// BlockedPrefixes returns the fixed blocked ranges plus a /32 for every IPv4
-// host address. The host addresses matter on a native Linux host with a public
-// IP: that address is outside every private range, yet dialing it reaches the
-// host's own listeners. IPv6 addresses are ignored because the bridge has no
-// IPv6 and the ACL default rejects anything not explicitly allowed.
-//
-// The result is sorted and deduplicated so the rendered ACL, and the hash the
-// caller stores of it, is stable across runs.
-func BlockedPrefixes(hostAddrs []netip.Addr) []netip.Prefix {
+// BlockedPrefixes returns the fixed blocked ranges, sorted. These are the
+// blocks an opt-in can override; see HardBlockedPrefixes for the ones it
+// cannot.
+func BlockedPrefixes() []netip.Prefix {
 	out := slices.Clone(fixedBlockedPrefixes)
-	for _, a := range hostAddrs {
+	slices.SortFunc(out, comparePrefix)
+	return out
+}
+
+// HardBlockedPrefixes returns the blocks no opt-in overrides: a /32 for every
+// IPv4 address in addrs (the host's interface addresses and, inside a Lima VM,
+// host.lima.internal) plus each prefix in subnets (the incusbr0 subnet).
+//
+// They are hard because reaching them defeats the sandbox whatever the user
+// meant by an opt-in. Incus applies the bridge ACL on the input hook too, so
+// an allowed host address exposes every host listener; and since port
+// isolation is layer 2 only, an allowed bridge subnet lets one container reach
+// a sibling by routing through the gateway. A host address also matters
+// without any opt-in on a native Linux host with a public IP: that address is
+// outside every private range, yet dialing it reaches the host's own
+// listeners. IPv6 addresses are ignored because the bridge has no IPv6 and
+// the ACL default rejects anything not explicitly allowed.
+//
+// The result is masked, sorted and deduplicated so the rendered ACL, and the
+// hash the caller stores of it, is stable across runs.
+func HardBlockedPrefixes(addrs []netip.Addr, subnets ...netip.Prefix) []netip.Prefix {
+	out := normalizeIPv4(subnets)
+	for _, a := range addrs {
 		a = a.Unmap()
 		if !a.Is4() {
 			continue
@@ -53,10 +72,45 @@ func BlockedPrefixes(hostAddrs []netip.Addr) []netip.Prefix {
 	return slices.Compact(out)
 }
 
+// OptInHardBlocked returns the parts of the opt-in ranges that hard blocks
+// keep blocked: for each overlapping (opt-in, hard) pair, the narrower of the
+// two. The result is sorted with no prefix inside another, so the caller can
+// print it as is. Empty means every opt-in applies in full.
+func OptInHardBlocked(optIn, hard []netip.Prefix) []netip.Prefix {
+	o := normalizeIPv4(optIn)
+	var hits []netip.Prefix
+	for _, h := range normalizeIPv4(hard) {
+		for _, q := range o {
+			if !h.Overlaps(q) {
+				continue
+			}
+			// Overlapping prefixes nest, so the longer one is the overlap.
+			if h.Bits() >= q.Bits() {
+				hits = append(hits, h)
+			} else {
+				hits = append(hits, q)
+			}
+		}
+	}
+	slices.SortFunc(hits, comparePrefix)
+	var out []netip.Prefix
+	for _, p := range hits {
+		// Sorted by address then length, so a prefix that contains p is
+		// the last one kept, if any.
+		if n := len(out); n > 0 && containsPrefix(out[n-1], p) {
+			continue
+		}
+		out = append(out, p)
+	}
+	return out
+}
+
 // AllowedEgress returns the IPv4 prefixes containers may reach: everything in
-// 0.0.0.0/0 that is in no blocked prefix, plus everything in an opt-in prefix.
-// Opt-ins win over blocks, which is the whole point of them (a corporate
-// 10.1.0.0/16 inside the blocked 10/8).
+// 0.0.0.0/0 that is in no blocked prefix or is in an opt-in prefix, minus
+// everything in a hard prefix. Opt-ins win over blocks, which is the whole
+// point of them (a corporate 10.1.0.0/16 inside the blocked 10/8); hard blocks
+// win over opt-ins, so `allow_cidrs = ["10.0.0.0/8"]` still leaves the host
+// and the incusbr0 subnet unreachable.
 //
 // We need an explicit allow-list because Incus evaluates drop and reject rules
 // before allow rules regardless of order, so "reject 10/8 but allow 10.1/16"
@@ -72,12 +126,13 @@ func BlockedPrefixes(hostAddrs []netip.Addr) []netip.Prefix {
 // emitted as itself; that keeps the output minimal, with no two sibling
 // prefixes that could merge. Inputs may overlap or repeat; non-IPv4 inputs
 // are dropped.
-func AllowedEgress(blocked, optIn []netip.Prefix) []netip.Prefix {
+func AllowedEgress(blocked, optIn, hard []netip.Prefix) []netip.Prefix {
 	b := normalizeIPv4(blocked)
 	o := normalizeIPv4(optIn)
+	h := normalizeIPv4(hard)
 	var walk func(p netip.Prefix) (allowed []netip.Prefix, full bool)
 	walk = func(p netip.Prefix) ([]netip.Prefix, bool) {
-		switch classify(p, b, o) {
+		switch classify(p, b, o, h) {
 		case prefixAllowed:
 			return []netip.Prefix{p}, true
 		case prefixBlocked:
@@ -106,7 +161,25 @@ const (
 // classify decides whether every address in p is allowed, every address is
 // blocked, or it needs splitting. A /32 can never be mixed: overlap with a
 // prefix is the same as containment at that size, so the recursion stops.
-func classify(p netip.Prefix, blocked, optIn []netip.Prefix) prefixState {
+func classify(p netip.Prefix, blocked, optIn, hard []netip.Prefix) prefixState {
+	hardOverlaps := false
+	for _, q := range hard {
+		if containsPrefix(q, p) {
+			return prefixBlocked
+		}
+		if q.Overlaps(p) {
+			hardOverlaps = true
+		}
+	}
+	s := classifySoft(p, blocked, optIn)
+	if s == prefixAllowed && hardOverlaps {
+		return prefixMixed
+	}
+	return s
+}
+
+// classifySoft is classify for the overridable blocks and opt-ins alone.
+func classifySoft(p netip.Prefix, blocked, optIn []netip.Prefix) prefixState {
 	optInOverlaps := false
 	for _, q := range optIn {
 		if containsPrefix(q, p) {
@@ -179,11 +252,17 @@ func comparePrefix(a, b netip.Prefix) int {
 	return a.Bits() - b.Bits()
 }
 
-// ParseOptIn parses the user's opt-in CIDRs (config `network.allow_cidrs`).
-// Config validation and the init/update step share it so a value that loads
-// is a value the step can apply. Each entry must be an IPv4 prefix in CIDR
-// form; it is masked to its network address so "10.1.2.3/16" means
-// 10.1.0.0/16 rather than being rejected for a detail the user didn't intend.
+// ParseOptIn parses the user's opt-in CIDRs (config `network.allow_cidrs`) for
+// the init/update step. internal/config has its own validator with the same
+// rules (it does not import initflow), so a change to these rules must be made
+// there too, or a value that loads could still fail here. Each entry must be
+// an IPv4 prefix in CIDR form; it is masked to its network address so
+// "10.1.2.3/16" means 10.1.0.0/16 rather than being rejected for a detail the
+// user didn't intend.
+//
+// An opt-in that overlaps a hard block (HardBlockedPrefixes) is not an error
+// here: ParseOptIn cannot know the hard blocks, which are read from the host
+// and Incus when the step runs. The step reports the overlap instead.
 func ParseOptIn(cidrs []string) ([]netip.Prefix, error) {
 	out := make([]netip.Prefix, 0, len(cidrs))
 	for _, s := range cidrs {
@@ -228,7 +307,7 @@ func EgressACLYAML(allowed []netip.Prefix) string {
 }
 
 // HostIPv4Addrs lists the IPv4 addresses on this host's interfaces, for
-// BlockedPrefixes. It is a snapshot: addresses gained after init/update are
+// HardBlockedPrefixes. It is a snapshot: addresses gained after init/update are
 // not blocked until the next update.
 func HostIPv4Addrs() ([]netip.Addr, error) {
 	addrs, err := net.InterfaceAddrs()

@@ -1,6 +1,7 @@
 package incus
 
 import (
+	"errors"
 	"reflect"
 	"strings"
 	"testing"
@@ -180,5 +181,38 @@ func TestProfileDeviceExists(t *testing.T) {
 	withFakeExec(t, fakeRun{stderr: "Error: Profile not found", exit: 1})
 	if _, err := ProfileDeviceExists("nope", "eth0"); err == nil {
 		t.Fatal("missing profile must be an error")
+	}
+}
+
+func TestLimaHostIPv4(t *testing.T) {
+	tests := []struct {
+		name    string
+		ip      string
+		err     error
+		want    string
+		wantErr string
+	}{
+		{name: "IPv4", ip: "192.168.5.2", want: "192.168.5.2"},
+		{name: "4-in-6 unmapped", ip: "::ffff:192.168.5.2", want: "192.168.5.2"},
+		{name: "IPv6 rejected", ip: "fe80::1", wantErr: "want an IPv4"},
+		{name: "garbage rejected", ip: "not-an-ip", wantErr: "resolved to"},
+		{name: "lookup error passed through", err: errors.New("no such host"), wantErr: "no such host"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := limaHostIPv4(func() (string, error) { return tt.ip, tt.err })
+			if tt.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("err = %v, want containing %q", err, tt.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got.String() != tt.want {
+				t.Fatalf("got %s, want %s", got, tt.want)
+			}
+		})
 	}
 }

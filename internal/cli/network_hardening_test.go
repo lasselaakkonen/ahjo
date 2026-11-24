@@ -4,31 +4,124 @@ import (
 	"context"
 	"errors"
 	"net/netip"
+	"slices"
 	"strings"
 	"testing"
 
 	"github.com/lasselaakkonen/ahjo/internal/incus"
 )
 
+const testBridgeIPv4 = "10.20.30.1/24"
+
+func egressIn(hostAddrs []netip.Addr, allowCIDRs []string) egressInputs {
+	return egressInputs{HostAddrs: hostAddrs, BridgeIPv4: testBridgeIPv4, AllowCIDRs: allowCIDRs}
+}
+
+func mustDesired(t *testing.T, in egressInputs) egressDesired {
+	t.Helper()
+	d, err := computeEgressDesired(in)
+	if err != nil {
+		t.Fatalf("computeEgressDesired(%+v): %v", in, err)
+	}
+	return d
+}
+
+func (d egressDesired) allows(s string) bool {
+	a := netip.MustParseAddr(s)
+	for _, p := range d.Allowed {
+		if p.Contains(a) {
+			return true
+		}
+	}
+	return false
+}
+
 func TestComputeEgressDesiredInvalidOptIn(t *testing.T) {
 	for _, bad := range []string{"not-a-cidr", "10.0.0.0", "fd00::/8", "0.0.0.0/0"} {
-		if _, err := computeEgressDesired(nil, []string{bad}); err == nil {
+		if _, err := computeEgressDesired(egressIn(nil, []string{bad})); err == nil {
 			t.Fatalf("computeEgressDesired(%q): want error, got nil", bad)
 		}
+	}
+}
+
+func TestComputeEgressDesiredBridgeAddress(t *testing.T) {
+	for _, bad := range []string{"", "none", " none ", "auto", "garbage", "10.20.30.1", "fd42::1/64"} {
+		_, err := computeEgressDesired(egressInputs{BridgeIPv4: bad})
+		if err == nil {
+			t.Fatalf("bridge ipv4.address %q: want error, got nil", bad)
+		}
+		if !strings.Contains(err.Error(), "incusbr0") || !strings.Contains(err.Error(), "ipv4.address") {
+			t.Fatalf("bridge ipv4.address %q: error %q does not name the key", bad, err)
+		}
+	}
+	d := mustDesired(t, egressInputs{BridgeIPv4: "10.99.7.1/24"})
+	if d.BridgeSubnet != netip.MustParsePrefix("10.99.7.0/24") {
+		t.Fatalf("BridgeSubnet = %s, want masked 10.99.7.0/24", d.BridgeSubnet)
+	}
+}
+
+func TestComputeEgressDesiredHardBlocks(t *testing.T) {
+	d := mustDesired(t, egressInputs{
+		HostAddrs:  []netip.Addr{netip.MustParseAddr("192.168.5.15"), netip.MustParseAddr("10.20.30.1")},
+		LimaHost:   netip.MustParseAddr("192.168.5.2"),
+		BridgeIPv4: testBridgeIPv4,
+		AllowCIDRs: []string{"10.0.0.0/8", "192.168.0.0/16"},
+	})
+	for _, p := range []string{"10.20.30.0/24", "10.20.30.1/32", "192.168.5.2/32", "192.168.5.15/32"} {
+		if !slices.Contains(d.Hard, netip.MustParsePrefix(p)) {
+			t.Errorf("Hard = %v, lacks %s", d.Hard, p)
+		}
+	}
+	for _, s := range []string{"10.20.30.1", "10.20.30.57", "192.168.5.2", "192.168.5.15"} {
+		if d.allows(s) {
+			t.Errorf("%s is allowed under a covering opt-in, want hard-blocked", s)
+		}
+	}
+	for _, s := range []string{"10.1.2.3", "10.20.31.1", "192.168.5.3", "192.168.1.10"} {
+		if !d.allows(s) {
+			t.Errorf("%s is blocked, want allowed by the opt-in", s)
+		}
+	}
+	wantOverlap := []netip.Prefix{
+		netip.MustParsePrefix("10.20.30.0/24"),
+		netip.MustParsePrefix("192.168.5.2/32"),
+		netip.MustParsePrefix("192.168.5.15/32"),
+	}
+	if !slices.Equal(d.OptInHardBlocked, wantOverlap) {
+		t.Fatalf("OptInHardBlocked = %v, want %v", d.OptInHardBlocked, wantOverlap)
+	}
+	line := d.optInHardBlockedLine()
+	for _, want := range []string{"10.20.30.0/24, 192.168.5.2/32, 192.168.5.15/32", "stays blocked", "ahjo forward"} {
+		if !strings.Contains(line, want) {
+			t.Errorf("overlap line lacks %q: %s", want, line)
+		}
+	}
+	if strings.Contains(line, "\n") {
+		t.Errorf("overlap line is not one line: %q", line)
+	}
+	sum := d.hardBlockSummary()
+	for _, want := range []string{"incusbr0 subnet 10.20.30.0/24", "192.168.5.15", "host.lima.internal 192.168.5.2"} {
+		if !strings.Contains(sum, want) {
+			t.Errorf("hard-block summary lacks %q: %s", want, sum)
+		}
+	}
+
+	// Native Linux, opt-in clear of every hard block: no overlap line, no
+	// Lima entry.
+	n := mustDesired(t, egressIn([]netip.Addr{netip.MustParseAddr("203.0.113.7")}, []string{"10.1.0.0/16"}))
+	if line := n.optInHardBlockedLine(); line != "" {
+		t.Errorf("unexpected overlap line: %s", line)
+	}
+	if strings.Contains(n.hardBlockSummary(), "lima") {
+		t.Errorf("summary mentions Lima on a native host: %s", n.hardBlockSummary())
 	}
 }
 
 func TestComputeEgressDesiredHashStable(t *testing.T) {
 	a := []netip.Addr{netip.MustParseAddr("203.0.113.7"), netip.MustParseAddr("10.20.30.1")}
 	b := []netip.Addr{netip.MustParseAddr("10.20.30.1"), netip.MustParseAddr("203.0.113.7"), netip.MustParseAddr("203.0.113.7")}
-	d1, err := computeEgressDesired(a, []string{"10.1.0.0/16"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	d2, err := computeEgressDesired(b, []string{"10.1.0.0/16"})
-	if err != nil {
-		t.Fatal(err)
-	}
+	d1 := mustDesired(t, egressIn(a, []string{"10.1.0.0/16"}))
+	d2 := mustDesired(t, egressIn(b, []string{"10.1.0.0/16"}))
 	if d1.Hash != d2.Hash {
 		t.Fatalf("hash depends on host address order/duplicates: %s vs %s", d1.Hash, d2.Hash)
 	}
@@ -39,43 +132,54 @@ func TestComputeEgressDesiredHashStable(t *testing.T) {
 		t.Fatalf("hash %q is not sha256 hex", d1.Hash)
 	}
 
-	d3, err := computeEgressDesired(a, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
+	d3 := mustDesired(t, egressIn(a, nil))
 	if d3.Hash == d1.Hash {
 		t.Fatal("dropping the opt-in did not change the hash")
 	}
-	d4, err := computeEgressDesired([]netip.Addr{netip.MustParseAddr("198.51.100.9")}, []string{"10.1.0.0/16"})
-	if err != nil {
-		t.Fatal(err)
-	}
+	d4 := mustDesired(t, egressIn([]netip.Addr{netip.MustParseAddr("198.51.100.9")}, []string{"10.1.0.0/16"}))
 	if d4.Hash == d1.Hash {
 		t.Fatal("a different public host address did not change the hash")
 	}
 }
 
+// TestComputeEgressDesiredHashTracksHardBlocks checks that moving a hard block
+// the opt-ins expose re-renders the rules, so `ahjo update` re-applies them.
+func TestComputeEgressDesiredHashTracksHardBlocks(t *testing.T) {
+	wide := []string{"10.0.0.0/8", "192.168.0.0/16"}
+	base := egressInputs{BridgeIPv4: testBridgeIPv4, LimaHost: netip.MustParseAddr("192.168.5.2"), AllowCIDRs: wide}
+	h := mustDesired(t, base).Hash
+
+	bridge := base
+	bridge.BridgeIPv4 = "10.20.31.1/24"
+	if mustDesired(t, bridge).Hash == h {
+		t.Error("a different bridge subnet did not change the hash")
+	}
+	mac := base
+	mac.LimaHost = netip.MustParseAddr("192.168.5.3")
+	if mustDesired(t, mac).Hash == h {
+		t.Error("a different host.lima.internal did not change the hash")
+	}
+	noLima := base
+	noLima.LimaHost = netip.Addr{}
+	if mustDesired(t, noLima).Hash == h {
+		t.Error("dropping host.lima.internal did not change the hash")
+	}
+	host := base
+	host.HostAddrs = []netip.Addr{netip.MustParseAddr("10.1.2.3")}
+	if mustDesired(t, host).Hash == h {
+		t.Error("a new host address inside an opt-in did not change the hash")
+	}
+}
+
 func TestComputeEgressDesiredContent(t *testing.T) {
-	d, err := computeEgressDesired([]netip.Addr{netip.MustParseAddr("203.0.113.7")}, []string{"10.1.0.0/16"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	inAllowed := func(s string) bool {
-		a := netip.MustParseAddr(s)
-		for _, p := range d.Allowed {
-			if p.Contains(a) {
-				return true
-			}
-		}
-		return false
-	}
+	d := mustDesired(t, egressIn([]netip.Addr{netip.MustParseAddr("203.0.113.7")}, []string{"10.1.0.0/16"}))
 	for _, s := range []string{"192.168.5.2", "169.254.169.254", "10.20.30.1", "203.0.113.7", "127.0.0.1"} {
-		if inAllowed(s) {
+		if d.allows(s) {
 			t.Errorf("%s is allowed, want blocked", s)
 		}
 	}
 	for _, s := range []string{"1.1.1.1", "140.82.112.3", "10.1.2.3"} {
-		if !inAllowed(s) {
+		if !d.allows(s) {
 			t.Errorf("%s is blocked, want allowed", s)
 		}
 	}
@@ -85,10 +189,7 @@ func TestComputeEgressDesiredContent(t *testing.T) {
 }
 
 func TestACLEditYAMLCarriesHash(t *testing.T) {
-	d, err := computeEgressDesired(nil, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
+	d := mustDesired(t, egressIn(nil, nil))
 	y := d.aclEditYAML()
 	if !strings.HasPrefix(y, d.RulesYAML) {
 		t.Fatal("edit body does not start with the hashed rules")
@@ -199,6 +300,7 @@ func TestNetworkHardeningShow(t *testing.T) {
 		"incus profile device set default eth0 security.port_isolation=true security.mac_filtering=true security.ipv4_filtering=true",
 		"10.0.0.0/8", "100.64.0.0/10", "169.254.0.0/16", "192.168.0.0/16", "224.0.0.0/3",
 		"opt-in (network.allow_cidrs): 10.1.0.0/16, 172.20.5.0/24",
+		"always blocked, even inside an opt-in: the incusbr0 subnet",
 	} {
 		if !strings.Contains(s, want) {
 			t.Errorf("Show lacks %q:\n%s", want, s)
@@ -247,5 +349,18 @@ func TestNetworkHardeningStepWiring(t *testing.T) {
 	h = stepIndex(updTitles, hardening)
 	if inotify < 0 || h != inotify+1 {
 		t.Fatalf("update order: inotify=%d hardening=%d in %q", inotify, h, updTitles)
+	}
+}
+
+func TestNetworkHardeningWording(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	st := networkHardeningStep()
+	for _, want := range []string{"right away", "re-attach their network interface", "native Linux", "did not create", "ahjo forward"} {
+		if !strings.Contains(st.Note, want) {
+			t.Errorf("Note lacks %q: %s", want, st.Note)
+		}
+	}
+	if strings.Contains(st.Post, "next restart") || !strings.Contains(st.Post, "right away") || !strings.Contains(st.Post, "drops open connections") {
+		t.Errorf("Post wording: %s", st.Post)
 	}
 }
