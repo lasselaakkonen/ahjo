@@ -10,7 +10,6 @@ import (
 	"github.com/lasselaakkonen/ahjo/internal/lockfile"
 	"github.com/lasselaakkonen/ahjo/internal/paths"
 	"github.com/lasselaakkonen/ahjo/internal/registry"
-	sshpkg "github.com/lasselaakkonen/ahjo/internal/ssh"
 )
 
 func newRepoRmCmd() *cobra.Command {
@@ -111,7 +110,7 @@ func runRepoRm(alias string, force bool) error {
 	if err := reg.Save(); err != nil {
 		return err
 	}
-	if err := sshpkg.RegenerateConfig(reg); err != nil {
+	if err := regenerateSSHConfig(reg); err != nil {
 		return err
 	}
 	fmt.Printf("removed repo %s\n", repo.Aliases[0])

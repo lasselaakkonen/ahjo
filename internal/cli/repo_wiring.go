@@ -11,6 +11,7 @@ import (
 	"github.com/lasselaakkonen/ahjo/internal/incus"
 	"github.com/lasselaakkonen/ahjo/internal/paths"
 	"github.com/lasselaakkonen/ahjo/internal/registry"
+	sshpkg "github.com/lasselaakkonen/ahjo/internal/ssh"
 )
 
 // wireBranchContainer applies the per-container config + devices ahjo
@@ -145,6 +146,29 @@ func shouldForwardAgent(repo *registry.Repo, hasToken bool, cfg *config.Config) 
 	}
 	covered := repo != nil && hasToken && isHTTPSRemote(repo.Remote)
 	return !covered
+}
+
+// forwardAgentForSSHConfig is the per-repo ForwardAgent decision for the
+// generated ssh-config. It consults only the registry's HasToken flag, never
+// per-invocation token sources: the config renders every repo at once, and on
+// macOS an injected GH_TOKEN belongs to the one repo the shim resolved.
+func forwardAgentForSSHConfig(cfg *config.Config) func(*registry.Repo) bool {
+	return func(r *registry.Repo) bool {
+		return shouldForwardAgent(r, r != nil && r.HasToken, cfg)
+	}
+}
+
+// regenerateSSHConfig re-renders ~/.ahjo-shared/ssh-config (plus the alias
+// and known_hosts files) with ForwardAgent following shouldForwardAgent. A
+// config.toml that fails to load degrades to the auto policy with a warning
+// rather than blocking the registry write that triggered the regeneration.
+func regenerateSSHConfig(reg *registry.Registry) error {
+	cfg, err := config.Load()
+	if err != nil {
+		fmt.Fprintf(cobraOutErr(), "warn: load config for ssh-config (using auto ssh-agent policy): %v\n", err)
+		cfg = nil
+	}
+	return sshpkg.RegenerateConfig(reg, forwardAgentForSSHConfig(cfg))
 }
 
 // attachPasteShim installs the in-container half of the macOS host paste

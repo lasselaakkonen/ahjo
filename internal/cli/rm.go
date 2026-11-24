@@ -14,7 +14,6 @@ import (
 	"github.com/lasselaakkonen/ahjo/internal/paths"
 	"github.com/lasselaakkonen/ahjo/internal/ports"
 	"github.com/lasselaakkonen/ahjo/internal/registry"
-	sshpkg "github.com/lasselaakkonen/ahjo/internal/ssh"
 )
 
 func newRmCmd() *cobra.Command {
@@ -183,7 +182,7 @@ func removeBranchLocked(reg *registry.Registry, br *registry.Branch, forceDefaul
 	if err := reg.Save(); err != nil {
 		return err
 	}
-	if err := sshpkg.RegenerateConfig(reg); err != nil {
+	if err := regenerateSSHConfig(reg); err != nil {
 		return err
 	}
 	fmt.Printf("removed %s\n", primary)

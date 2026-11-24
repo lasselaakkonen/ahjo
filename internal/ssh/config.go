@@ -14,7 +14,12 @@ import (
 
 // RegenerateConfig writes ~/.ahjo-shared/{ssh-config,aliases,known_hosts}
 // from the registry atomically.
-func RegenerateConfig(reg *registry.Registry) error {
+//
+// forwardAgent decides, per repo, whether its hosts get `ForwardAgent yes`
+// (it is passed the branch's repo row, or nil when the row is missing). A nil
+// func forwards nothing. The caller owns the policy so this package needs no
+// dependency on config or cli; see cli.regenerateSSHConfig.
+func RegenerateConfig(reg *registry.Registry, forwardAgent func(*registry.Repo) bool) error {
 	if err := os.MkdirAll(paths.SharedDir(), 0o755); err != nil {
 		return fmt.Errorf("mkdir %s: %w", paths.SharedDir(), err)
 	}
@@ -34,7 +39,14 @@ func RegenerateConfig(reg *registry.Registry) error {
 		fmt.Fprintln(&b, "  IdentityFile ~/.ssh/id_ed25519")
 		fmt.Fprintf(&b, "  UserKnownHostsFile %s\n", knownHosts)
 		fmt.Fprintln(&b, "  StrictHostKeyChecking yes")
-		fmt.Fprintln(&b, "  ForwardAgent yes")
+		// Always explicit: ssh uses the first value it sees for a key, and
+		// the ahjo Include sits above the user's own `Host *` blocks, so a
+		// `no` here beats a user-level `ForwardAgent yes`.
+		if forwardAgent != nil && forwardAgent(reg.FindRepo(br.Repo)) {
+			fmt.Fprintln(&b, "  ForwardAgent yes")
+		} else {
+			fmt.Fprintln(&b, "  ForwardAgent no")
+		}
 		fmt.Fprintln(&b)
 	}
 
