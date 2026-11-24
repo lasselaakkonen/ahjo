@@ -29,6 +29,8 @@ const ghTokenKey = "GH_TOKEN"
 //
 //   - repo add <url>:        prompt + Keychain store, inject GH_TOKEN on relay
 //   - repo set-token <alias>: prompt + Keychain store, inject GH_TOKEN on relay
+//   - create <alias> <br>:   unregistered owner/repo: same prompt as repo add;
+//     registered alias: Keychain read, inject GH_TOKEN (silent miss)
 //   - shell <alias>:         Keychain read, inject GH_TOKEN on relay (silent miss)
 //   - claude <alias>:        same as shell
 //   - rm <alias>:            no upfront action (in-VM ahjo writes a cleanup marker;
@@ -98,27 +100,42 @@ func interceptRepoAdd(args []string) ([]string, []string, error) {
 	return args, env, nil
 }
 
-// interceptCreate is the `create` half of the PAT prompt. `ahjo create
-// <owner/repo> <branch>` on an UNREGISTERED repo auto-adds in-VM (EnsureRepo),
-// past the shim — so without this the in-VM clone never sees a PAT and freezes
-// an SSH origin. It reuses the exact same ensureRepoPAT routine as `repo add`
-// so the two host-side paths can't drift. Skips a branch-alias (repo@branch),
-// an already-registered alias, --help/--yes, and non-TTY — all defer to the
-// in-VM flow unchanged.
+// interceptCreate is the `create` half of the PAT handling.
+//
+// For an already-registered alias (repo or branch) it behaves like
+// interceptShellLike: read the Keychain and inject GH_TOKEN so the in-VM
+// `create` sees the PAT it needs for the clone and for the ssh-agent policy
+// (silent on a miss). Without this a new branch container of a PAT repo would
+// be created as if no token existed.
+//
+// `ahjo create <owner/repo> <branch>` on an UNREGISTERED repo auto-adds in-VM
+// (EnsureRepo), past the shim — so without the prompt the in-VM clone never
+// sees a PAT and freezes an SSH origin. That path reuses the exact same
+// ensureRepoPAT routine as `repo add` so the two host-side paths can't drift.
+// A branch-alias that isn't registered, a non-owner/repo alias, --help/--yes
+// and non-TTY all defer to the in-VM flow unchanged.
 func interceptCreate(args []string) ([]string, []string, error) {
 	if hasFlag(args[1:], "-h", "--help") {
 		return args, nil, nil
 	}
 	yes := hasFlag(args[1:], "-y", "--yes")
 	alias := findCreateAlias(args[1:])
-	if !isBareOwnerRepo(alias) {
-		// Branch alias, a non-owner/repo alias, or no positional: not a GitHub
-		// first-add. Defer to the in-VM flow.
+	if alias == "" {
 		return args, nil, nil
 	}
-	if _, err := lookupRepoSlug(alias); err == nil {
-		// Already registered → EnsureRepo won't add → nothing to solicit. (A
-		// case-variant miss here is caught by the Keychain hit in ensureRepoPAT.)
+	if slug, err := lookupRepoSlug(alias); err == nil {
+		// Already registered → EnsureRepo won't add → nothing to solicit, but
+		// the stored PAT still has to reach the in-VM create. (A case-variant
+		// miss here is caught by the Keychain hit in ensureRepoPAT.)
+		env, err := keychainEnvForSlug(slug)
+		if err != nil {
+			return nil, nil, err
+		}
+		return args, env, nil
+	}
+	if !isBareOwnerRepo(alias) {
+		// Branch alias, a non-owner/repo alias: not a GitHub first-add. Defer
+		// to the in-VM flow.
 		return args, nil, nil
 	}
 	ownerRepo, err := registry.DeriveRepoAlias(alias) // normalize exactly like repo add
@@ -134,6 +151,25 @@ func interceptCreate(args []string) ([]string, []string, error) {
 		return nil, nil, err
 	}
 	return args, env, nil
+}
+
+// keychainGet is the Keychain read, a variable so tests never touch the real
+// login Keychain.
+var keychainGet = macsecret.Get
+
+// keychainEnvForSlug returns the GH_TOKEN env pair for slug's stored PAT, or
+// nil on a miss. An error means the Keychain read itself failed (locked
+// Keychain, broken `security`) and is surfaced rather than silently relaying
+// without a token the user expects.
+func keychainEnvForSlug(slug string) ([]string, error) {
+	tok, found, err := keychainGet(slug, ghTokenKey)
+	if err != nil {
+		return nil, fmt.Errorf("read Keychain for %s: %w", slug, err)
+	}
+	if !found || tok == "" {
+		return nil, nil
+	}
+	return []string{"GH_TOKEN=" + tok}, nil
 }
 
 // ensureRepoPAT is the single host-side source of truth for a repo's GitHub
@@ -216,16 +252,11 @@ func interceptShellLike(args []string) ([]string, []string, error) {
 	if err != nil {
 		return args, nil, nil
 	}
-	tok, found, err := macsecret.Get(slug, ghTokenKey)
+	env, err := keychainEnvForSlug(slug)
 	if err != nil {
-		// Locked Keychain or a `security` failure — surface to the user
-		// rather than silently relaying without a token they expect.
-		return nil, nil, fmt.Errorf("read Keychain for %s: %w", slug, err)
+		return nil, nil, err
 	}
-	if !found || tok == "" {
-		return args, nil, nil
-	}
-	return args, []string{"GH_TOKEN=" + tok}, nil
+	return args, env, nil
 }
 
 // promptStorePAT reads a PAT with hidden input, writes it into the login
@@ -301,7 +332,7 @@ func sweepKeychainCleanup() {
 // `add`), skipping flag values for known string flags. Returns "" when no
 // URL is present (user typed `ahjo repo add --help`, e.g.).
 func findRepoAddURL(rest []string) string {
-	stringFlags := map[string]bool{"--default-base": true, "--as": true}
+	stringFlags := map[string]bool{"--default-base": true, "--as": true, "--container-config": true}
 	for i := 0; i < len(rest); i++ {
 		a := rest[i]
 		if a == "--" {
@@ -352,7 +383,7 @@ func findCreateAlias(rest []string) string {
 // firstNonFlag returns the first positional argument, skipping flag values
 // for the small set of string flags shared across repo subcommands.
 func firstNonFlag(rest []string) string {
-	stringFlags := map[string]bool{"--default-base": true, "--as": true}
+	stringFlags := map[string]bool{"--default-base": true, "--as": true, "--container-config": true}
 	for i := 0; i < len(rest); i++ {
 		a := rest[i]
 		if a == "--" {
