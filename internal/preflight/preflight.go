@@ -89,7 +89,7 @@ func checkAhjoDir() Problem {
 }
 
 func checkOAuthToken() Problem {
-	if os.Getenv("CLAUDE_CODE_OAUTH_TOKEN") == "" {
+	if v, _ := tokenstore.Lookup(tokenstore.TokenEnv); v == "" {
 		return Problem{
 			Severity: Fail,
 			Title:    "CLAUDE_CODE_OAUTH_TOKEN not set",
@@ -116,9 +116,7 @@ func checkAnyGHToken() Problem {
 		return Problem{Severity: Warn, Title: "could not load registry for GH_TOKEN survey", Detail: err.Error()}
 	}
 	globalSet := false
-	if v, ok, err := tokenstore.Get(tokenstore.GHTokenEnv); err == nil && ok && v != "" {
-		globalSet = true
-	} else if os.Getenv(tokenstore.GHTokenEnv) != "" {
+	if v, _ := tokenstore.Lookup(tokenstore.GHTokenEnv); v != "" {
 		globalSet = true
 	}
 	var withPAT, withoutPAT []string

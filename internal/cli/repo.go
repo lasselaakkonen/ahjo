@@ -55,7 +55,7 @@ func dropRepoToken(slug string) {
 // On standalone Linux the per-repo .env file under SharedDir() is the
 // canonical store and the env var is unused.
 func repoToken(slug string) (string, bool, error) {
-	if v := os.Getenv(tokenstore.GHTokenEnv); v != "" {
+	if v, _ := tokenstore.Lookup(tokenstore.GHTokenEnv); v != "" {
 		return v, true, nil
 	}
 	if _, isMac := paths.MacHostHome(); isMac {
