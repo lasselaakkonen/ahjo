@@ -65,6 +65,11 @@ type Repo struct {
 	// the global config.ForwardEnv never appear here. The in-container
 	// ahjocontainer.json is untrusted; this list is the gate.
 	ApprovedForwardEnv []string `toml:"approved_forward_env,omitempty" json:"approved_forward_env,omitempty"`
+	// HasToken records that a GitHub PAT covers this repo. It is the durable,
+	// container-proof input to the ssh-agent suppression policy: on macOS the
+	// token itself lives in the Keychain and is only visible in-VM for the one
+	// command the shim injected it into.
+	HasToken bool `toml:"has_token,omitempty" json:"has_token,omitempty"`
 }
 
 // Branch is a per-branch container holding a checkout at /repo. Replaces

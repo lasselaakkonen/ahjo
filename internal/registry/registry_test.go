@@ -2,11 +2,14 @@ package registry
 
 import (
 	"bytes"
+	"os"
 	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/BurntSushi/toml"
+
+	"github.com/lasselaakkonen/ahjo/internal/paths"
 )
 
 func TestAliasToSlugCaps(t *testing.T) {
@@ -163,5 +166,36 @@ func TestRepoApprovedForwardEnvRoundTrip(t *testing.T) {
 	}
 	if len(out.Repos[1].ApprovedForwardEnv) != 0 {
 		t.Errorf("unexpected names on repo b: %v", out.Repos[1].ApprovedForwardEnv)
+	}
+}
+
+// HasToken is the persisted input to the ssh-agent suppression policy: it must
+// survive a Save/Load round trip, and stay out of the file when false so
+// registries written before the field existed read back unchanged.
+func TestRepoHasTokenRoundTrip(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	reg := &Registry{Repos: []Repo{
+		{Name: "with-token", Aliases: []string{"o/with"}, Remote: "https://github.com/o/with.git", HasToken: true},
+		{Name: "without-token", Aliases: []string{"o/without"}, Remote: "git@github.com:o/without.git"},
+	}}
+	if err := reg.Save(); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	raw, err := os.ReadFile(paths.RegistryPath())
+	if err != nil {
+		t.Fatalf("read registry: %v", err)
+	}
+	if n := strings.Count(string(raw), "has_token"); n != 1 {
+		t.Fatalf("registry has %d has_token keys, want 1 (omitted when false):\n%s", n, raw)
+	}
+	got, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if r := got.FindRepo("with-token"); r == nil || !r.HasToken {
+		t.Fatalf("with-token: HasToken lost on round trip: %+v", r)
+	}
+	if r := got.FindRepo("without-token"); r == nil || r.HasToken {
+		t.Fatalf("without-token: HasToken = true after round trip: %+v", r)
 	}
 }
