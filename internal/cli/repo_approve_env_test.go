@@ -91,15 +91,19 @@ func TestApplyApproveEnv_DoesNotMutateCurrent(t *testing.T) {
 }
 
 func TestRunRepoApproveEnv_RejectsInvalidNames(t *testing.T) {
-	// Validation runs before any registry / config access, so this needs no
-	// fixture: an invalid name must fail fast.
+	// Validation runs before any registry / config access. HOME is redirected
+	// anyway so a regression can't reach the real ~/.ahjo, and the error text
+	// is matched so "no repo with alias" can't stand in for a rejection.
+	t.Setenv("HOME", t.TempDir())
 	for _, k := range []string{"A=B", "9X", "\x1b[31mX", ""} {
-		if err := runRepoApproveEnv(nil, "any", []string{"OK", k}, false); err == nil {
-			t.Errorf("name %q accepted", k)
+		err := runRepoApproveEnv(nil, "any", []string{"OK", k}, false)
+		if err == nil || !strings.Contains(err.Error(), "invalid env var name") {
+			t.Errorf("name %q: want invalid-name error, got %v", k, err)
 		}
 	}
-	if err := runRepoApproveEnv(nil, "any", nil, true); err == nil {
-		t.Error("--revoke without keys accepted")
+	err := runRepoApproveEnv(nil, "any", nil, true)
+	if err == nil || !strings.Contains(err.Error(), "--revoke needs at least one KEY") {
+		t.Errorf("--revoke without keys: got %v", err)
 	}
 }
 
