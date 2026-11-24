@@ -45,7 +45,7 @@ These are the *intentional* leaks — every other path is closed.
 | `~/.ahjo-shared/` (Lima virtiofs mount) | VM → Mac, read-write | generated `ssh-config` + `aliases` map so `ahjo ssh <alias>` works from the Mac |
 | `forward_env` | VM → container | names listed in `~/.ahjo/config.toml` (default: `CLAUDE_CODE_OAUTH_TOKEN` + `GH_TOKEN`, sourced from `~/.ahjo/.env`) plus per-repo names approved in `registry.toml`; names requested only by the in-container config are not forwarded |
 | Host keys dir | VM → container, read-only | per-branch sshd keys + `authorized_keys` (single-file bind mount at `/home/ubuntu/.ssh/authorized_keys`) |
-| SSH agent socket | Mac → VM → container | conditional — suppressed when an HTTPS+PAT origin covers the repo; **see "GitHub credentials" below** |
+| SSH agent socket | Mac → VM → container | conditional — suppressed (proxy device and ssh-config `ForwardAgent`) when an HTTPS+PAT origin covers the repo; **see "GitHub credentials" below** |
 | Per-repo GH PAT | Mac Keychain (or Linux disk) → VM → container | one `GH_TOKEN` per repo, injected on each relay; **see below** |
 | `/dev/loop-control` + `/dev/loop0..7` | host → container, read-write | opt-in per repo via `customizations.ahjo.nested_incus`, and only after host-side consent (TTY prompt or `--allow-nested-incus`); only loop devices not bound on the host are passed. Off by default. See **Elevated runtime: `nested_incus`** below. |
 | `ahjo mirror` file stream | container → VM → host directory | opt-in, while a mirror is on: file events and contents from `/repo`, written by a host-side daemon into the directory you named. Nothing is mounted into the container. See **Mirror** below. |
@@ -175,13 +175,21 @@ Inside the container, `ssh` and `git` use `$SSH_AUTH_SOCK`, the request travels 
 
 The leak: **anything that runs in the container can ask the agent to sign**, for the lifetime of the shell. A malicious dev dependency, a hostile `git` hook, or an unintended Claude action can authenticate to *any* host your agent has keys for — typically every git remote you use. The host agent's per-key authorization prompts are the only check; once you've clicked "always allow" for a key, it signs silently.
 
-ahjo shrinks this hole by **not forwarding the agent when it isn't needed for git**. When a repo's recorded origin is HTTPS *and* a PAT covers it, git authenticates via the token, so ahjo suppresses the proxy device (and strips any inherited one) for that repo's containers — the common HTTPS+PAT case carries no agent socket at all. The agent is still forwarded for SSH origins, PAT-less repos, and non-GitHub remotes, where git genuinely needs it.
+ahjo shrinks this hole by **not forwarding the agent when it isn't needed for git**. When a repo's recorded origin is HTTPS *and* a PAT covers it, git authenticates via the token, so ahjo suppresses the agent for that repo — the common HTTPS+PAT case carries no agent socket at all. The agent is still forwarded for SSH origins, PAT-less repos, and non-GitHub remotes, where git genuinely needs it.
+
+Suppression covers every route the agent takes into a container:
+
+- **The proxy device** used by `ahjo shell`, `ahjo claude` and lifecycle hooks. ahjo strips the `ssh-agent` device from a container *before* every start, so a stale device left in a stopped container's config is never live, and re-attaches it only when policy allows. `ahjo repo set-token` also strips it from the repo's existing containers.
+- **`ForwardAgent` in the generated `~/.ahjo-shared/ssh-config`**, used by `ahjo ssh` and `ahjo ide`. Each `ahjo-<slug>` host gets an explicit `ForwardAgent yes` or `no` following the same rule, so `no` also overrides a `ForwardAgent yes` in your own `~/.ssh/config`.
+- **`ahjo repo add` setup.** The token and clone URL are resolved before the container runs any repo-controlled code, so under suppression Features' install scripts, warm-install and `onCreate`/`postCreate` hooks never see the agent.
+
+The decision is recorded per repo as `has_token` in `~/.ahjo/registry.toml` (outside the container, so nothing inside it can flip it). Repos added before this was recorded pick it up on their next `ahjo shell`/`claude`/`create` or `ahjo repo set-token`; until then their ssh-config entry keeps `ForwardAgent yes`. There is no command to clear `has_token`; set `forward_ssh_agent = true` to override it.
 
 You control this with `forward_ssh_agent` in `~/.ahjo/config.toml`:
 
 - *unset* (default) — auto: forward unless an HTTPS+PAT origin covers the repo.
 - `true` — always forward (you sign commits over SSH, push `git@` submodules/other remotes, or hit repos the fine-grained PAT isn't scoped to).
-- `false` — never forward.
+- `false` — never forward (proxy device and ssh-config alike).
 
 If you need to drop forwarding more bluntly for a given session, two Lima-level mitigations remain:
 
