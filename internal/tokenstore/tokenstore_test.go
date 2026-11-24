@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -234,5 +235,112 @@ func TestResolverAt_MissingFile(t *testing.T) {
 	t.Setenv("P", "x")
 	if v, ok := r("P"); !ok || v != "x" {
 		t.Errorf("got %q,%v", v, ok)
+	}
+}
+
+func TestSetAt_RejectsNewlineInValueAndLeavesFileUntouched(t *testing.T) {
+	p := envPath(t)
+	mustSet(t, p, "A", "1")
+	before, err := os.ReadFile(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, v := range []string{"ghp_x\nPATH=/evil", "ghp_x\rB=2", "ghp_x\x00"} {
+		err := SetAt(p, "GH_TOKEN", v)
+		if err == nil {
+			t.Fatalf("SetAt accepted value %q", v)
+		}
+		if strings.Contains(err.Error(), "ghp_x") || strings.Contains(err.Error(), "/evil") {
+			t.Fatalf("error leaks the value: %v", err)
+		}
+		if !strings.Contains(err.Error(), "GH_TOKEN") {
+			t.Fatalf("error %q does not name the key", err)
+		}
+	}
+	after, err := os.ReadFile(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(after) != string(before) {
+		t.Fatalf("file changed after rejected SetAt: %q -> %q", before, after)
+	}
+}
+
+func TestSetAt_RejectsBadKey(t *testing.T) {
+	p := envPath(t)
+	for _, k := range []string{"", "A\nB", "A=B", "A B", "A\tB", "A\rB", "A\x00B"} {
+		if err := SetAt(p, k, "v"); err == nil {
+			t.Fatalf("SetAt accepted key %q", k)
+		}
+	}
+	if _, err := os.Stat(p); !os.IsNotExist(err) {
+		t.Fatalf("rejected SetAt created the file (err=%v)", err)
+	}
+}
+
+// A pre-existing world-readable file must end up 0600: the atomic replace
+// writes a fresh 0600 file instead of rewriting in place (os.WriteFile keeps
+// an existing file's mode).
+func TestSetAt_TightensExistingWiderMode(t *testing.T) {
+	p := envPath(t)
+	if err := os.WriteFile(p, []byte("OTHER=keep\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(p, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mustSet(t, p, "GH_TOKEN", "abc")
+	st, err := os.Stat(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Mode().Perm() != 0o600 {
+		t.Fatalf("mode %o, want 0600", st.Mode().Perm())
+	}
+	got, err := ListAt(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := map[string]string{"OTHER": "keep", "GH_TOKEN": "abc"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("ListAt = %v, want %v", got, want)
+	}
+}
+
+func TestSetAtUnsetAt_LeaveNoTempFiles(t *testing.T) {
+	p := envPath(t)
+	mustSet(t, p, "A", "1")
+	mustSet(t, p, "B", "2")
+	if err := UnsetAt(p, "A"); err != nil {
+		t.Fatal(err)
+	}
+	if err := UnsetAt(p, "B"); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := os.ReadDir(filepath.Dir(p))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Name() != ".env" {
+		names := []string{}
+		for _, e := range entries {
+			names = append(names, e.Name())
+		}
+		t.Fatalf("dir entries = %v, want only .env", names)
+	}
+	st, _ := os.Stat(p)
+	if st.Mode().Perm() != 0o600 || st.Size() != 0 {
+		t.Fatalf("after unsetting all keys: mode %o size %d, want 0600 empty", st.Mode().Perm(), st.Size())
+	}
+}
+
+func TestSetAt_CreatesMissingDir0700(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "repo-env", "o-r.env")
+	mustSet(t, p, "GH_TOKEN", "abc")
+	st, err := os.Stat(filepath.Dir(p))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Mode().Perm() != 0o700 {
+		t.Fatalf("dir mode %o, want 0700", st.Mode().Perm())
 	}
 }

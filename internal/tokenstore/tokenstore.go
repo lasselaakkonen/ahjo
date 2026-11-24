@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"unicode"
 
 	"github.com/lasselaakkonen/ahjo/internal/paths"
 )
@@ -70,9 +71,13 @@ func Unset(key string) error { return UnsetAt(Path(), key) }
 // List returns every KEY=VALUE in ~/.ahjo/.env.
 func List() (map[string]string, error) { return ListAt(Path()) }
 
-// SetAt is the generic write: upserts key=val in path with mode 0600.
+// SetAt is the generic write: upserts key=val in path with mode 0600. The
+// file is replaced atomically, so a pre-existing wider mode does not survive.
+// key must be non-empty and free of '=', whitespace and NUL; val must be free
+// of newlines and NUL, so a value cannot inject another line into the file.
+// Validation errors name the key, never the value.
 func SetAt(path, key, val string) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := validate(key, val); err != nil {
 		return err
 	}
 	var lines []string
@@ -95,7 +100,60 @@ func SetAt(path, key, val string) error {
 	if !found {
 		lines = append(lines, fmt.Sprintf("%s=%s", key, val))
 	}
-	return os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o600)
+	return writeAtomic(path, []byte(strings.Join(lines, "\n")+"\n"))
+}
+
+// validate rejects a key or value that would corrupt the KEY=VALUE line
+// format. The error never contains val.
+func validate(key, val string) error {
+	if key == "" {
+		return fmt.Errorf("tokenstore: empty key")
+	}
+	if strings.ContainsRune(key, '=') || strings.ContainsRune(key, 0) ||
+		strings.IndexFunc(key, unicode.IsSpace) >= 0 {
+		return fmt.Errorf("tokenstore: key %q contains '=', whitespace or NUL", key)
+	}
+	if strings.ContainsAny(val, "\n\r\x00") {
+		return fmt.Errorf("tokenstore: value for %s contains a newline, carriage return or NUL", key)
+	}
+	return nil
+}
+
+// writeAtomic replaces path with data via a 0600 temp file in the same
+// directory plus rename, so readers never see a half-written file and the
+// result is 0600 regardless of the previous file's mode. The directory is
+// created 0700 when missing; an existing directory keeps its mode. The temp
+// file is removed on any error.
+func writeAtomic(path string, data []byte) (err error) {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	f, err := os.CreateTemp(dir, ".env-*")
+	if err != nil {
+		return err
+	}
+	tmp := f.Name()
+	defer func() {
+		if err != nil {
+			_ = os.Remove(tmp)
+		}
+	}()
+	if _, err = f.Write(data); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if err = f.Sync(); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if err = f.Close(); err != nil {
+		return err
+	}
+	if err = os.Chmod(tmp, 0o600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
 }
 
 // GetAt reads a single key from path.
@@ -133,9 +191,9 @@ func UnsetAt(path, key string) error {
 		out = out[:n-1]
 	}
 	if len(out) == 0 {
-		return os.WriteFile(path, nil, 0o600)
+		return writeAtomic(path, nil)
 	}
-	return os.WriteFile(path, []byte(strings.Join(out, "\n")+"\n"), 0o600)
+	return writeAtomic(path, []byte(strings.Join(out, "\n")+"\n"))
 }
 
 // ListAt returns every KEY=VALUE in path. Missing file → empty map, no error.
