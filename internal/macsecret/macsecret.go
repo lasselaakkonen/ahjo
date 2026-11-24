@@ -3,9 +3,10 @@
 // Package macsecret wraps `/usr/bin/security` so the Mac shim can store
 // per-repo PATs in the user's login Keychain instead of as plaintext on the
 // shared disk. The shim is the only writer; the in-VM ahjo receives values
-// via GH_TOKEN injected on the limactl-shell command line, and never reads
-// or writes Keychain directly (it can't — `security` doesn't exist in the
-// Lima Linux VM).
+// through a 0600 relay file (internal/relayenv) that it deletes on read, and
+// never reads or writes Keychain directly (it can't — `security` doesn't
+// exist in the Lima Linux VM). Values never cross a command line: Set feeds
+// `security -i` on stdin.
 //
 // Storage shape, visible cleanly in Keychain Access.app:
 //   - service: "ahjo." + key (e.g. "ahjo.GH_TOKEN")
@@ -48,18 +49,50 @@ func Get(slug, key string) (string, bool, error) {
 	return strings.TrimRight(string(out), "\r\n"), true, nil
 }
 
-// Set upserts (slug, key) -> val with `-U`. Note: the value crosses the
-// command line, so it's briefly visible in `ps` to processes running as the
-// same user. The only stricter alternatives are AppleScript or a tiny Swift
-// helper linking against Security.framework — both disproportionate for a
-// developer tool the user is interactively typing into.
+// Set upserts (slug, key) -> val with `-U`. The command is fed to
+// `security -i` on stdin, so the value never appears in argv (and therefore
+// never in `ps`). `security -i` exits 0 even when the command it ran failed,
+// so success is verified by reading the row back with Get. Errors never
+// include val: security's output is appended only when it does not contain
+// the value.
 func Set(slug, key, val string) error {
-	cmd := exec.Command("security", "add-generic-password",
-		"-U", "-s", service(key), "-a", slug, "-w", val)
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("security add-generic-password: %w: %s", err, strings.TrimSpace(string(out)))
+	line, err := addCommand(service(key), slug, val)
+	if err != nil {
+		return err
 	}
-	return nil
+	cmd := exec.Command("security", "-i")
+	cmd.Stdin = strings.NewReader(line)
+	out, runErr := cmd.CombinedOutput()
+	got, found, getErr := Get(slug, key)
+	if getErr == nil && found && got == val {
+		return nil
+	}
+	msg := "security add-generic-password: value not stored"
+	if runErr != nil {
+		msg += " (" + runErr.Error() + ")"
+	}
+	if detail := strings.TrimSpace(string(out)); detail != "" && !strings.Contains(detail, val) {
+		msg += ": " + detail
+	}
+	if getErr != nil {
+		return fmt.Errorf("%s; read back: %w", msg, getErr)
+	}
+	return errors.New(msg)
+}
+
+// addCommand renders one `security -i` input line. Rejects \n, \r, \x00 in
+// any field. Escapes \ and " and wraps each field in double quotes. Errors
+// name the field, never its content.
+func addCommand(service, account, val string) (string, error) {
+	fields := []struct{ name, v string }{{"service", service}, {"account", account}, {"value", val}}
+	quoted := make([]string, len(fields))
+	for i, f := range fields {
+		if strings.ContainsAny(f.v, "\n\r\x00") {
+			return "", fmt.Errorf("security add-generic-password: %s contains a newline, carriage return or NUL", f.name)
+		}
+		quoted[i] = `"` + strings.NewReplacer(`\`, `\\`, `"`, `\"`).Replace(f.v) + `"`
+	}
+	return fmt.Sprintf("add-generic-password -U -s %s -a %s -w %s\n", quoted[0], quoted[1], quoted[2]), nil
 }
 
 // Delete removes (slug, key). errSecItemNotFound is treated as success so the

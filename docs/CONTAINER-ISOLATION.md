@@ -157,10 +157,10 @@ Where the PAT lives:
 
 | Host         | Store                                                                          | Reader                                                                                |
 | ---          | ---                                                                            | ---                                                                                   |
-| macOS        | login Keychain, service `ahjo.GH_TOKEN`, account = repo slug                   | Mac shim only — reads pre-relay, injects `GH_TOKEN` on `limactl shell`                |
+| macOS        | login Keychain, service `ahjo.GH_TOKEN`, account = repo slug                   | Mac shim only — reads pre-relay and hands `GH_TOKEN` to the in-VM ahjo through a 0600 file under `~/.ahjo-shared/.relay-env/` that the in-VM ahjo deletes on read; the value is not on the `limactl` command line |
 | Linux bare-metal | `~/.ahjo-shared/repo-env/<slug>.env` (mode 0600)                           | in-VM ahjo reads disk directly                                                        |
 
-On Mac the shim is the only writer; the in-VM ahjo never touches disk for the PAT. A `grep ~/ -r 'ghp_\|github_pat_'` finds nothing — the Keychain DB is encrypted. `ahjo repo rm` (or `ahjo rm` of the default branch) drops a marker the shim sweeps post-relay so Keychain rows don't outlive the repo.
+On Mac the shim is the only writer (it stores the value by feeding `security -i` on stdin, so it never appears in `ps`); the in-VM ahjo never touches disk for the PAT beyond consuming the short-lived relay file. A `grep ~/ -r 'ghp_\|github_pat_'` finds nothing — the Keychain DB is encrypted. `ahjo repo rm` (or `ahjo rm` of the default branch) drops a marker the shim sweeps post-relay so Keychain rows don't outlive the repo.
 
 What this does **not** defend against: code running as you on the Mac (it can call `security` itself, or read the live container's env); the PAT inside the container during a session that received it (any process there can see `GH_TOKEN`); a Feature, hook, or earlier session that modified the container (a shell rc, a replaced `gh`) capturing the PAT at the next attach; `incus exec --env` values appearing in host-side `ps` for the life of each exec. The Keychain move closes accidental disk leakage — Time Machine, `rsync ~`, secret scanners — not an active adversary with shell.
 

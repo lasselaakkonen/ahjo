@@ -54,6 +54,13 @@
   stored.
 - `incus config set` errors no longer include the value, and `environment.*`
   values are redacted from incus's own error output.
+- macOS: the shim no longer puts the PAT on the `limactl shell` command line
+  (visible in `ps` for the whole session). It writes it to a 0600 file under
+  `~/.ahjo-shared/.relay-env/` and passes only the file name; the in-VM ahjo
+  reads and deletes it. Storing a PAT in the Keychain feeds `security -i` on
+  stdin instead of passing it as `-w <value>`. Run `ahjo update` after
+  upgrading: an older in-VM binary ignores `AHJO_RELAY_ENV` and runs without
+  the PAT.
 
 ### Changed (mirror)
 

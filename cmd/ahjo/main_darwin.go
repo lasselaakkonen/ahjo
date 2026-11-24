@@ -29,6 +29,7 @@ import (
 	"github.com/lasselaakkonen/ahjo/internal/lima"
 	"github.com/lasselaakkonen/ahjo/internal/paste"
 	"github.com/lasselaakkonen/ahjo/internal/registry"
+	"github.com/lasselaakkonen/ahjo/internal/relayenv"
 )
 
 const (
@@ -160,10 +161,10 @@ func main() {
 
 	// Per-repo PAT handling: on macOS we keep PATs in the user's login
 	// Keychain instead of as plaintext on the shared disk. The shim is the
-	// only writer; the in-VM ahjo reads through GH_TOKEN injected on the
-	// relay command line. Errors here are fatal — they only happen when the
-	// Keychain is locked or `security` is broken, both of which the user
-	// must fix before continuing.
+	// only writer; the in-VM ahjo receives the value through a 0600 relay
+	// file (internal/relayenv), never on the relay command line. Errors here
+	// are fatal — they only happen when the Keychain is locked or `security`
+	// is broken, both of which the user must fix before continuing.
 	newArgs, repoEnv, err := interceptRepoSubcommand(args)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "ahjo:", err)
@@ -191,7 +192,18 @@ func main() {
 	}
 	relayPrefix := []string{"shell", vmName}
 	envPairs := hostBridgeEnv()
-	envPairs = append(envPairs, repoEnv...)
+	// Secrets go through a 0600 file under ~/.ahjo-shared/.relay-env that the
+	// in-VM ahjo deletes on read; only the file's basename crosses argv.
+	// Never fall back to putting the values on the command line.
+	relayName := ""
+	if len(repoEnv) > 0 {
+		relayName, err = relayenv.Write(repoEnv)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "ahjo: relay token:", err)
+			os.Exit(1)
+		}
+		envPairs = append(envPairs, relayenv.EnvVar+"="+relayName)
+	}
 	if len(envPairs) > 0 {
 		relayPrefix = append(relayPrefix, "env")
 		relayPrefix = append(relayPrefix, envPairs...)
@@ -210,6 +222,9 @@ func main() {
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
 		err := cmd.Run()
+		if relayName != "" {
+			relayenv.Remove(relayName)
+		}
 		sweepKeychainCleanup()
 		if err != nil {
 			if ee, ok := err.(*exec.ExitError); ok {
@@ -221,6 +236,9 @@ func main() {
 		return
 	}
 	if err := lima.Exec(relayArgs...); err != nil {
+		if relayName != "" {
+			relayenv.Remove(relayName)
+		}
 		fmt.Fprintln(os.Stderr, "ahjo: exec limactl:", err)
 		os.Exit(1)
 	}
