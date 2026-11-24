@@ -123,7 +123,8 @@ func fmtLoopList(idx []int) string {
 // so a device that was free at `repo add` time may now back the storage pool.
 //
 // Containers without ahjo-loop-control are untouched (one incus call of
-// overhead). A running container is also untouched: devices it bound itself
+// overhead). Any container that has it gets boot.autostart=false, running or
+// not. A running container's devices are left alone: devices it bound itself
 // are legitimately "bound", so only a stopped container can be judged. A
 // stale binding the container left behind (bound without autoclear, then
 // stopped) is treated as foreign and the index is dropped — the safe
@@ -151,11 +152,17 @@ func reconcileLoopDevices(container string) error {
 	if !hasControl {
 		return nil
 	}
+	// Containers wired before boot.autostart was set at repo add would
+	// otherwise be restored by Incus at host boot, ahead of this re-check.
+	// Idempotent, and valid on a running container.
+	if err := incus.ConfigSet(container, "boot.autostart", "false"); err != nil {
+		return fmt.Errorf("set boot.autostart: %w", err)
+	}
 	status, err := incus.ContainerStatus(container)
 	if err != nil {
 		return err
 	}
-	if status == "Running" {
+	if strings.EqualFold(status, "Running") {
 		return nil
 	}
 	remove, add := planLoopDevices(have, loopNodeExists, loopBound)

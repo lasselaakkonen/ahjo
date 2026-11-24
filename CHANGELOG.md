@@ -32,4 +32,4 @@
 
 - Non-interactive `ahjo repo add` of a repo that declares `ahjo/docker` or `nested_incus` now fails without `--allow-nesting` / `--allow-nested-incus`.
 - A detected Dockerfile or compose file is no longer auto-applied as `ahjo/docker` on `--yes` / non-interactive runs unless `--allow-nesting` is passed.
-- Containers created before this change keep their already-passed loop devices until the next ahjo-initiated start, when the re-check runs.
+- Containers created before this change are not fixed in place. They keep every loop device they were given, including a bound one, until they are stopped and then started through ahjo; the re-check only runs on a stopped container. `boot.autostart=false` is applied to them the first time ahjo starts or attaches to them. To close the gap now, stop each `nested_incus` container (`incus stop <container>`) and start it again with ahjo.
