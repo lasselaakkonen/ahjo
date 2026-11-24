@@ -92,7 +92,7 @@ func runCreate(ctx context.Context, repoAlias, branch, base, asAlias string, noF
 	}
 
 	fmt.Printf("→ starting container\n")
-	if err := incus.Start(containerName); err != nil {
+	if err := startContainer(containerName); err != nil {
 		return err
 	}
 	if err := incus.WaitReady(ctx, containerName, 30*time.Second); err != nil {

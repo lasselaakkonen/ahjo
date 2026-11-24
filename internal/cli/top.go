@@ -281,7 +281,7 @@ func startStopForTop(br *registry.Branch) (string, error) {
 		}
 		return "stopped " + containerName, nil
 	}
-	if err := incus.Start(containerName); err != nil {
+	if err := startContainer(containerName); err != nil {
 		return "", err
 	}
 	return "started " + containerName, nil

@@ -42,7 +42,7 @@ func ensureRepoCleanOrForce(ctx context.Context, br *registry.Branch, action str
 		if !promptYesNo(fmt.Sprintf("%s is %s — start it to check /repo for unsaved work?", br.IncusName, strings.ToLower(status))) {
 			return fmt.Errorf("cannot verify /repo in %s is clean (container not started); pass --force to %s without checking", br.IncusName, action)
 		}
-		if err := incus.Start(br.IncusName); err != nil {
+		if err := startContainer(br.IncusName); err != nil {
 			return fmt.Errorf("start %s for clean-check: %w", br.IncusName, err)
 		}
 		if err := incus.WaitReady(ctx, br.IncusName, 15*time.Second); err != nil {

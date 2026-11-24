@@ -142,7 +142,7 @@ func prepareBranchContainer(ctx context.Context, alias string, update, force boo
 		}
 	}
 
-	if err := incus.Start(containerName); err != nil {
+	if err := startContainer(containerName); err != nil {
 		return nil, "", err
 	}
 	if err := incus.WaitReady(ctx, containerName, 30*time.Second); err != nil {

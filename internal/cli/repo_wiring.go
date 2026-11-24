@@ -2,7 +2,6 @@ package cli
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -90,35 +89,6 @@ func wireBranchContainer(containerName, hostKeysDir string) error {
 		}
 	}
 	return applyRawIdmap(containerName)
-}
-
-// wireLoopDevices attaches /dev/loop-control + /dev/loop0..7 to the
-// container as unix-char/unix-block devices. Each /dev/loopN source is
-// probed; missing nodes (some kernels expose fewer at boot) are skipped.
-// Idempotent — incus.AddUnixDevice tolerates "already exists".
-//
-// Gated by customizations.ahjo.nested_incus. Enables nested Incus (or any
-// tool needing loop-mounted block images) to operate inside the container.
-// Capability bump — widens kernel filesystem-driver attack surface; see
-// CONTAINER-ISOLATION.md for the trade-off.
-//
-// `incus copy` carries the device list, so wire-up on the default
-// container propagates to every COW branch container automatically.
-func wireLoopDevices(container string) error {
-	if err := incus.AddUnixDevice(container, "ahjo-loop-control", "unix-char", "/dev/loop-control"); err != nil {
-		return err
-	}
-	for i := 0; i < 8; i++ {
-		src := fmt.Sprintf("/dev/loop%d", i)
-		if _, err := os.Stat(src); errors.Is(err, os.ErrNotExist) {
-			continue
-		}
-		name := fmt.Sprintf("ahjo-loop-%d", i)
-		if err := incus.AddUnixDevice(container, name, "unix-block", src); err != nil {
-			return fmt.Errorf("%s: %w", name, err)
-		}
-	}
-	return nil
 }
 
 // attachSSHAgent (re)wires the ssh-agent proxy device pointing at the
