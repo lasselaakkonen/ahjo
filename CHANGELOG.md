@@ -61,6 +61,12 @@
   stdin instead of passing it as `-w <value>`. Run `ahjo update` after
   upgrading: an older in-VM binary ignores `AHJO_RELAY_ENV` and runs without
   the PAT.
+- Token files (`~/.ahjo/.env`, `~/.ahjo-shared/repo-env/<slug>.env`) are now
+  replaced atomically and always end up mode 0600, even when an existing file
+  was wider. Keys and values containing a newline, carriage return or NUL are
+  rejected instead of being written as extra lines.
+- `ahjo init` reads the pasted Claude OAuth token with masked input, and its
+  "wrong prefix" error no longer echoes the first characters of the token.
 
 ### Changed (mirror)
 

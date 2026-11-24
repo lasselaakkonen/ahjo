@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -296,17 +295,17 @@ Signed-By: /etc/apt/keyrings/zabbly.asc
 				if err := initflow.RunShell(out, "", "bash", "-lc", "claude setup-token"); err != nil {
 					return fmt.Errorf("claude setup-token: %w", err)
 				}
-				fmt.Fprint(out, "\nPaste the sk-ant-oat01-… token printed above: ")
-				sc := bufio.NewScanner(os.Stdin)
-				if !sc.Scan() {
-					if err := sc.Err(); err != nil {
-						return fmt.Errorf("read token: %w", err)
-					}
+				// Masked on a TTY (ttysecret), plain line read otherwise. The
+				// token never echoes and never appears in an error.
+				tok, err := readSecret(os.Stdin, out, cobraOutErr(), "\nPaste the sk-ant-oat01-… token printed above: ")
+				if err != nil {
+					return fmt.Errorf("read token: %w", err)
+				}
+				if tok == "" {
 					return fmt.Errorf("no token entered")
 				}
-				tok := strings.TrimSpace(sc.Text())
 				if !strings.HasPrefix(tok, "sk-ant-oat01-") {
-					return fmt.Errorf("token must start with sk-ant-oat01- (got %q)", trunc(tok, 16))
+					return fmt.Errorf("token must start with sk-ant-oat01-")
 				}
 				if err := tokenstore.SetToken(tok); err != nil {
 					return fmt.Errorf("save token: %w", err)
@@ -542,13 +541,6 @@ func currentUsername() string {
 
 func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
-}
-
-func trunc(s string, n int) string {
-	if len(s) > n {
-		return s[:n] + "…"
-	}
-	return s
 }
 
 // claudeOnPath reports whether `claude` resolves inside a login shell. We use
