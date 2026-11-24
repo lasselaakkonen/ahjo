@@ -36,10 +36,10 @@ func newUpdateCmd() *cobra.Command {
 
 It does not touch worktrees, registry entries, or host claude credentials,
 and it does not recreate containers (the firewall step changes the shared
-incusbr0 network and default profile; the firewall applies to running
-containers right away, and the first time Incus may re-attach their network
-interfaces and drop open connections, so run update when no container is
-mid-task). To pick up the new image in an existing container, recreate
+incusbr0 network and default profile; the firewall is expected to apply to
+running containers right away, and the first time Incus may re-attach their
+network interfaces and drop open connections, so run update when no container
+is mid-task). To pick up the new image in an existing container, recreate
 it with 'ahjo shell <alias> --update'.
 
 On macOS, the host-side 'ahjo update' first pushes the new ahjo-linux-<arch>
