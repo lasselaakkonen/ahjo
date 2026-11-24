@@ -18,6 +18,7 @@ import (
 	"github.com/lasselaakkonen/ahjo/internal/lockfile"
 	"github.com/lasselaakkonen/ahjo/internal/paths"
 	"github.com/lasselaakkonen/ahjo/internal/registry"
+	"github.com/lasselaakkonen/ahjo/internal/tokenstore"
 )
 
 func newRepoPullCmd() *cobra.Command {
@@ -167,7 +168,7 @@ func refreshRepoBase(repoName string) (retErr error) {
 	// auth missing in the subprocess env) shouldn't roll back the pull or
 	// fail the overall refresh — log it and let the next `ahjo create`
 	// surface the real installer error in the user's foreground.
-	hostEnv := refreshHostEnv(repo.BaseContainerName)
+	hostEnv := refreshHostEnv(repo)
 	warmCtx, cancelWarm := context.WithTimeout(ctx, refreshWarmTimeout)
 	defer cancelWarm()
 	if err := execWarmInstallCtx(warmCtx, repo.BaseContainerName, hostEnv); err != nil {
@@ -180,42 +181,60 @@ func refreshRepoBase(repoName string) (retErr error) {
 // the resolution done at `repo add` time so the same secrets (NPM_TOKEN, …)
 // reach the same installers. Three sources, in precedence order:
 //
-//  1. Global config.ForwardEnv keys resolved against the subprocess's own
-//     environment — inherited from the user's shell through `ahjo rm`, so a
-//     PAT exported in the shell flows through unchanged.
-//  2. dcConf.Customizations.Ahjo.ForwardEnv keys, same resolution.
+//  1. Global config.ForwardEnv keys.
+//  2. dcConf.Customizations.Ahjo.ForwardEnv keys, but only those also in
+//     repo.ApprovedForwardEnv (registry, trusted). The in-container
+//     ahjocontainer.json is untrusted: it can request names, not grant them.
+//     Unapproved / invalid names are logged with logStep and skipped — this
+//     runs detached, so it never prompts.
 //  3. dcConf.ContainerEnv literal values, but only when the key wasn't
 //     already populated by (1) or (2) — host env wins over hard-coded values,
 //     matching repo.go's merge.
+//
+// (1) and (2) resolve through tokenstore.Resolver: the subprocess's own
+// environment (inherited from the user's shell through `ahjo rm`, so a PAT
+// exported in the shell flows through unchanged), then ~/.ahjo/.env.
 //
 // dcConf load failures are non-fatal: we fall back to global ForwardEnv only,
 // log a note, and let warm-install run with whatever env we have. The
 // container's own `environment.*` config keys (set at `repo add` time) still
 // apply to every incus exec regardless.
-func refreshHostEnv(containerName string) map[string]string {
-	cfg, err := config.Load()
-	envKeys := []string(nil)
-	if err != nil {
+func refreshHostEnv(repo *registry.Repo) map[string]string {
+	var global []string
+	if cfg, err := config.Load(); err != nil {
 		logStep("refresh-hostenv: load global config: %v (continuing with empty ForwardEnv)", err)
 	} else {
-		envKeys = append(envKeys, cfg.ForwardEnv...)
+		global = cfg.ForwardEnv
 	}
 
-	dcConf, _, dcErr := ahjocontainer.LoadFromContainer(containerName)
+	dcConf, _, dcErr := ahjocontainer.LoadFromContainer(repo.BaseContainerName)
 	if dcErr != nil {
 		logStep("refresh-hostenv: load devcontainer config: %v (continuing without dcConf-specific env)", dcErr)
-	} else if dcConf != nil {
-		envKeys = append(envKeys, dcConf.Customizations.Ahjo.ForwardEnv...)
+		dcConf = nil
 	}
 
-	hostEnv := resolveHostEnv(envKeys)
+	allowed, pending, invalid := partitionForwardEnv(global, repo.ApprovedForwardEnv, requestedForwardEnv(dcConf))
+	for _, k := range invalid {
+		logStep("refresh-hostenv: ignoring invalid forward_env name %q", k)
+	}
+	if len(pending) > 0 {
+		alias := repo.Name
+		if len(repo.Aliases) > 0 {
+			alias = repo.Aliases[0]
+		}
+		logStep("refresh-hostenv: not forwarding unapproved forward_env names %s (approve with: ahjo repo approve-env %s %s)",
+			strings.Join(pending, ", "), alias, strings.Join(pending, " "))
+	}
+
+	lookup, lerr := tokenstore.Resolver()
+	if lerr != nil {
+		logStep("refresh-hostenv: read %s: %v (continuing with process env only)", tokenstore.Path(), lerr)
+	}
+	hostEnv := resolveForwardEnv(forwardEnvKeys(global, allowed), nil, lookup)
 	if dcConf != nil {
 		for k, v := range dcConf.ContainerEnv {
 			if _, set := hostEnv[k]; set {
 				continue
-			}
-			if hostEnv == nil {
-				hostEnv = map[string]string{}
 			}
 			hostEnv[k] = v
 		}

@@ -52,10 +52,11 @@ func runClaude(ctx context.Context, alias string, update, force bool, containerC
 	if err != nil {
 		return err
 	}
-	env, err := branchEnv(containerName, dcConf)
+	env, skip, err := branchEnv(containerName, dcConf)
 	if err != nil {
 		fmt.Fprintf(cobraOutErr(), "warn: collect forward env: %v\n", err)
 	}
+	skip.report(cobraOutErr())
 	if err := runPostAttach(ctx, containerName, dcConf, env); err != nil {
 		return err
 	}

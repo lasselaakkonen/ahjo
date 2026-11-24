@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"sort"
 	"strings"
 	"time"
 
@@ -22,6 +23,7 @@ import (
 	"github.com/lasselaakkonen/ahjo/internal/ports"
 	"github.com/lasselaakkonen/ahjo/internal/registry"
 	sshpkg "github.com/lasselaakkonen/ahjo/internal/ssh"
+	"github.com/lasselaakkonen/ahjo/internal/tokenstore"
 )
 
 func newRepoAddCmd() *cobra.Command {
@@ -51,6 +53,13 @@ The same per-repo PAT is also solicited on the first ` + "`ahjo create <owner/re
 the host ssh-agent is not forwarded into the repo's containers — git uses the
 token instead; override with ` + "`forward_ssh_agent`" + ` in config.toml.
 
+Env vars requested by the repo's customizations.ahjo.forward_env are not
+forwarded until you approve them: ahjo asks [y/N] per name (before any
+Feature, warm install or lifecycle hook runs) and records the answer in the
+registry. --yes and non-TTY stdin approve nothing; approve later with
+` + "`ahjo repo approve-env <alias> KEY...`" + `. Names in the global forward_env
+(config.toml) need no approval.
+
 ` + containerConfigHelpBlock,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -59,7 +68,7 @@ token instead; override with ` + "`forward_ssh_agent`" + ` in config.toml.
 	}
 	cmd.Flags().StringVar(&defaultBase, "default-base", "", "default branch to base new branches on (default: detect from the remote's HEAD)")
 	cmd.Flags().StringVar(&asAlias, "as", "", "additional alias for this repo (must not collide with any existing alias)")
-	cmd.Flags().BoolVarP(&yes, "yes", "y", false, "skip the GitHub PAT prompt (the repo is added without a per-repo GH_TOKEN; set one later with `ahjo repo set-token`)")
+	cmd.Flags().BoolVarP(&yes, "yes", "y", false, "skip the GitHub PAT prompt (the repo is added without a per-repo GH_TOKEN; set one later with `ahjo repo set-token`) and approve none of the repo's forward_env names (approve later with `ahjo repo approve-env`)")
 	cmd.Flags().StringVar(&containerConfig, "container-config", "", containerConfigFlagShort)
 	return cmd
 }
@@ -308,13 +317,27 @@ func repoAddSetup(ctx context.Context, slug, primary string, aliases []string, s
 	}
 
 	// Resolve the host-env keys to forward into warm-install and lifecycle
-	// hooks: global config.ForwardEnv ∪ union of each config's
-	// customizations.ahjo.forward_env.
-	envKeys := append([]string(nil), cfg.ForwardEnv...)
-	for _, c := range dcConfs {
-		envKeys = append(envKeys, c.Customizations.Ahjo.ForwardEnv...)
+	// hooks: global config.ForwardEnv ∪ the repo-requested
+	// customizations.ahjo.forward_env names the user approves right here.
+	// The request list comes from the (untrusted) repo, so each name not
+	// already in the global list needs an explicit [y/N]. This must stay
+	// ahead of Features, warm install and lifecycle hooks — the first
+	// repo-controlled code — so nothing the repo runs sees an unapproved
+	// value. --yes / non-TTY approve nothing and print the approve-env hint.
+	lookup, lookupErr := tokenstore.Resolver()
+	if lookupErr != nil {
+		fmt.Fprintf(cobraOutErr(), "warn: read %s: %v\n", tokenstore.Path(), lookupErr)
 	}
-	hostEnv := resolveHostEnv(envKeys)
+	allowedEnv, pendingEnv, invalidEnv := partitionForwardEnv(cfg.ForwardEnv, nil, requestedForwardEnv(dcConfs...))
+	warnInvalidForwardEnv(cobraOutErr(), invalidEnv)
+	approvedEnv := promptForwardEnvConsent(
+		primary, pendingEnv, !yes && isTerminal(os.Stdin),
+		func(k string) bool { v, ok := lookup(k); return ok && v != "" },
+		os.Stdin, cobraOut(),
+	)
+	hostEnv := resolveForwardEnv(
+		forwardEnvKeys(cfg.ForwardEnv, append(allowedEnv, approvedEnv...)), nil, lookup,
+	)
 	// Merge containerEnv into the per-exec env too — covers both stale
 	// containers and the case where Incus's environment.* propagation
 	// races a freshly-issued exec. Later configs override earlier ones,
@@ -423,7 +446,7 @@ func repoAddSetup(ctx context.Context, slug, primary string, aliases []string, s
 		return err
 	}
 
-	return commitRegistry(slug, primary, aliases, url, defaultBase, containerName, port, consent)
+	return commitRegistry(slug, primary, aliases, url, defaultBase, containerName, port, consent, approvedEnv)
 }
 
 // cloneRepo is the token-resolution + clone phase of repoAddSetup. It runs
@@ -624,7 +647,10 @@ func repoAddResolveConfigs(containerName, containerConfig string, yes bool) ([]*
 // the unlocked setup), writes the repo + default-branch rows atomically,
 // regenerates the ssh-config, and prints the ready line. Split out so
 // repoAddSetup reads as a sequence of named phases rather than one long body.
-func commitRegistry(slug, primary string, aliases []string, url, defaultBase, containerName string, port int, consent map[string]bool) error {
+//
+// approvedEnv is the forward_env names approved at the consent prompt; it
+// becomes the repo row's ApprovedForwardEnv (sorted).
+func commitRegistry(slug, primary string, aliases []string, url, defaultBase, containerName string, port int, consent map[string]bool, approvedEnv []string) error {
 	// Acquire lock for final registry write — both repo + default branch
 	// rows go in atomically so a partial state is impossible.
 	release, err := lockfile.Acquire()
@@ -659,6 +685,10 @@ func commitRegistry(slug, primary string, aliases []string, url, defaultBase, co
 	}
 	if len(consent) > 0 {
 		repoRow.FeatureConsent = consent
+	}
+	if len(approvedEnv) > 0 {
+		repoRow.ApprovedForwardEnv = append([]string(nil), approvedEnv...)
+		sort.Strings(repoRow.ApprovedForwardEnv)
 	}
 	reg.Repos = append(reg.Repos, repoRow)
 	reg.Branches = append(reg.Branches, registry.Branch{
@@ -786,25 +816,6 @@ func remoteUserWarning(cfg *ahjocontainer.Config) string {
 		return ""
 	}
 	return cfg.CheckRemoteUser("ubuntu")
-}
-
-// resolveHostEnv looks each key up in the host environment and returns the
-// keys that have a value set. Empty / missing keys are dropped — passing
-// `--env KEY=` to incus exec would clobber an inherited value with empty.
-func resolveHostEnv(keys []string) map[string]string {
-	if len(keys) == 0 {
-		return nil
-	}
-	out := make(map[string]string, len(keys))
-	for _, k := range keys {
-		if k == "" {
-			continue
-		}
-		if v, ok := os.LookupEnv(k); ok {
-			out[k] = v
-		}
-	}
-	return out
 }
 
 // pushClaudeConfig copies the host's ~/.claude/* and ~/.claude.json into

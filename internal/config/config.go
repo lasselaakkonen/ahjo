@@ -23,7 +23,7 @@ const Version = 1
 // see at a glance which side a field applies to.
 type Config struct {
 	Version    int              `toml:"version"`
-	ForwardEnv []string         `toml:"forward_env"` // unioned with binary defaults plus per-repo customizations.ahjo.forward_env
+	ForwardEnv []string         `toml:"forward_env"` // unioned with binary defaults plus the per-repo customizations.ahjo.forward_env names approved in the registry
 	PortRange  Range            `toml:"port_range"`
 	AutoExpose AutoExposeConfig `toml:"auto_expose"`
 	// ForwardSSHAgent controls whether the host ssh-agent socket is proxied

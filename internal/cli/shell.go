@@ -57,10 +57,11 @@ func runShell(ctx context.Context, alias string, update, force bool) error {
 	if err != nil {
 		return err
 	}
-	env, err := branchEnv(containerName, dcConf)
+	env, skip, err := branchEnv(containerName, dcConf)
 	if err != nil {
 		fmt.Fprintf(cobraOutErr(), "warn: collect forward env: %v\n", err)
 	}
+	skip.report(cobraOutErr())
 	if err := runPostAttach(ctx, containerName, dcConf, env); err != nil {
 		return err
 	}
@@ -187,7 +188,8 @@ func prepareBranchContainer(ctx context.Context, alias string, update, force boo
 	if dcConf, err := loadDevcontainerSafe(containerName); err != nil {
 		return nil, "", err
 	} else if dcConf != nil {
-		env, _ := branchEnv(containerName, dcConf)
+		// skip is reported once by the attaching caller, not here.
+		env, _, _ := branchEnv(containerName, dcConf)
 		if err := ahjocontainer.RunLifecycle(
 			ctx, containerName, ahjocontainer.StagePostStart, dcConf.PostStartCommand,
 			1000, env, paths.RepoMountPath, cobraOut(),
@@ -268,56 +270,55 @@ func applyRawIdmap(containerName string) error {
 }
 
 // branchEnv builds the env map propagated into the container at attach time:
-// global cfg.ForwardEnv ∪ customizations.ahjo.forward_env from the parsed
-// ahjocontainer.json, resolved against the per-repo .env (highest precedence)
-// then the host's current environment. Keys that aren't set anywhere fall
-// through silently. dcConf may be nil when the repo has no
-// ahjocontainer.json; the global default still applies.
+// global cfg.ForwardEnv ∪ the customizations.ahjo.forward_env names from the
+// parsed ahjocontainer.json that are also in the repo's registry
+// ApprovedForwardEnv (see forwardenv.go — the in-container file can request
+// names but never grant them). Values resolve against the per-repo .env
+// (highest precedence), then tokenstore.Resolver (process env, then
+// ~/.ahjo/.env). Keys that aren't set anywhere fall through silently. dcConf
+// may be nil when the repo has no ahjocontainer.json; the global default
+// still applies.
+//
+// Requested names that are not approved (or not valid env names) are
+// returned in skip instead of being forwarded; branchEnv never prompts.
+// Callers that attach report skip once (skip.report); the postStart pass in
+// prepareBranchContainer ignores it so the hint isn't printed twice.
 //
 // Per-repo overrides come from ~/.ahjo-shared/repo-env/<slug>.env, populated
 // by `ahjo repo add` (PAT prompt) and `ahjo repo set-token`. The file lives
 // under the shared dir so it sits on the user's actual host (Mac home via
 // virtiofs, or Linux home on bare-metal) rather than inside the Lima VM disk.
-// The slug is resolved from containerName via the registry; if no row exists
-// (e.g. a brand-new container during `repo add`) only the process env is
-// consulted.
-func branchEnv(containerName string, dcConf *ahjocontainer.Config) (map[string]string, error) {
+// The repo is resolved from containerName via the registry; if no row exists
+// only the process env / ~/.ahjo/.env are consulted and the approved list is
+// empty.
+func branchEnv(containerName string, dcConf *ahjocontainer.Config) (env map[string]string, skip forwardEnvSkip, err error) {
 	gcfg, err := config.Load()
 	if err != nil {
-		return nil, err
-	}
-	keys := append([]string(nil), gcfg.ForwardEnv...)
-	if dcConf != nil {
-		keys = append(keys, dcConf.Customizations.Ahjo.ForwardEnv...)
+		return nil, forwardEnvSkip{}, err
 	}
 
+	var approved []string
 	repoEnv := map[string]string{}
-	if slug := slugForContainer(containerName); slug != "" {
-		if err := tokenstore.LoadInto(paths.SlugEnvPath(slug), repoEnv); err != nil {
-			fmt.Fprintf(cobraOutErr(), "warn: load per-repo env for %s: %v\n", slug, err)
+	if repo := repoForContainer(containerName); repo != nil {
+		approved = repo.ApprovedForwardEnv
+		if len(repo.Aliases) > 0 {
+			skip.RepoAlias = repo.Aliases[0]
+		}
+		if err := tokenstore.LoadInto(paths.SlugEnvPath(repo.Name), repoEnv); err != nil {
+			fmt.Fprintf(cobraOutErr(), "warn: load per-repo env for %s: %v\n", repo.Name, err)
 		}
 	}
 
-	env := make(map[string]string, len(keys))
-	seen := make(map[string]struct{}, len(keys))
-	for _, k := range keys {
-		if k == "" {
-			continue
-		}
-		if _, dup := seen[k]; dup {
-			continue
-		}
-		seen[k] = struct{}{}
-		if v, ok := repoEnv[k]; ok {
-			env[k] = v
-			continue
-		}
-		if v, ok := os.LookupEnv(k); ok {
-			env[k] = v
-		}
+	allowed, pending, invalid := partitionForwardEnv(gcfg.ForwardEnv, approved, requestedForwardEnv(dcConf))
+	skip.Pending, skip.Invalid = pending, invalid
+
+	lookup, lerr := tokenstore.Resolver()
+	if lerr != nil {
+		fmt.Fprintf(cobraOutErr(), "warn: read %s: %v\n", tokenstore.Path(), lerr)
 	}
+	env = resolveForwardEnv(forwardEnvKeys(gcfg.ForwardEnv, allowed), repoEnv, lookup)
 	forwardTerminalEnv(env)
-	return env, nil
+	return env, skip, nil
 }
 
 // forwardTerminalEnv propagates the host terminal's identity into the attach
@@ -345,28 +346,34 @@ func forwardTerminalEnv(env map[string]string) {
 	}
 }
 
-// slugForContainer maps an Incus container name back to the repo slug that
-// owns it. The repo container is "ahjo-<slug>" and branch containers are
+// repoForContainer maps an Incus container name back to the registry repo
+// row that owns it (nil when there is none or the registry can't be read).
+// The repo container is "ahjo-<slug>" and branch containers are
 // "ahjo-<slug>-<branch-safe>"; both rows are queried via the registry rather
 // than parsed out of the name (branch slugs themselves contain hyphens, so
 // string-splitting is ambiguous).
-func slugForContainer(containerName string) string {
+func repoForContainer(containerName string) *registry.Repo {
 	if containerName == "" {
-		return ""
+		return nil
 	}
 	reg, err := registry.Load()
 	if err != nil {
-		return ""
+		return nil
 	}
+	return repoForContainerIn(reg, containerName)
+}
+
+// repoForContainerIn is repoForContainer against an already-loaded registry.
+func repoForContainerIn(reg *registry.Registry, containerName string) *registry.Repo {
 	for i := range reg.Repos {
 		if reg.Repos[i].BaseContainerName == containerName {
-			return reg.Repos[i].Name
+			return &reg.Repos[i]
 		}
 	}
 	for i := range reg.Branches {
 		if reg.Branches[i].IncusName == containerName {
-			return reg.Branches[i].Repo
+			return reg.FindRepo(reg.Branches[i].Repo)
 		}
 	}
-	return ""
+	return nil
 }
