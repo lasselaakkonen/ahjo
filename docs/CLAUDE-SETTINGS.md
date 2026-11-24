@@ -6,7 +6,7 @@ How ahjo wires Claude Code into containers, and why this exact approach.
 
 Each ahjo container runs Claude Code with two pieces of state:
 
-1. `CLAUDE_CODE_OAUTH_TOKEN` — a 1-year static bearer minted by `claude setup-token`, forwarded into every container via the `forward_env` knob (set per repo, applied with `incus exec --env`).
+1. `CLAUDE_CODE_OAUTH_TOKEN` — a 1-year static bearer minted by `claude setup-token`, forwarded into every container via the global `forward_env` knob in `~/.ahjo/config.toml` (applied with `incus exec --env`).
 2. `hasCompletedOnboarding: true` — written into the **host VM's** `~/.claude.json` once. `ahjo repo add` pushes that file into each container's `/home/ubuntu/.claude.json`, so containers inherit the marker.
 
 Both are set by `ahjo init`. No `claude /login`. No per-container JSON writes. No `oauthAccount` propagation.
@@ -82,7 +82,7 @@ ahjo repo add <repo>:
     on every shell/claude invocation
 
 ahjo shell <alias>  (or ahjo claude <alias>):
-  → tokenstore.Load() exports the token from ~/.ahjo/.env into the VM shell
+  → tokenstore reads the token from ~/.ahjo/.env on demand
   → incus exec --force-interactive forwards CLAUDE_CODE_OAUTH_TOKEN via
     --env, then drops to bash (or directly to `claude`) as the in-container
     `ubuntu` user — prompt, "Claude API" header, no friction
