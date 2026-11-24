@@ -11,6 +11,7 @@ import (
 
 	"github.com/lasselaakkonen/ahjo/internal/incus"
 	"github.com/lasselaakkonen/ahjo/internal/lockfile"
+	"github.com/lasselaakkonen/ahjo/internal/mirror"
 	"github.com/lasselaakkonen/ahjo/internal/ports"
 	"github.com/lasselaakkonen/ahjo/internal/registry"
 	"github.com/lasselaakkonen/ahjo/internal/tui/top"
@@ -199,20 +200,11 @@ func loadSnapshotInVM() (top.Snapshot, error) {
 		}
 	}
 
-	for i := range reg.Branches {
-		br := &reg.Branches[i]
-		name, err := resolveContainerName(br)
-		if err != nil {
-			continue
-		}
-		has, err := incus.HasDevice(name, "mirror")
-		if err != nil || !has {
-			continue
-		}
-		snap.MirrorSlug = br.Slug
-		alive, err := incus.SystemctlIsActive(name, "ahjo-mirror.service")
-		snap.MirrorAlive = err == nil && alive
-		break
+	// Mirror state is host-side now: the state file names the mirrored
+	// branch, the daemon's lock says whether it is being served.
+	if ms, err := mirror.LoadState(); err == nil && ms != nil {
+		snap.MirrorSlug = ms.Slug
+		snap.MirrorAlive = !ms.Stopping && mirror.DaemonAlive()
 	}
 	return snap, nil
 }

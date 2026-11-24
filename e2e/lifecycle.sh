@@ -257,10 +257,11 @@ step_expose() {
 	pass "ahjo expose --sync ran and preserved the manual expose device"
 }
 
-# 6. mirror on/off + live propagation. Disk device + ahjo-mirror unit, the host
-#    target populated by the daemon's bootstrap sync, then — the real test — a
-#    file modified INSIDE the container is observed landing on the host via the
-#    daemon's watch→push path. `mirror status` is grepped for the active mirror
+# 6. mirror on/off + live propagation. No disk device and no /mirror in the
+#    container (the host daemon is the only writer), the host target populated
+#    by the bootstrap sync, then — the real test — a file modified INSIDE the
+#    container is observed landing on the host via the watcher → host-daemon
+#    path, while a file written under /repo/.git never does. `mirror status` is grepped for the active mirror
 #    and `mirror logs` captured briefly. Finally `off --no-revert` must LEAVE the
 #    mirrored probe in place (a plain `off` would revert the target instead).
 step_mirror() {
@@ -271,9 +272,13 @@ step_mirror() {
 	fi
 	mkdir -p "$AHJO_E2E_MIRROR_DIR"
 	ahjo mirror "$BRANCH_ALIAS" --target "$AHJO_E2E_MIRROR_DIR"
-	assert_device_present "$BRANCH_CONTAINER" "mirror"
-	assert_unit_active "$BRANCH_CONTAINER" "ahjo-mirror.service"
-	# The daemon bootstrap-copies /repo on activation; poll the host target.
+	# The security property: nothing of the host is mounted into the container.
+	assert_device_absent "$BRANCH_CONTAINER" "mirror"
+	if incusq incus exec "$BRANCH_CONTAINER" -- test -e /mirror; then
+		fail "/mirror exists inside $BRANCH_CONTAINER (host target must not be mounted)"
+	fi
+	pass "no host directory is mounted into $BRANCH_CONTAINER"
+	# The watcher bootstrap-sends /repo on activation; poll the host target.
 	local i
 	for i in $(seq 1 30); do
 		if find "$AHJO_E2E_MIRROR_DIR" -mindepth 1 -not -path '*/.git/*' -type f 2>/dev/null | head -1 | grep -q .; then
@@ -296,7 +301,24 @@ step_mirror() {
 	# Live edit inside the container → must appear on the host target.
 	assert_mirror_propagates "$BRANCH_CONTAINER" "$AHJO_E2E_MIRROR_DIR"
 
-	# `mirror logs` tails `journalctl -u ahjo-mirror --follow` and replaces the
+	# .git is never mirrored: plant a file in the container's /repo/.git, then
+	# wait for a second live edit to land (proving the stream moved past it)
+	# and assert nothing reached the host target's .git.
+	local gitprobe="ahjo-e2e-gitprobe-$$"
+	incusq incus exec "$BRANCH_CONTAINER" --user 1000 -- sh -c "echo x > /repo/.git/$gitprobe" ||
+		fail "could not write the .git probe into $BRANCH_CONTAINER"
+	local keep_probe="${REPLY_MIRROR_PROBE:-}"
+	assert_mirror_propagates "$BRANCH_CONTAINER" "$AHJO_E2E_MIRROR_DIR"
+	incusq incus exec "$BRANCH_CONTAINER" --user 1000 -- rm -f "/repo/$REPLY_MIRROR_PROBE" "/repo/.git/$gitprobe" 2>/dev/null || true
+	rm -f "$AHJO_E2E_MIRROR_DIR/$REPLY_MIRROR_PROBE"
+	REPLY_MIRROR_PROBE="$keep_probe"
+	# The target started empty, so any .git there came through the mirror.
+	if [ -e "$AHJO_E2E_MIRROR_DIR/.git" ]; then
+		fail "the container's /repo/.git was mirrored into the host target" "$(ls -la "$AHJO_E2E_MIRROR_DIR/.git" 2>&1)"
+	fi
+	pass "files under /repo/.git are not mirrored"
+
+	# `mirror logs` tails the host daemon's log (`tail -F`) and replaces the
 	# process, so capture a short window in the BACKGROUND rather than attaching —
 	# attaching would need an operator Ctrl-C, which would also signal this
 	# script. Best-effort: a quiet daemon may emit little, so thin/empty output
@@ -308,8 +330,8 @@ step_mirror() {
 	sleep 3
 	kill -TERM "$lpid" 2>/dev/null || true
 	wait "$lpid" 2>/dev/null || true
-	if grep -qiE 'ahjo-mirror|mirror|systemd|journal' "$logf"; then
-		pass "ahjo mirror logs streamed the ahjo-mirror journal"
+	if grep -qiE 'daemon started|watcher|bootstrap|cp "' "$logf"; then
+		pass "ahjo mirror logs streamed the mirror daemon log"
 	else
 		warn "ahjo mirror logs produced no recognizable output (daemon may be quiet)"
 	fi

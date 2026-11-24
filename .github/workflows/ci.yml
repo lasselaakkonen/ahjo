@@ -16,7 +16,7 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      # Materialize the embedded ahjo-mirror daemon binaries before vet/test.
+      # Materialize the embedded ahjo-mirror watcher binaries before vet/test.
       # They're gitignored (Go's per-build BuildID churns the bytes), so the
       # tree starts without them; `make generate-mirror` runs the same
       # `go generate` directives the host build does.

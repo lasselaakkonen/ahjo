@@ -48,6 +48,7 @@ These are the *intentional* leaks — every other path is closed.
 | SSH agent socket | Mac → VM → container | conditional — suppressed when an HTTPS+PAT origin covers the repo; **see "GitHub credentials" below** |
 | Per-repo GH PAT | Mac Keychain (or Linux disk) → VM → container | one `GH_TOKEN` per repo, injected on each relay; **see below** |
 | `/dev/loop-control` + `/dev/loop0..7` | host → container, read-write | opt-in per repo via `customizations.ahjo.nested_incus`; off by default. See **Elevated runtime: `nested_incus`** below. |
+| `ahjo mirror` file stream | container → VM → host directory | opt-in, while a mirror is on: file events and contents from `/repo`, written by a host-side daemon into the directory you named. Nothing is mounted into the container. See **Mirror** below. |
 | `security.nesting=true` (Incus config) | host kernel → container | opt-in: enabled automatically when the repo declares `ahjo/docker` in its Features, or when `customizations.ahjo.nested_incus` is set. Off by default. See **Elevated runtime: `security.nesting`** below. |
 
 Nothing else crosses — no `~/.ssh/`, no `~/.gitconfig`, no shell history, no `~/Library`.
@@ -116,6 +117,21 @@ This setting is read only from the global `~/.ahjo/config.toml`, deliberately no
 ### The Lima VM is not a boundary
 
 Under ahjo's threat model, in-container code is hostile and the Incus container boundary is the only boundary. The Lima VM is not a security boundary against that code: it holds the forwarded SSH-agent socket, per-repo tokens and `~/.ahjo` state, and a container escape lands there. The network policy above is defence in depth around the container boundary, not a replacement for it.
+
+## Mirror
+
+`ahjo mirror <alias> --target <dir>` copies changes from the container's `/repo` into a host directory, usually your real checkout. The container is the untrusted side of that copy, so it gets no access to the directory:
+
+- A watcher in the container (`ahjo-mirror watch /repo`, run as uid 1000 through `incus exec`) writes a framed stream of file events to its stdout. The container's user can kill, replace or impersonate it; nothing depends on it behaving.
+- The host daemon (`ahjo _mirror-daemon`) reads that stream and is the only writer. It opens the target as an `os.Root` and, for every item:
+  - refuses any path that is not a clean relative path, or that has a `.git` component — compared case-insensitively and ignoring the code points HFS+ ignores, since a Mac target folds both;
+  - never writes through a symlink: parent directories are checked component by component and a non-directory in the way is replaced;
+  - refuses symlinks that are absolute, climb out of the target, contain `..` after a name, or name `.git`;
+  - refuses to let `HEAD` sit next to `objects`, `refs` or `commondir` in any directory, because git accepts such a directory as a repository (no `.git` name needed) and would run its `config`;
+  - caps files at 512 MiB and strips setuid/setgid/sticky bits.
+- ahjo's own git calls on the target (the pre-mirror snapshot and the revert) run with `core.fsmonitor=false`, `core.hooksPath=/dev/null` and `safe.bareRepository=explicit`, and only treat the target as a repository when it has a real `.git`.
+
+What remains, by design: the mirrored files are container-authored. Anything that executes them on the host — a `package.json` script, a `Makefile`, an IDE task, a dev server reading an overwritten `.env` — runs code the container chose. Review before running. The cap is per file, so a container can still fill the disk with many files.
 
 ## Workspace UID mapping
 

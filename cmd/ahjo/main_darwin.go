@@ -133,9 +133,8 @@ func main() {
 		return
 	case "mirror":
 		// Run the "is the target dir clean?" check on Mac before relaying.
-		// The in-VM mirror has no equivalent cleanliness check (v3 lives off
-		// systemd + incus device state), and even if it did it would read
-		// through virtiofs and false-positive on file-mode/stat-cache deltas.
+		// The in-VM side reads the target through virtiofs, where a status
+		// check false-positives on file-mode/stat-cache deltas.
 		// Mac-side is the only place we can answer the question correctly;
 		// `--force` is a Mac-only override and is stripped before relay.
 		newArgs, err := preflightMirrorOnMac(args)
@@ -311,11 +310,10 @@ func hasFlag(args []string, flags ...string) bool {
 // in the target on Mac, where the user's view is authoritative. If the
 // target is dirty, it errors here so the user can commit/stash; `--force`
 // is the Mac-only override that bypasses the check. The in-VM mirror has
-// no `--force` flag (v3 has no in-VM cleanliness check to skip), so it's
-// always stripped before relay.
+// no `--force` flag, so it's always stripped before relay.
 //
 // Returns the (possibly-modified) args to relay. Forms that don't activate
-// (off, status, --daemon, no alias arg) are passed through unchanged.
+// (off, status, no alias arg) are passed through unchanged.
 func preflightMirrorOnMac(args []string) ([]string, error) {
 	// args[0] == "mirror". Inspect args[1:].
 	rest := args[1:]
@@ -327,8 +325,6 @@ func preflightMirrorOnMac(args []string) ([]string, error) {
 		a := rest[i]
 		switch {
 		case a == "off", a == "status":
-			return args, nil
-		case a == "--daemon":
 			return args, nil
 		case a == "--force":
 			force = true
@@ -365,7 +361,10 @@ func preflightMirrorOnMac(args []string) ([]string, error) {
 	if _, err := os.Stat(filepath.Join(target, ".git")); err != nil {
 		return stripped, nil
 	}
-	out, err := exec.Command("git", "-C", target, "status", "--porcelain").Output()
+	// The target receives container-authored files while mirrored; never let
+	// its config make this probe run a program (see git.HardenedConfigArgs).
+	gitArgs := append(git.HardenedConfigArgs(), "-C", target, "status", "--porcelain")
+	out, err := exec.Command("git", gitArgs...).Output()
 	if err != nil {
 		// git missing or broken: defer. Best-effort.
 		return stripped, nil

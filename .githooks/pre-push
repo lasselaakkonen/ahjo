@@ -21,7 +21,7 @@ step_fail() {
     exit 1
 }
 
-# 1. Materialize the gitignored ahjo-mirror daemon binaries that the host
+# 1. Materialize the gitignored ahjo-mirror watcher binaries that the host
 #    CLI embeds via FeatureFS. Incremental — re-runs `go generate` only
 #    when the binaries are older than their Go sources. Required so the
 #    race tests below compile against a complete embed.FS.

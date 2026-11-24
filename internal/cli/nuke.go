@@ -9,6 +9,7 @@ import (
 
 	"github.com/lasselaakkonen/ahjo/internal/incus"
 	"github.com/lasselaakkonen/ahjo/internal/lockfile"
+	"github.com/lasselaakkonen/ahjo/internal/mirror"
 	"github.com/lasselaakkonen/ahjo/internal/paths"
 	"github.com/lasselaakkonen/ahjo/internal/ports"
 	"github.com/lasselaakkonen/ahjo/internal/registry"
@@ -60,6 +61,17 @@ func runNuke(yes bool) error {
 		return err
 	}
 	defer release()
+
+	// Stop the host-side mirror daemon before its container disappears. No
+	// revert: nuke destroys state, it does not restore host directories.
+	if st, _ := mirror.LoadState(); st != nil {
+		st.Stopping = true
+		_ = mirror.SaveState(st)
+	}
+	if err := mirror.StopDaemon(mirrorStopTimeout); err != nil {
+		fmt.Fprintf(cobraOutErr(), "warn: stop mirror daemon: %v\n", err)
+	}
+	_ = mirror.ClearState()
 
 	for _, br := range reg.Branches {
 		name, err := resolveContainerName(&br)

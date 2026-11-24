@@ -13,6 +13,7 @@ func NewRoot(version string) *cobra.Command {
 		Version:       version,
 	}
 	root.SetVersionTemplate("{{.Version}}\n")
+	root.PersistentPreRun = mirrorPreRun
 	root.AddCommand(
 		newInitCmd(),
 		newUpdateCmd(),
@@ -25,6 +26,7 @@ func NewRoot(version string) *cobra.Command {
 		newExposeCmd(),
 		newForwardCmd(),
 		newMirrorCmd(),
+		newMirrorDaemonCmd(),
 		newLsCmd(),
 		newTopCmd(),
 		newTopStateCmd(),

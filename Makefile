@@ -25,7 +25,7 @@ VM_AHJO := /usr/local/bin/ahjo
 
 .PHONY: build dist clean print-version install-vm generate-mirror hooks
 
-# Build embedded ahjo-mirror daemon binaries via the same `go generate`
+# Build embedded ahjo-mirror watcher binaries via the same `go generate`
 # directives CI gates on. Order: generate first (produces the linux daemon
 # binaries embedded by the host CLI), then $(HOST_BUILD_DEPS) (which itself
 # embeds those daemon binaries via FeatureFS), then the host build.

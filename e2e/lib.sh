@@ -467,15 +467,6 @@ assert_tool_present() {
 	pass "tool $2 present in $1"
 }
 
-# assert_unit_active <container> <unit>: systemd reports the unit active.
-assert_unit_active() {
-	local out
-	out="$(cexec "$1" systemctl is-active "$2" 2>&1 || true)"
-	[ "$(printf '%s' "$out" | tr -d '[:space:]')" = active ] ||
-		fail "unit $2 on $1 is '$out', expected active" "$out"
-	pass "unit $2 active on $1"
-}
-
 # assert_port_answers <hostport>: a TCP connect to host 127.0.0.1:<port>
 # succeeds. Host-side (the loopback where `expose` publishes via Lima
 # auto-forward on macOS, or directly on Linux). Optional in the lifecycle —
@@ -507,12 +498,12 @@ assert_mirror_target_populated() {
 
 # assert_mirror_propagates <container> <hostdir>: write a unique probe file
 # INSIDE the container's /repo (as the uid-1000 owner, mimicking a real edit)
-# and assert the in-container ahjo-mirror daemon pushes it out to the host
+# and assert the watcher → host-daemon path writes it out to the host
 # target with identical content. This exercises the live watch→push path, not
 # just the activation-time bootstrap copy. Records the probe's basename in
 # REPLY_MIRROR_PROBE so a later `mirror off --no-revert` check can confirm the
-# file was kept. The host target is read directly (it's the disk device's source
-# on the host — Linux fs, or the Mac via virtiofs), like the bootstrap check.
+# file was kept. The host target is read directly (Linux fs, or the Mac via
+# virtiofs), like the bootstrap check.
 assert_mirror_propagates() {
 	local c="$1" dir="$2"
 	local probe="ahjo-e2e-mirror-probe-$$-${RANDOM}"
