@@ -54,7 +54,9 @@ Nothing else crosses — no `~/.ssh/`, no `~/.gitconfig`, no shell history, no `
 
 ## Network
 
-Containers sit on the Incus bridge `incusbr0`, which NATs out through the Lima VM (or the Linux host). Left alone, that bridge lets code in a container dial anything the VM can: the Mac's loopback services, the VM itself, your LAN, VPN peers, cloud metadata, and the other containers. `ahjo init` and `ahjo update` close this with two Incus settings, applied by one idempotent step. The mechanism relies on Incus bridge network ACLs and port isolation working as Incus documents them.
+Containers sit on the Incus bridge `incusbr0`, which NATs out through the Lima VM (or the Linux host). Left alone, that bridge lets code in a container dial anything the VM can: the Mac's loopback services, the VM itself, your LAN, VPN peers, cloud metadata, and the other containers. `ahjo init` and `ahjo update` close this with two Incus settings, applied by one idempotent step.
+
+The timing and exception behaviour described in this section (the ACL applying to running containers at once, Incus re-attaching `eth0`, established connections surviving, DNS and DHCP being accepted ahead of the ACL) is taken from Incus's documentation and source. It has not yet been confirmed on a live ahjo install.
 
 
 - **Egress ACL.** A network ACL named `ahjo-egress` is attached to `incusbr0` with a default egress action of `reject`. It allows only public IPv4 plus any CIDRs you opt in (below). `reject` rather than `drop`, so blocked connections fail immediately instead of hanging.
@@ -64,7 +66,7 @@ Containers sit on the Incus bridge `incusbr0`, which NATs out through the Lima V
 
 | Range | What it protects |
 | --- | --- |
-| `192.168.0.0/16` | The Lima VM and the Mac's loopback services, reached as `host.lima.internal` (192.168.5.2), both in Lima's user-mode network `192.168.5.0/24`; home and office LANs. The Mac as seen from the VM is not overridable by `allow_cidrs` |
+| `192.168.0.0/16` | The Lima VM and the Mac's loopback services, reached as `host.lima.internal` (192.168.5.2), both in Lima's user-mode network `192.168.5.0/24`; home and office LANs. The addresses at which the VM sees the Mac (`host.lima.internal` and the VM's default gateways, typically the vzNAT gateway 192.168.64.1) are not overridable by `allow_cidrs`; the Mac's own LAN address is not covered (see [What this does not solve](#what-this-does-not-solve)) |
 | `10.0.0.0/8` | The `incusbr0` gateway and subnet (`10.20.30.0/24` by default, with fallbacks chosen at init), and so anything listening on the gateway, such as sshd, and sibling containers; corporate LANs and VPNs. The `incusbr0` subnet is not overridable by `allow_cidrs` |
 | `172.16.0.0/12` | Private networks, including Docker bridge ranges on the host |
 | `100.64.0.0/10` | CGNAT and Tailscale |
@@ -79,10 +81,10 @@ IPv6 is not an exposure: the bridge has no IPv6 address and the ACL has no IPv6 
 ### What stays open
 
 - The public internet over IPv4, so `git`, package managers and `apt` keep working.
-- DNS and DHCP. Incus accepts TCP/UDP port 53 and DHCP to the host's addresses on the bridge ahead of the ACL, and an ACL cannot block that. Anything on the host listening on port 53 at the bridge address is reachable, not only Incus's dnsmasq.
+- DNS and DHCP. Incus accepts TCP/UDP port 53 and DHCP on the host from the bridge ahead of the ACL, and an ACL cannot block that. Anything on the host listening on port 53 is reachable from containers via the bridge, not only Incus's dnsmasq.
 - Every channel ahjo itself uses between host and container: sshd, `ahjo expose`, auto-expose, `ahjo forward`, the paste daemon and the SSH-agent socket. These are Incus proxy devices on `127.0.0.1`, relayed between namespaces rather than routed over the bridge, so the ACL does not touch them.
 
-To reach a service on the host from a container, use `ahjo forward`: direct connections to host addresses are blocked, and stay blocked even if a range containing them is opted in.
+To reach a service on the host from a container, use `ahjo forward`: direct connections to the host's own addresses, the `incusbr0` subnet and, on macOS, the addresses at which the VM sees the Mac are blocked, and stay blocked even if a range containing them is opted in. The Mac's own LAN address is the exception: it is blocked only while its range is not opted in.
 
 ### Opting in to private ranges
 
@@ -94,20 +96,20 @@ If containers need a private git host, an internal registry or something behind 
 allow_cidrs = ["10.1.0.0/16"]
 ```
 
-On macOS the firewall step runs inside the Lima VM and reads the VM user's `~/.ahjo/config.toml`, not the Mac-side file of the same name (the two are separate and not synced). Edit the one in the VM, for example with `limactl shell ahjo -- nano ~/.ahjo/config.toml`. `ahjo nuke` deletes the VM and with it this file, so re-add the setting after a rebuild.
+On macOS the firewall step runs inside the Lima VM and reads the VM user's `~/.ahjo/config.toml`, not the Mac-side file of the same name (the two are separate and not synced). Edit the one in the VM, for example with `limactl shell ahjo -- sh -c 'nano ~/.ahjo/config.toml'`. `ahjo nuke` deletes the VM and with it this file, so re-add the setting after a rebuild.
 
-Entries must be IPv4 and `/8` or longer. Run `ahjo update` to apply the change; no container restart is needed. Prefer a narrow prefix: an opt-in wins over the block list, so everything inside it becomes reachable from every container. The exception is the host itself: every IPv4 address on a host interface, the `incusbr0` subnet (the gateway and sibling containers) and, on macOS, the Mac as seen from the VM (`host.lima.internal`) stay blocked even inside an opted-in range. Use `ahjo forward` to reach a service on the host.
+Entries must be IPv4 and `/8` or longer. Run `ahjo update` to apply the change; no container restart is needed. Prefer a narrow prefix: an opt-in wins over the block list, so everything inside it becomes reachable from every container. The exception is the host itself: every IPv4 address on one of the host's interfaces (on macOS, the Lima VM), the `incusbr0` subnet (the gateway and sibling containers) and, on macOS, the addresses at which the VM sees the Mac (`host.lima.internal`, 192.168.5.2, and the VM's default gateways, typically the vzNAT gateway 192.168.64.1) stay blocked even inside an opted-in range. The Mac's own address on your LAN (for example 192.168.1.23) is not in that list, because the VM cannot know it. Prefer the narrowest prefix that covers what you need, and do not opt in the subnet your Mac itself is on unless you accept that containers can then reach Mac services listening on all interfaces at that address. Use `ahjo forward` to reach a service on the host.
 
 This setting is read only from the global `~/.ahjo/config.toml`, deliberately not from a repo's `devcontainer.json` (`customizations.ahjo`). That file is controlled by the repo, and the repo is the thing the container boundary is there to contain; if it could widen its own network access, the firewall would be a suggestion.
 
 ### What this does not solve
 
 - **Public internet egress stays open.** Code in a container can still send data to any public host. The firewall limits what it can reach, not what it can send out.
-- **DNS and DHCP** are accepted by Incus ahead of the ACL (see above), so port 53 on the bridge address stays reachable.
+- **DNS and DHCP** are accepted by Incus ahead of the ACL (see above), so port 53 and DHCP on the host stay reachable from containers via the bridge.
 - **Ports you open on purpose** with `ahjo forward`, and the paste daemon, are reachable from the container by design.
 - **The host-address block list is a snapshot** from the last `ahjo init` or `ahjo update`. An address the host gains later is not blocked until the next update.
-- **Existing installs and running containers.** Nothing changes until `ahjo update` has run. The firewall then applies to running containers right away. The first time it is applied, Incus may re-attach each running container's network interface (changing the port-isolation key does this), which drops open connections and may change the container's address, so run `ahjo update` when no container is mid-task and restart a container if it loses network. Connections already open when the ACL was first attached are not cut by it, because Incus accepts established connections first; restart containers after the first `ahjo update` if that matters. `ahjo doctor` warns when the step is missing.
-- **A Mac with a public or otherwise non-private IPv4 address** (some university and corporate networks). The host-address block list is read inside the VM and sees the VM's interfaces, not the Mac's, so that address is not blocked and Mac services bound to all interfaces are reachable at it. The same goes for LAN neighbours on non-private ranges.
+- **Existing installs and running containers.** Nothing changes until `ahjo update` has run. The firewall is then expected to apply to running containers right away. The first time it is applied, Incus may re-attach each running container's network interface (changing the port-isolation key does this), which can drop open connections and change the container's address, so run `ahjo update` when no container is mid-task and restart a container if it loses network. Connections already open when the ACL was first attached are expected to survive it, because Incus accepts established connections first; restart containers after the first `ahjo update` if that matters. `ahjo doctor` warns when the step is missing.
+- **A Mac with a public or otherwise non-private IPv4 address** (some university and corporate networks), **or a Mac LAN address inside an opted-in range**. The host-address block list is read inside the VM and sees the VM's interfaces, not the Mac's, so the Mac's own address is not blocked in either case and Mac services bound to all interfaces are reachable at it. The same goes for LAN neighbours on non-private ranges.
 - **A native Linux host with an existing Incus.** The step changes the shared `incusbr0` network and `default` profile, so it also applies to instances ahjo did not create.
 - **What `ahjo doctor` checks.** It checks the Incus configuration: ACL attached, default egress reject, port isolation key on the profile. It does not test packets, does not notice rules that are out of date with `allow_cidrs` until `ahjo update` runs, and does not see an instance that overrides `eth0` itself.
 

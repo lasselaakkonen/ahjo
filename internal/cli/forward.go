@@ -42,8 +42,11 @@ localhost:<port> inside the container, so code and configs that hardcode a
 loopback address work unmodified.
 
 This is the way to reach a service on the host from a container: host
-addresses (the host, the Mac and the incusbr0 subnet) are blocked, and stay
-blocked even if a range containing them is opted in with allow_cidrs.
+addresses (the host's own interfaces, the incusbr0 subnet and, on macOS, the
+addresses at which the VM sees the Mac) are blocked, and stay blocked even if a
+range containing them is opted in with allow_cidrs. The Mac's own LAN address
+is not covered: opting in the range it sits in makes Mac services listening on
+all interfaces reachable there.
 
 The host app must listen on 127.0.0.1 or 0.0.0.0. On macOS, Lima's user-mode
 network forwards the container's gateway to the Mac's loopback; an app bound to
