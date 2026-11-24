@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/url"
 	"os"
@@ -83,8 +84,10 @@ func wireBranchContainer(containerName, hostKeysDir string) error {
 	// without the proxy device: if shouldForwardAgent suppresses the agent,
 	// /tmp/ssh-agent.sock simply never appears, so SSH_AUTH_SOCK points at a
 	// non-existent socket and ssh/git behave as if no agent is configured —
-	// it does not leak the host agent. The proxy device (attachSSHAgent /
-	// RemoveDevice at the runtime sites) is the actual control point.
+	// it does not leak the host agent. The proxy device is the actual control
+	// point: every site that starts a container strips it first
+	// (stripSSHAgent), and applySSHAgentPolicy re-creates it post-start only
+	// when policy allows.
 	if os.Getenv("SSH_AUTH_SOCK") != "" {
 		if err := incus.ConfigSet(containerName, "environment.SSH_AUTH_SOCK", "/tmp/ssh-agent.sock"); err != nil {
 			return err
@@ -103,6 +106,80 @@ func attachSSHAgent(ctx context.Context, containerName string) error {
 		return nil
 	}
 	return incus.EnsureSSHAgentProxy(ctx, containerName, sock)
+}
+
+// sshAgentDevice is the Incus proxy device that exposes the host ssh-agent
+// inside a container as /tmp/ssh-agent.sock (see incus.EnsureSSHAgentProxy).
+const sshAgentDevice = "ssh-agent"
+
+// errAgentStrip marks a failure to remove the ssh-agent device. Callers that
+// treat a failed attach as a warning check it with errors.Is so a failed
+// strip still aborts: leaving the device in place would forward the agent
+// into a container policy says must not have it (fail closed).
+var errAgentStrip = errors.New("remove ssh-agent device")
+
+// stripSSHAgent removes the ssh-agent proxy device from containerName. Works
+// on running and stopped containers and is a no-op when the device is absent.
+// Every site that starts or restarts a container calls this first: a device
+// left in a stopped container's config is live from the moment the container
+// boots, before any post-start policy check could run. The stored device also
+// points at the SSH_AUTH_SOCK of whichever session added it, so it is always
+// re-created post-start anyway (applySSHAgentPolicy). Errors wrap errAgentStrip.
+func stripSSHAgent(containerName string) error {
+	if err := incus.RemoveDevice(containerName, sshAgentDevice); err != nil {
+		return fmt.Errorf("%w from %s: %w", errAgentStrip, containerName, err)
+	}
+	return nil
+}
+
+// applySSHAgentPolicy reconciles the ssh-agent device on a RUNNING container
+// with shouldForwardAgent: attach when the repo should get the agent, strip
+// otherwise. A strip failure wraps errAgentStrip and must be treated as fatal
+// by every caller; an attach failure keeps each site's own severity.
+func applySSHAgentPolicy(ctx context.Context, containerName string, repo *registry.Repo, cfg *config.Config) error {
+	if shouldForwardAgent(repo, repoHasToken(repo), cfg) {
+		if err := attachSSHAgent(ctx, containerName); err != nil {
+			return fmt.Errorf("attach ssh-agent: %w", err)
+		}
+		return nil
+	}
+	return stripSSHAgent(containerName)
+}
+
+// configGet is incus.ConfigGet, swappable in tests.
+var configGet = incus.ConfigGet
+
+// repoHasToken reports whether a GitHub PAT covers repo, for the ssh-agent
+// policy. True when any of:
+//
+//   - the registry records it (HasToken: set at repo add / set-token, or
+//     backfilled by syncRepoHasToken);
+//   - a token is visible to this invocation (repoToken: the Mac shim's
+//     injected GH_TOKEN, a global GH_TOKEN, or the Linux per-repo env file);
+//   - the repo's base container carries environment.GH_TOKEN, which
+//     installRepoToken sets at add / set-token time. This identifies PAT repos
+//     registered before HasToken existed without needing the Keychain. A repo
+//     can set that key itself through containerEnv, but only towards
+//     suppressing the agent on its own containers, which is the safe
+//     direction. Probe errors count as "no token".
+//
+// A nil repo has no token.
+func repoHasToken(repo *registry.Repo) bool {
+	if repo == nil {
+		return false
+	}
+	if repo.HasToken {
+		return true
+	}
+	if tok, found, err := repoToken(repo.Name); err == nil && found && tok != "" {
+		return true
+	}
+	if repo.BaseContainerName != "" {
+		if v, err := configGet(repo.BaseContainerName, "environment.GH_TOKEN"); err == nil && v != "" {
+			return true
+		}
+	}
+	return false
 }
 
 // isHTTPSRemote reports whether remote is an HTTPS GitHub origin — the only

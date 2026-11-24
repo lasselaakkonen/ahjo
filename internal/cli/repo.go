@@ -12,6 +12,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/lasselaakkonen/ahjo/internal/incus"
+	"github.com/lasselaakkonen/ahjo/internal/lockfile"
 	"github.com/lasselaakkonen/ahjo/internal/paths"
 	"github.com/lasselaakkonen/ahjo/internal/registry"
 	"github.com/lasselaakkonen/ahjo/internal/repoauth"
@@ -62,6 +63,53 @@ func repoToken(slug string) (string, bool, error) {
 		return "", false, nil
 	}
 	return tokenstore.GetAt(paths.SlugEnvPath(slug), tokenstore.GHTokenEnv)
+}
+
+// syncRepoHasToken backfills the registry's HasToken flag for repoName when a
+// PAT is visible now (repoHasToken) but the row predates the flag or was
+// added without one. Recording it lets the generated ssh-config, which only
+// trusts the registry, suppress ForwardAgent for the repo too.
+//
+// Best-effort: failures warn and return. Takes the lockfile itself, so it
+// must only be called from code that does not already hold it.
+func syncRepoHasToken(repoName string) {
+	reg, err := registry.Load()
+	if err != nil {
+		fmt.Fprintf(cobraOutErr(), "warn: record has_token for %s: %v\n", repoName, err)
+		return
+	}
+	repo := reg.FindRepo(repoName)
+	if repo == nil || repo.HasToken || !repoHasToken(repo) {
+		return
+	}
+	release, err := lockfile.Acquire()
+	if err != nil {
+		fmt.Fprintf(cobraOutErr(), "warn: record has_token for %s: %v\n", repoName, err)
+		return
+	}
+	defer release()
+	if err := setRepoHasTokenLocked(repoName); err != nil {
+		fmt.Fprintf(cobraOutErr(), "warn: record has_token for %s: %v\n", repoName, err)
+	}
+}
+
+// setRepoHasTokenLocked reloads the registry, sets HasToken on repoName,
+// saves, and regenerates the ssh-config. The caller holds the lockfile.
+// A repo that vanished since the caller looked is not an error.
+func setRepoHasTokenLocked(repoName string) error {
+	reg, err := registry.Load()
+	if err != nil {
+		return err
+	}
+	repo := reg.FindRepo(repoName)
+	if repo == nil || repo.HasToken {
+		return nil
+	}
+	repo.HasToken = true
+	if err := reg.Save(); err != nil {
+		return err
+	}
+	return regenerateSSHConfig(reg)
 }
 
 func newRepoCmd() *cobra.Command {

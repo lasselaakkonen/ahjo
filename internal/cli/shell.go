@@ -2,8 +2,10 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -142,6 +144,19 @@ func prepareBranchContainer(ctx context.Context, alias string, update, force boo
 		}
 	}
 
+	// A stopped container boots with whatever ssh-agent device its config
+	// holds, so strip it before Start; applySSHAgentPolicy below re-creates it
+	// only when policy allows. A running container is left alone here (other
+	// attached sessions may be using the agent) and reconciled below.
+	status, err := incus.ContainerStatus(containerName)
+	if err != nil {
+		return nil, "", err
+	}
+	if !strings.EqualFold(status, "Running") {
+		if err := stripSSHAgent(containerName); err != nil {
+			return nil, "", err
+		}
+	}
 	if err := startContainer(containerName); err != nil {
 		return nil, "", err
 	}
@@ -150,20 +165,21 @@ func prepareBranchContainer(ctx context.Context, alias string, update, force boo
 	}
 	// Refresh ssh-agent post-start: Lima's host SSH_AUTH_SOCK path changes
 	// per session, and bind=container proxy devices must be attached while
-	// the container is running. Skip (and strip any inherited device) when an
+	// the container is running. Skip (and strip any existing device) when an
 	// HTTPS+PAT origin already covers the repo's git — the agent would only add
-	// attack surface there. See shouldForwardAgent.
+	// attack surface there. See shouldForwardAgent. A failed attach only warns;
+	// a failed strip aborts so the session never starts with the agent.
 	repo := reg.FindRepo(br.Repo)
 	cfg, _ := config.Load()
-	tok, hasToken, _ := repoToken(br.Repo)
-	hasToken = hasToken && tok != ""
-	if shouldForwardAgent(repo, hasToken, cfg) {
-		if err := attachSSHAgent(ctx, containerName); err != nil {
-			fmt.Fprintf(cobraOutErr(), "warn: ssh-agent proxy: %v\n", err)
+	if err := applySSHAgentPolicy(ctx, containerName, repo, cfg); err != nil {
+		if errors.Is(err, errAgentStrip) {
+			return nil, "", err
 		}
-	} else if err := incus.RemoveDevice(containerName, "ssh-agent"); err != nil {
-		fmt.Fprintf(cobraOutErr(), "warn: remove ssh-agent device: %v\n", err)
+		fmt.Fprintf(cobraOutErr(), "warn: ssh-agent proxy: %v\n", err)
 	}
+	// Before this function's own lockfile.Acquire (auto-expose below), so the
+	// lock is free for the backfill.
+	syncRepoHasToken(br.Repo)
 	// Paste-shim wiring is also post-start (bind=container proxy + file
 	// push). Old branch containers self-heal on their next ahjo shell /
 	// ahjo claude run because both helpers are idempotent.
