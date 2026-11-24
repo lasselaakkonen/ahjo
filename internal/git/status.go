@@ -94,3 +94,17 @@ func (c StatusCounts) summary(includeAhead bool) string {
 	}
 	return strings.Join(parts, ", ")
 }
+
+// HardenedConfigArgs returns `-c` overrides for every git invocation ahjo
+// makes against a mirror target — a work tree that container-authored files
+// are written into. They switch off the config-driven ways a repository can
+// make git run a program (fsmonitor, hooks) and stop git from discovering a
+// bare-repository-shaped directory, which needs no `.git` name and would
+// bring its own config.
+func HardenedConfigArgs() []string {
+	return []string{
+		"-c", "core.fsmonitor=false",
+		"-c", "core.hooksPath=/dev/null",
+		"-c", "safe.bareRepository=explicit",
+	}
+}

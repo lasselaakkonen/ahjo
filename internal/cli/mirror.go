@@ -1,20 +1,28 @@
-// Package cli: ahjo mirror — activate a one-way push from /repo (in container)
-// to a Mac-side directory (mounted into the container at /mirror via a
-// writable Incus disk device on top of Lima virtiofs).
+// Package cli: ahjo mirror — a one-way push from /repo (in a branch
+// container) to a host directory.
 //
-// State lives in incus device config + systemctl unit state. There is no
-// separate state file — `incus config device list` and `systemctl is-active`
-// are the source of truth, eliminating the "state file says X but daemon
-// says Y" inconsistencies of v1.
+// Nothing of the host is mounted into the container. The host runs the
+// writer (`ahjo _mirror-daemon`, see internal/mirror/hostdaemon.go), which
+// spawns the in-container watcher through `incus exec` and applies its frame
+// stream to the target under the checks in internal/mirror/receiver.go. The
+// container is untrusted; the daemon is the only thing that writes the target.
+//
+// State: ~/.ahjo/mirror/state.json (written here, under the ahjo lockfile)
+// means "a mirror is configured"; the daemon's flock means "it is alive".
 package cli
 
 import (
+	"context"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
+	"syscall"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -28,15 +36,19 @@ import (
 )
 
 const (
-	mirrorDeviceName        = "mirror"
-	mirrorContainerPath     = "/mirror"
-	mirrorRepoPath          = "/repo"
-	mirrorUnit              = "ahjo-mirror.service"
-	mirrorUnitContainerPath = "/etc/systemd/system/ahjo-mirror.service"
-	mirrorBinPath           = "/usr/local/bin/ahjo-mirror"
-	mirrorDropInDir         = "/etc/systemd/system/ahjo-mirror.service.d"
-	mirrorDropInPath        = "/etc/systemd/system/ahjo-mirror.service.d/flags.conf"
-	mirrorNoSkiplistFlag    = "AHJO_MIRROR_NO_SKIPLIST=1"
+	mirrorRepoPath = "/repo"
+	mirrorBinPath  = "/usr/local/bin/ahjo-mirror"
+	mirrorBinName  = "ahjo-mirror"
+
+	// Legacy (pre-host-writer) mirror: a writable disk device bind-mounting
+	// the host target at /mirror plus an in-container systemd unit. These
+	// names exist only so removeLegacyMirror can tear that setup down.
+	legacyMirrorDeviceName = "mirror"
+	legacyMirrorUnit       = "ahjo-mirror.service"
+	legacyMirrorUnitPath   = "/etc/systemd/system/ahjo-mirror.service"
+	legacyMirrorDropInDir  = "/etc/systemd/system/ahjo-mirror.service.d"
+
+	mirrorStopTimeout = 10 * time.Second
 )
 
 func newMirrorCmd() *cobra.Command {
@@ -46,30 +58,39 @@ func newMirrorCmd() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "mirror [<alias> | off | revert <target> | status | logs <alias>]",
-		Short: "Mirror /repo to a Mac path via the in-container ahjo-mirror daemon",
+		Short: "Mirror /repo to a host path (host-side writer, in-container watcher)",
 		Long: `Activate a one-way push from /repo (inside the branch container) to a
-Mac-side directory you choose with --target. The mirror runs as a systemd
-unit inside the container; bootstrap and live event handling share a single
-git-faithful gitignore matcher (go-git), so .gitignore'd files never reach
-the Mac.
+host directory you choose with --target. A watcher inside the container
+reports changes; a host-side daemon is the only thing that writes the target.
+No host directory is mounted into the container, so the container can neither
+read the target nor write anything the daemon does not accept. Bootstrap and
+live event handling share a single git-faithful gitignore matcher (go-git), so
+.gitignore'd files never reach the host.
 
   ahjo mirror <alias> --target /Users/me/mirrors/foo
                                                 — start; --target sticky per-repo
   ahjo mirror <alias> --no-skiplist             — also mirror node_modules etc
-  ahjo mirror off                               — stop the active mirror and revert the Mac target to its pre-mirror state
+  ahjo mirror off                               — stop the active mirror and revert the target to its pre-mirror state
   ahjo mirror off --no-revert                   — stop but leave the mirrored files in place
   ahjo mirror revert <target>                   — restore a target from its kept snapshot (no container needed)
-  ahjo mirror status                            — list mirrors across the registry
-  ahjo mirror logs <alias>                      — tail the daemon's journal
+  ahjo mirror status                            — show the configured mirror
+  ahjo mirror logs <alias>                      — tail the host daemon's log
 
-Mirror is one-way: container → Mac. Mac-side edits to mirrored files are
-clobbered on the next event. .git/ is never propagated. When the target is a
-git work tree (or empty), 'mirror off' reverts it to its exact pre-mirror state
-by default (pass --no-revert to keep the files): tracked files restored,
-mirror-added files removed, and gitignored files like .env kept. Files added
-under --no-skiplist (e.g. node_modules) are not garbage-collected by the revert.
-Activating a mirror while another container holds it takes the device over —
-the old mirror is stopped and reverted first.`,
+Mirror is one-way: container → host. Host-side edits to mirrored files are
+clobbered on the next event. Deletions are not replicated. A path with a .git
+component is never written (not even with --no-skiplist), nor is anything that
+would make a directory look like a git repository; symlinks that leave the
+target are refused, and files over 512 MiB are skipped.
+
+The mirrored files are authored inside the container: review them before
+running them on the host.
+
+When the target is a git work tree (or empty), 'mirror off' reverts it to its
+exact pre-mirror state by default (pass --no-revert to keep the files): tracked
+files restored, mirror-added files removed, and gitignored files like .env
+kept. Files added under --no-skiplist (e.g. node_modules) are not
+garbage-collected by the revert. Activating a mirror while another one is
+configured takes over — the old mirror is stopped and reverted first.`,
 		Args: cobra.ArbitraryArgs,
 		RunE: func(c *cobra.Command, args []string) error {
 			ver := c.Root().Version
@@ -102,15 +123,247 @@ the old mirror is stopped and reverted first.`,
 			}
 		},
 	}
-	cmd.Flags().StringVar(&target, "target", "", "Mac path to mirror into (sticky per-repo after first activation)")
-	cmd.Flags().BoolVar(&noSkiplist, "no-skiplist", false, "skip the static skiplist (still honors .gitignore)")
-	cmd.Flags().BoolVar(&noRevert, "no-revert", false, "with off: leave the mirrored files in place instead of reverting the Mac target to its pre-mirror state")
+	cmd.Flags().StringVar(&target, "target", "", "host path to mirror into (sticky per-repo after first activation)")
+	cmd.Flags().BoolVar(&noSkiplist, "no-skiplist", false, "skip the static skiplist (still honors .gitignore; .git is never mirrored)")
+	cmd.Flags().BoolVar(&noRevert, "no-revert", false, "with off: leave the mirrored files in place instead of reverting the target to its pre-mirror state")
 	return cmd
 }
 
-// runMirrorOn implements the v3 activation flow. Wrapped in lockfile.Acquire
-// so two concurrent `ahjo mirror …` invocations don't race on incus device
-// config or systemd state.
+// newMirrorDaemonCmd is the hidden host-side writer. `ahjo mirror <alias>`
+// spawns it detached; it serves the mirror described by the state file until
+// that state is cleared, tombstoned or replaced.
+func newMirrorDaemonCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:    mirror.DaemonCommandName,
+		Hidden: true,
+		Args:   cobra.NoArgs,
+		RunE: func(c *cobra.Command, _ []string) error {
+			version := c.Root().Version
+			logger, err := mirror.OpenFileLogger(paths.MirrorLogPath())
+			if err != nil {
+				return err
+			}
+			defer func() { _ = logger.Close() }()
+			ctx, cancel := mirror.InstallSignalHandler()
+			defer cancel()
+			return mirror.RunDaemon(ctx, mirror.DaemonOptions{
+				Spawn:           mirrorSpawnFunc(version),
+				Version:         version,
+				Logf:            logger.Logf,
+				ContainerExists: incus.ContainerExists,
+			})
+		},
+	}
+}
+
+// mirrorSpawnFunc starts the in-container watcher for the daemon. It
+// reconciles the watcher binary before every start, so a container whose
+// binary is stale (or, with forcePush, suspect) gets the embedded one.
+func mirrorSpawnFunc(version string) mirror.SpawnFunc {
+	return func(ctx context.Context, st *mirror.State, forcePush bool) (*mirror.Session, error) {
+		status, err := incus.ContainerStatus(st.Container)
+		if err != nil {
+			return nil, err
+		}
+		if !strings.EqualFold(status, "Running") {
+			return nil, fmt.Errorf("container %s is %q", st.Container, status)
+		}
+		if err := reconcileWatcherBinary(st.Container, version, forcePush); err != nil {
+			return nil, err
+		}
+		argv := []string{mirrorBinPath, "watch"}
+		if st.NoSkiplist {
+			argv = append(argv, "--no-skiplist")
+		}
+		argv = append(argv, mirrorRepoPath)
+
+		sctx, cancel := context.WithCancel(ctx)
+		cmd := incus.ExecStreamCommand(sctx, st.Container, 1000, argv...)
+		stdout, err := cmd.StdoutPipe()
+		if err != nil {
+			cancel()
+			return nil, err
+		}
+		stderr, err := cmd.StderrPipe()
+		if err != nil {
+			cancel()
+			return nil, err
+		}
+		if err := cmd.Start(); err != nil {
+			cancel()
+			return nil, fmt.Errorf("incus exec %s: %w", st.Container, err)
+		}
+		var once sync.Once
+		return &mirror.Session{
+			Stdout: stdout,
+			Stderr: stderr,
+			Stop: func() {
+				once.Do(func() {
+					cancel() // kills the incus client; the watcher exits on its next write
+					_ = cmd.Wait()
+				})
+			},
+		}, nil
+	}
+}
+
+// spawnMirrorDaemon starts the host daemon detached (own session, no stdio),
+// mirroring spawnRefreshBase. The environment is scrubbed: the Mac relay puts
+// tokens such as GH_TOKEN into the CLI's env, and a long-lived process that
+// handles container-supplied data must not carry them.
+func spawnMirrorDaemon() error {
+	exe, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("resolve ahjo binary: %w", err)
+	}
+	cmd := exec.Command(exe, mirror.DaemonCommandName)
+	for _, kv := range os.Environ() {
+		k, _, _ := strings.Cut(kv, "=")
+		switch {
+		case k == "HOME", k == "PATH", k == "USER", k == "LOGNAME", k == "LANG",
+			strings.HasPrefix(k, "XDG_"), strings.HasPrefix(k, "INCUS_"):
+			cmd.Env = append(cmd.Env, kv)
+		}
+	}
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("spawn mirror daemon: %w", err)
+	}
+	return cmd.Process.Release()
+}
+
+// mirrorPreRun is the root PersistentPreRun hook. On the first ahjo command
+// after an upgrade it removes mirrors of the old bind-mount design; on every
+// command it revives the host daemon when a mirror is configured but the
+// daemon is gone (VM/host reboot, crash) or runs an older ahjo version.
+// Best-effort and quiet: it must never fail or slow the user's command.
+func mirrorPreRun(c *cobra.Command, _ []string) {
+	if runtime.GOOS != "linux" {
+		return // the CLI proper only runs on Linux (in the VM or bare-metal)
+	}
+	top := c
+	for top.HasParent() && top.Parent().HasParent() {
+		top = top.Parent()
+	}
+	switch top.Name() {
+	case "mirror", mirror.DaemonCommandName, "nuke", "help", "completion", "__complete":
+		return
+	}
+	if top.Hidden {
+		// Machine-read RPCs (the Mac TUI polls `top-state`): never print,
+		// never wait — only bring a dead daemon back.
+		reviveMirrorDaemon("")
+		return
+	}
+	sweepLegacyMirrors()
+	reviveMirrorDaemon(c.Root().Version)
+}
+
+// reviveMirrorDaemon needs no ahjo lock: the Stopping tombstone and the
+// daemon's own state re-checks make a concurrent stop safe. With a non-empty
+// version it also restarts a daemon left over from an older ahjo binary.
+func reviveMirrorDaemon(version string) {
+	st, err := mirror.LoadState()
+	if err != nil || st == nil || st.Stopping {
+		return
+	}
+	if mirror.DaemonAlive() {
+		status := mirror.LoadStatus()
+		if version == "" || status == nil || status.Version == version {
+			return
+		}
+		// The ahjo binary was replaced; the running daemon still carries the
+		// old validation code.
+		if err := mirror.StopDaemon(mirrorStopTimeout); err != nil {
+			return
+		}
+	}
+	_ = spawnMirrorDaemon()
+}
+
+// sweepLegacyMirrors runs once per install (marker file): an upgraded host
+// can still have an old mirror running with its writable /mirror mount while
+// every status surface of this version reports "inactive".
+func sweepLegacyMirrors() {
+	if _, err := os.Stat(paths.MirrorLegacySweptPath()); err == nil {
+		return
+	}
+	release, err := lockfile.AcquireWithTimeout(2 * time.Second)
+	if err != nil {
+		return
+	}
+	defer release()
+	reg, err := registry.Load()
+	if err != nil {
+		return
+	}
+	clean := true
+	for i := range reg.Branches {
+		if _, err := removeLegacyMirror(reg, &reg.Branches[i]); err != nil {
+			clean = false
+		}
+	}
+	if clean {
+		if err := os.MkdirAll(paths.MirrorRunDir(), 0o755); err == nil {
+			_ = os.WriteFile(paths.MirrorLegacySweptPath(), nil, 0o600)
+		}
+	}
+}
+
+// removeLegacyMirror tears down a pre-host-writer mirror on branch b: stop
+// and delete the in-container unit, remove the writable disk device, and
+// revert the host target the way `mirror off` used to. A container that no
+// longer exists counts as clean.
+func removeLegacyMirror(reg *registry.Registry, b *registry.Branch) (removed bool, err error) {
+	name := b.IncusName
+	if name == "" {
+		return false, nil
+	}
+	has, err := incus.HasDevice(name, legacyMirrorDeviceName)
+	if err != nil {
+		if exists, eerr := incus.ContainerExists(name); eerr == nil && !exists {
+			return false, nil
+		}
+		return false, err
+	}
+	if !has {
+		return false, nil
+	}
+	out := cobraOutErr() // stderr: this can run ahead of any command
+	fmt.Fprintf(out, "→ removing legacy bind-mount mirror on %s\n", name)
+	if status, _ := incus.ContainerStatus(name); strings.EqualFold(status, "Running") {
+		if err := incus.SystemctlDisableNow(name, legacyMirrorUnit); err != nil {
+			fmt.Fprintf(cobraOutErr(), "warn: disable %s on %s: %v\n", legacyMirrorUnit, name, err)
+		}
+		for attempt := 0; attempt < 50; attempt++ {
+			if active, err := incus.SystemctlIsActive(name, legacyMirrorUnit); err != nil || !active {
+				break
+			}
+			time.Sleep(200 * time.Millisecond)
+		}
+		_, _ = quietContainerExec(name, "rm", "-rf", legacyMirrorUnitPath, legacyMirrorDropInDir)
+		_, _ = quietContainerExec(name, "systemctl", "daemon-reload")
+	}
+	if err := incus.RemoveDevice(name, legacyMirrorDeviceName); err != nil {
+		return false, err
+	}
+	if repo := reg.FindRepo(b.Repo); repo != nil && repo.MacMirrorTarget != "" {
+		target := paths.Expand(repo.MacMirrorTarget)
+		if mirror.RevertPossible(target, b.Slug) {
+			if err := mirror.Revert(target, b.Slug); err != nil {
+				fmt.Fprintf(cobraOutErr(), "warn: revert %s: %v\n", target, err)
+			} else {
+				fmt.Fprintf(out, "mirror: reverted %s to its pre-mirror state\n", target)
+			}
+		}
+	}
+	fmt.Fprintf(out, "mirror: removed the old bind-mount mirror on %s (upgrade); run `ahjo mirror %s` to resume.\n", name, primaryAlias(b))
+	fmt.Fprintf(out, "  note: a process inside %s that still holds a file open under /mirror may keep it until the container restarts.\n", name)
+	return true, nil
+}
+
+// runMirrorOn activates a mirror. Wrapped in lockfile.Acquire so two
+// concurrent `ahjo mirror …` invocations don't race on the state file.
 func runMirrorOn(alias, targetFlag string, noSkiplist bool, version string) error {
 	release, err := lockfile.Acquire()
 	if err != nil {
@@ -149,12 +402,13 @@ func runMirrorOn(alias, targetFlag string, noSkiplist bool, version string) erro
 	if !filepath.IsAbs(targetPath) {
 		return fmt.Errorf("--target must be absolute (got %q)", targetPath)
 	}
+	targetPath = filepath.Clean(targetPath)
 	if err := validateMirrorTarget(targetPath); err != nil {
-		return err
+		return fmt.Errorf("%w (pass a different --target)", err)
 	}
 
 	// Refuse if the container is stopped — activation must not become a
-	// hidden way to start containers (memory: project_ahjo_mirror_lifecycle_coupling.md).
+	// hidden way to start containers.
 	status, err := incus.ContainerStatus(containerName)
 	if err != nil {
 		return err
@@ -163,64 +417,75 @@ func runMirrorOn(alias, targetFlag string, noSkiplist bool, version string) erro
 		return fmt.Errorf("container %s is %q; run `ahjo shell %s` first", containerName, status, alias)
 	}
 
-	// Single-active mirror: if any OTHER container holds the device, take it
-	// over rather than refusing — stop+revert that mirror, then activate here.
-	// (Re-running on the same container is skipped, so it stays an idempotent
-	// reconfigure.) This is what lets the TUI switch the mirror from one
-	// container to another in a single gesture: the activation transparently
-	// runs off→on.
+	// Upgrade path: no container may keep a writable host mount.
 	for i := range reg.Branches {
-		b := &reg.Branches[i]
-		if b.IncusName == "" || b.IncusName == containerName {
-			continue
+		if _, err := removeLegacyMirror(reg, &reg.Branches[i]); err != nil {
+			return fmt.Errorf("remove legacy mirror on %s: %w", reg.Branches[i].IncusName, err)
 		}
-		has, err := incus.HasDevice(b.IncusName, mirrorDeviceName)
-		if err != nil || !has {
-			continue
-		}
-		if err := stopMirrorForBranch(reg, b, false); err != nil {
+	}
+
+	cur, err := mirror.LoadState()
+	if err != nil {
+		return err
+	}
+	reconfigure := cur != nil && cur.Container == containerName && cur.Target == targetPath
+
+	// Single active mirror: anything else that is configured is taken over —
+	// stopped and reverted — before this target is snapshotted. This is what
+	// lets the TUI switch the mirror between containers in one gesture.
+	if cur != nil && !reconfigure {
+		if _, err := stopActiveMirror(false); err != nil {
 			return err
 		}
 	}
 
 	// Snapshot the pre-mirror state of the host target so `mirror off` can
-	// restore it. Done before any container mutation, so a cancel (or an error)
-	// here leaves nothing observable changed. A cancel returns nil — the user
-	// declined, not a failure.
+	// restore it. A cancel (or an error) here leaves everything as it was —
+	// including, on a reconfigure, the mirror that is already running. A
+	// cancel returns nil: the user declined, not a failure.
 	if cancelled, err := captureMirrorSnapshot(targetPath, br.Slug); err != nil {
 		return err
 	} else if cancelled {
 		return nil
 	}
 
-	// Reconcile the daemon binary + unit. Stop the unit before pushing if
-	// it's running so we don't ambiguously replace text segments live.
-	if err := reconcileDaemonAssets(containerName, version); err != nil {
+	if err := reconcileWatcherBinary(containerName, version, false); err != nil {
 		return err
 	}
 
-	// Reconcile the --no-skiplist drop-in. Each ON call is the reconciliation
-	// point; OFF leaves the file alone (harmless when the unit is disabled).
-	if err := reconcileNoSkiplistDropIn(containerName, noSkiplist); err != nil {
-		return err
-	}
-
-	// mkdir -p the target dir as the user (we're running inside the VM as
-	// the user, so plain os.MkdirAll suffices — virtiofs writes through to
-	// the Mac with the user's uid).
+	// mkdir -p the target dir as the user (in the VM this writes through
+	// virtiofs to the Mac with the user's uid).
 	if err := os.MkdirAll(targetPath, 0o755); err != nil {
 		return fmt.Errorf("mkdir %s: %w", targetPath, err)
 	}
 
-	// Add the disk device. Idempotent (tolerates "already exists").
-	if err := incus.AddDiskDevice(containerName, mirrorDeviceName, targetPath, mirrorContainerPath, false); err != nil {
-		return err
+	if reconfigure {
+		// Same container, same target: restart the daemon with the new
+		// settings, without a revert. Done last, after everything that can
+		// fail, so an error above leaves the running mirror untouched rather
+		// than tombstoned.
+		cur.Stopping = true
+		if err := mirror.SaveState(cur); err != nil {
+			return err
+		}
+		if err := mirror.StopDaemon(mirrorStopTimeout); err != nil {
+			return err
+		}
 	}
 
-	if err := incus.SystemctlDaemonReload(containerName); err != nil {
-		return err
+	st := &mirror.State{
+		Session:    mirror.NewSessionID(),
+		Container:  containerName,
+		Slug:       br.Slug,
+		Alias:      alias,
+		Target:     targetPath,
+		NoSkiplist: noSkiplist,
+		StartedAt:  time.Now(),
 	}
-	if err := incus.SystemctlEnableNow(containerName, mirrorUnit); err != nil {
+	if err := mirror.SaveState(st); err != nil {
+		return fmt.Errorf("write mirror state: %w", err)
+	}
+	if err := spawnMirrorDaemon(); err != nil {
 		return err
 	}
 
@@ -234,6 +499,9 @@ func runMirrorOn(alias, targetFlag string, noSkiplist bool, version string) erro
 	}
 
 	fmt.Printf("mirror: %s → %s (container %s)\n", alias, targetPath, containerName)
+	if !waitMirrorStarted(st.Session, 15*time.Second) {
+		fmt.Fprintf(cobraOutErr(), "warn: the mirror daemon has not reported a running watcher yet; check `ahjo mirror logs %s`\n", alias)
+	}
 	fmt.Printf("  logs: ahjo mirror logs %s\n", alias)
 	fmt.Println("  note: host-side file watchers (TS server, ESLint, Vite HMR) may need polling mode — virtiofs FSEvents coverage is partial.")
 
@@ -246,6 +514,20 @@ func runMirrorOn(alias, targetFlag string, noSkiplist bool, version string) erro
 
 	refreshAhjoState(alias)
 	return nil
+}
+
+// waitMirrorStarted polls the daemon's status file until it reports a
+// connected watcher for this session.
+func waitMirrorStarted(session string, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if s := mirror.LoadStatus(); s != nil && s.Session == session &&
+			(s.Phase == mirror.PhaseBootstrapping || s.Phase == mirror.PhaseLive) {
+			return true
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	return false
 }
 
 // captureMirrorSnapshot snapshots the pre-mirror state of targetPath so a later
@@ -296,28 +578,21 @@ func runMirrorOff(noRevert bool) error {
 	}
 	defer release()
 
-	reg, err := registry.Load()
+	stopped := false
+	if reg, err := registry.Load(); err == nil {
+		for i := range reg.Branches {
+			removed, err := removeLegacyMirror(reg, &reg.Branches[i])
+			if err != nil {
+				fmt.Fprintf(cobraOutErr(), "warn: remove legacy mirror on %s: %v\n", reg.Branches[i].IncusName, err)
+			}
+			stopped = stopped || removed
+		}
+	}
+	active, err := stopActiveMirror(noRevert)
 	if err != nil {
 		return err
 	}
-	// Find the (one) container with a mirror device. Tolerate not-found
-	// across the registry — `mirror off` is idempotent.
-	var stopped bool
-	for i := range reg.Branches {
-		b := &reg.Branches[i]
-		if b.IncusName == "" {
-			continue
-		}
-		has, err := incus.HasDevice(b.IncusName, mirrorDeviceName)
-		if err != nil || !has {
-			continue
-		}
-		if err := stopMirrorForBranch(reg, b, noRevert); err != nil {
-			return err
-		}
-		stopped = true
-	}
-	if !stopped {
+	if !stopped && !active {
 		fmt.Println("mirror: inactive")
 		return nil
 	}
@@ -325,47 +600,53 @@ func runMirrorOff(noRevert bool) error {
 	return nil
 }
 
-// stopMirrorForBranch tears down the mirror on branch b (stop the daemon, remove
-// the device) and, unless noRevert, restores b's host target to its pre-mirror
-// state. Teardown runs before the revert so the restore acts on a quiescent
-// tree — once the disk device is gone, no in-container write can reach the host
-// target. Shared by `mirror off` and the takeover path in `mirror on`, so the
-// stop→revert ordering can't drift between them.
-func stopMirrorForBranch(reg *registry.Registry, b *registry.Branch, noRevert bool) error {
-	fmt.Printf("→ stopping mirror on %s\n", b.IncusName)
-
-	// Resolve the host target (stored already-expanded; Expand is idempotent
-	// on an absolute path).
-	targetPath := ""
-	if repo := reg.FindRepo(b.Repo); repo != nil {
-		targetPath = paths.Expand(repo.MacMirrorTarget)
+// stopActiveMirror stops the configured mirror (if any) and, unless noRevert,
+// restores its host target to the pre-mirror state. Callers hold the ahjo
+// lockfile.
+//
+// Order matters. The state is tombstoned first so no concurrent ahjo command
+// revives the daemon and a daemon that is just starting exits before writing;
+// only then is the daemon stopped, and only once its lock is free does the
+// revert run. The quiescence the revert needs is therefore purely host-side:
+// with the daemon gone nothing can write the target, whatever the container
+// does.
+func stopActiveMirror(noRevert bool) (stopped bool, err error) {
+	st, err := mirror.LoadState()
+	if err != nil {
+		return false, err
 	}
-
-	if err := teardownMirrorDevice(b.IncusName); err != nil {
-		return err
+	if st == nil {
+		return false, nil
 	}
-
-	if targetPath != "" && decideRevert(noRevert, targetPath, b.Slug) {
-		if err := mirror.Revert(targetPath, b.Slug); err != nil {
-			return fmt.Errorf("revert %s: %w", targetPath, err)
+	fmt.Printf("→ stopping mirror on %s\n", st.Container)
+	st.Stopping = true
+	if err := mirror.SaveState(st); err != nil {
+		return false, err
+	}
+	if err := mirror.StopDaemon(mirrorStopTimeout); err != nil {
+		return false, err
+	}
+	if err := mirror.ClearState(); err != nil {
+		return false, err
+	}
+	if st.Target != "" && decideRevert(noRevert, st.Target, st.Slug) {
+		if err := mirror.Revert(st.Target, st.Slug); err != nil {
+			return true, fmt.Errorf("revert %s: %w", st.Target, err)
 		}
-		fmt.Printf("mirror: reverted %s to its pre-mirror state\n", targetPath)
+		fmt.Printf("mirror: reverted %s to its pre-mirror state\n", st.Target)
 	}
-
-	alias := b.Slug
-	if len(b.Aliases) > 0 {
-		alias = b.Aliases[0]
+	if status, _ := incus.ContainerStatus(st.Container); strings.EqualFold(status, "Running") {
+		refreshAhjoStateByName(st.Container, st.Slug, st.Alias, "")
 	}
-	refreshAhjoStateByName(b.IncusName, b.Slug, alias, "")
-	return nil
+	return true, nil
 }
 
 // runMirrorRevert restores a host target from a kept pre-mirror snapshot when no
 // container/branch remains to drive `ahjo mirror off`. It works purely against
 // the target's own .git (where the snapshot refs live), so it stays usable after
-// the mirror container has been deleted. Refuses while a mirror is still live on
-// the target — that case must go through `ahjo mirror off` so the daemon stops
-// first and the restore runs on a quiescent tree.
+// the mirror container has been deleted. Refuses while a mirror is still
+// configured for the target — that case must go through `ahjo mirror off` so
+// the daemon stops first and the restore runs on a quiescent tree.
 func runMirrorRevert(target, slugArg string) error {
 	release, err := lockfile.Acquire()
 	if err != nil {
@@ -377,9 +658,12 @@ func runMirrorRevert(target, slugArg string) error {
 	if !filepath.IsAbs(target) {
 		return fmt.Errorf("target must be absolute (got %q)", target)
 	}
+	target = filepath.Clean(target)
 
-	if name := liveMirrorContainerForTarget(target); name != "" {
-		return fmt.Errorf("mirror still active on %s for %s; run `ahjo mirror off` instead", name, target)
+	if st, err := mirror.LoadState(); err != nil {
+		return err
+	} else if st != nil && sameMirrorTarget(st.Target, target) {
+		return fmt.Errorf("mirror still configured on %s for %s; run `ahjo mirror off` instead", st.Container, target)
 	}
 
 	slug := strings.TrimSpace(slugArg)
@@ -411,63 +695,14 @@ func runMirrorRevert(target, slugArg string) error {
 	return nil
 }
 
-// liveMirrorContainerForTarget returns the container name of a branch that still
-// has a mirror device pointing at target, or "" when none — the guard that keeps
-// `mirror revert` from racing an active daemon.
-func liveMirrorContainerForTarget(target string) string {
-	reg, err := registry.Load()
-	if err != nil {
-		return ""
+// sameMirrorTarget compares two target paths, tolerating symlink differences.
+func sameMirrorTarget(a, b string) bool {
+	if filepath.Clean(a) == filepath.Clean(b) {
+		return true
 	}
-	for i := range reg.Branches {
-		b := &reg.Branches[i]
-		if b.IncusName == "" {
-			continue
-		}
-		repo := reg.FindRepo(b.Repo)
-		if repo == nil || paths.Expand(repo.MacMirrorTarget) != target {
-			continue
-		}
-		if has, err := incus.HasDevice(b.IncusName, mirrorDeviceName); err == nil && has {
-			return b.IncusName
-		}
-	}
-	return ""
-}
-
-// teardownMirrorDevice stops the mirror daemon (only meaningful when the
-// container is running — confirming it is fully inactive before continuing, so
-// a later revert never races a still-writing daemon) and removes the disk
-// device. Shared by runMirrorOff and the pre-destroy stopAndRemoveMirror hook
-// so the daemon-quiescence ordering can't drift between them.
-func teardownMirrorDevice(containerName string) error {
-	status, _ := incus.ContainerStatus(containerName)
-	if strings.EqualFold(status, "Running") {
-		if err := incus.SystemctlDisableNow(containerName, mirrorUnit); err != nil {
-			fmt.Fprintf(cobraOutErr(), "warn: disable %s on %s: %v\n", mirrorUnit, containerName, err)
-		}
-		if err := waitMirrorInactive(containerName); err != nil {
-			return err
-		}
-	}
-	return incus.RemoveDevice(containerName, mirrorDeviceName)
-}
-
-// waitMirrorInactive polls until the mirror unit reports inactive, so a revert
-// never races a still-writing daemon. Bounded at ~10s (the EnsureSSHAgentProxy
-// poll idiom); a daemon that won't stop aborts the revert with a clear error.
-func waitMirrorInactive(containerName string) error {
-	for attempt := 0; attempt < 50; attempt++ {
-		active, err := incus.SystemctlIsActive(containerName, mirrorUnit)
-		if err != nil {
-			return fmt.Errorf("check %s on %s: %w", mirrorUnit, containerName, err)
-		}
-		if !active {
-			return nil
-		}
-		time.Sleep(200 * time.Millisecond)
-	}
-	return fmt.Errorf("mirror daemon on %s still active after stop; aborting to avoid racing a live writer", containerName)
+	ra, err1 := filepath.EvalSymlinks(a)
+	rb, err2 := filepath.EvalSymlinks(b)
+	return err1 == nil && err2 == nil && ra == rb
 }
 
 // decideRevert resolves whether `mirror off` should restore the host target.
@@ -487,41 +722,34 @@ func decideRevert(noRevert bool, target, slug string) bool {
 }
 
 func runMirrorStatus() error {
-	reg, err := registry.Load()
+	st, err := mirror.LoadState()
 	if err != nil {
 		return err
 	}
-	var any bool
-	for i := range reg.Branches {
-		b := &reg.Branches[i]
-		if b.IncusName == "" {
-			continue
-		}
-		has, err := incus.HasDevice(b.IncusName, mirrorDeviceName)
-		if err != nil || !has {
-			continue
-		}
-		any = true
-		alias := primaryAlias(b)
-		active, _ := incus.SystemctlIsActive(b.IncusName, mirrorUnit)
-		state := "inactive"
-		if active {
-			state = "active"
-		}
-		repo := reg.FindRepo(b.Repo)
-		target := ""
-		if repo != nil {
-			target = repo.MacMirrorTarget
-		}
-		fmt.Printf("mirror: %s\n", state)
-		fmt.Printf("  alias:     %s\n", alias)
-		fmt.Printf("  container: %s\n", b.IncusName)
-		fmt.Printf("  source:    %s (in container)\n", mirrorRepoPath)
-		fmt.Printf("  target:    %s (Mac)\n", target)
+	if st == nil {
+		fmt.Println("mirror: inactive")
+		return nil
 	}
-	if !any {
+	alive := mirror.DaemonAlive() && !st.Stopping
+	if alive {
+		fmt.Println("mirror: active")
+	} else {
 		fmt.Println("mirror: inactive")
 	}
+	phase := "daemon not running (any ahjo command restarts it; `ahjo mirror off` removes it)"
+	if st.Stopping {
+		phase = "stopping (finish with `ahjo mirror off`)"
+	} else if alive {
+		phase = mirror.PhaseStarting
+		if s := mirror.LoadStatus(); s != nil && s.Session == st.Session {
+			phase = s.Phase
+		}
+	}
+	fmt.Printf("  phase:     %s\n", phase)
+	fmt.Printf("  alias:     %s\n", st.Alias)
+	fmt.Printf("  container: %s\n", st.Container)
+	fmt.Printf("  source:    %s (in container)\n", mirrorRepoPath)
+	fmt.Printf("  target:    %s (host)\n", st.Target)
 	return nil
 }
 
@@ -534,72 +762,130 @@ func runMirrorLogs(alias string) error {
 	if br == nil || br.IncusName == "" {
 		return fmt.Errorf("no branch %q (or it has no container)", alias)
 	}
-	// Pass through to journalctl -f. ExecAttach replaces our process so
-	// the user gets normal Ctrl-C semantics + full TTY.
-	return incus.ExecAttach(br.IncusName, 0, nil, "", "journalctl", "-u", mirrorUnit, "-n", "200", "--follow")
+	if st, _ := mirror.LoadState(); st != nil && st.Container != br.IncusName {
+		fmt.Fprintf(cobraOutErr(), "note: the configured mirror is on %s, not %s; showing the daemon log anyway\n", st.Container, br.IncusName)
+	}
+	logPath := paths.MirrorLogPath()
+	if _, err := os.Stat(logPath); err != nil {
+		return fmt.Errorf("no mirror log yet (%s); start one with `ahjo mirror %s`", logPath, alias)
+	}
+	// Replace our process so the user gets normal Ctrl-C semantics.
+	bin, err := exec.LookPath("tail")
+	if err != nil {
+		return fmt.Errorf("tail not on PATH: %w", err)
+	}
+	return syscall.Exec(bin, []string{"tail", "-n", "200", "-F", logPath}, os.Environ())
 }
 
-// validateMirrorTarget refuses paths that would point outside the Mac
-// virtiofs writable mount (when running under Lima) or that nest inside
-// ~/.ahjo/. Bare-metal Linux only enforces the second guard. Recovered
-// from commit 139d758.
-func validateMirrorTarget(p string) error {
-	cleaned := filepath.Clean(p) + string(filepath.Separator)
-	if strings.HasPrefix(cleaned, paths.AhjoDir()+string(filepath.Separator)) {
-		return fmt.Errorf("target %q must not live under %s", p, paths.AhjoDir())
+// resolveDeepest resolves symlinks in p, tolerating a tail that does not
+// exist yet (the target may be created by `mirror on`).
+func resolveDeepest(p string) (string, error) {
+	p = filepath.Clean(p)
+	cur, rest := p, ""
+	for {
+		resolved, err := filepath.EvalSymlinks(cur)
+		if err == nil {
+			return filepath.Join(resolved, rest), nil
+		}
+		if !errors.Is(err, fs.ErrNotExist) {
+			return "", err
+		}
+		parent := filepath.Dir(cur)
+		if parent == cur {
+			return p, nil
+		}
+		rest = filepath.Join(filepath.Base(cur), rest)
+		cur = parent
 	}
-	mac, ok := paths.MacHostHome()
-	if !ok {
-		return nil
-	}
-	if !strings.HasPrefix(cleaned, mac+string(filepath.Separator)) {
-		return fmt.Errorf("target %q is not under the Mac home (%s); mirror can only write into the writable virtiofs mount", p, mac)
-	}
-	return nil
 }
 
-// reconcileDaemonAssets stop-pushes the embedded ahjo-mirror binary AND the
-// systemd unit into the container when missing or stale. Stop-push-start
-// avoids any ambiguity about replacing a running binary's text segment;
-// cost is ~1s of mirror downtime during upgrades.
+// pathWithin reports whether p is base or lies below it, returning p's
+// slash-free relative components.
+func pathWithin(p, base string) (rel string, ok bool) {
+	rel, err := filepath.Rel(base, p)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", false
+	}
+	return rel, true
+}
+
+// validateMirrorTarget refuses targets the mirror must never write into. The
+// path is resolved first (symlinks followed, a not-yet-existing tail kept), so
+// a link cannot smuggle the mirror into a refused location. Rules:
+//   - not a home directory itself, nor an ancestor of one;
+//   - not inside a dot-directory directly under a home (~/.ssh, ~/.ahjo,
+//     ~/.claude, ~/.config, …) nor inside ~/Library;
+//   - under Lima: inside the Mac home (the writable virtiofs mount);
+//   - otherwise: inside $HOME.
 //
-// The stale-stamp reconcile pushes the binary; we also push the unit
-// because a container built before the v3 Feature change won't have the
-// unit at all, and "incus exec systemctl
-// enable" fails before the user has any chance to run `ahjo update`. The
-// unit is ~500 bytes; pushing it unconditionally is cheap and removes a
-// sharp edge in the migration story.
-func reconcileDaemonAssets(containerName, expectedVersion string) error {
-	// Probe the binary's version stamp via a quiet exec — the binary may be
-	// missing on first activation, so a failure here is expected and we
-	// don't want it polluting the user's terminal.
-	got, _ := quietContainerExec(containerName, mirrorBinPath, "-version")
-	binaryFresh := expectedVersion != "" && strings.TrimSpace(got) == expectedVersion
-
-	_, unitErr := quietContainerExec(containerName, "test", "-f", mirrorUnitContainerPath)
-	unitOK := unitErr == nil
-
-	if binaryFresh && unitOK {
-		return nil
+// `ahjo mirror revert` deliberately skips this — it must keep working for
+// snapshots taken under older rules.
+func validateMirrorTarget(p string) error {
+	resolved, err := resolveDeepest(p)
+	if err != nil {
+		return fmt.Errorf("resolve target %q: %w", p, err)
 	}
-
-	// Stop the unit first so we're not replacing a running binary's text
-	// segment. Tolerant of "not loaded" (when the unit doesn't yet exist).
-	if err := incus.SystemctlStop(containerName, mirrorUnit); err != nil {
-		return err
+	var homes []string
+	addHome := func(h string) {
+		if h == "" {
+			return
+		}
+		if r, err := filepath.EvalSymlinks(h); err == nil {
+			h = r
+		}
+		homes = append(homes, filepath.Clean(h))
 	}
-
-	if !binaryFresh {
-		if err := pushBinary(containerName); err != nil {
-			return err
+	if h, err := os.UserHomeDir(); err == nil {
+		addHome(h)
+	}
+	mac, underLima := paths.MacHostHome()
+	if underLima {
+		addHome(mac)
+	}
+	for _, h := range homes {
+		if _, ok := pathWithin(h, resolved); ok {
+			return fmt.Errorf("target %q is (or contains) the home directory %s; pick a project directory inside it", p, h)
+		}
+		rel, ok := pathWithin(resolved, h)
+		if !ok {
+			continue
+		}
+		first, _, _ := strings.Cut(rel, string(filepath.Separator))
+		if strings.HasPrefix(first, ".") || first == "Library" {
+			return fmt.Errorf("target %q resolves into %s, which holds credentials or configuration; mirror targets may not live under dot-directories of the home directory or ~/Library",
+				p, filepath.Join(h, first))
 		}
 	}
-	if !unitOK {
-		if err := pushUnit(containerName); err != nil {
-			return err
-		}
+	if len(homes) == 0 {
+		return fmt.Errorf("cannot determine the home directory to validate target %q", p)
+	}
+	required := homes[0]
+	what := "the home directory"
+	if underLima {
+		required = homes[len(homes)-1]
+		what = "the Mac home (the only host directory the VM can write)"
+	}
+	if _, ok := pathWithin(resolved, required); !ok {
+		return fmt.Errorf("target %q is not under %s (%s)", p, what, required)
 	}
 	return nil
+}
+
+// reconcileWatcherBinary pushes the embedded ahjo-mirror watcher into the
+// container when its version stamp differs from this CLI's (or force is set —
+// the daemon asks for that when a session never produced a valid hello, which
+// also covers dev builds whose stamps compare equal across incompatible
+// binaries).
+func reconcileWatcherBinary(containerName, expectedVersion string, force bool) error {
+	if !force {
+		// The binary may be missing on first activation, so a failure here is
+		// expected and must not pollute the user's terminal.
+		got, _ := quietContainerExec(containerName, mirrorBinPath, "-version")
+		if expectedVersion != "" && strings.TrimSpace(got) == expectedVersion {
+			return nil
+		}
+	}
+	return pushBinary(containerName)
 }
 
 func pushBinary(containerName string) error {
@@ -612,27 +898,16 @@ func pushBinary(containerName string) error {
 		return err
 	}
 	defer os.Remove(tmp)
+	// A watcher from an earlier session may still be running for a few
+	// seconds; stop it and unlink the old file so the push never writes into
+	// a running binary's text segment.
+	_, _ = quietContainerExec(containerName, "pkill", "-x", mirrorBinName)
+	_, _ = quietContainerExec(containerName, "rm", "-f", mirrorBinPath)
 	if _, err := incus.FilePush(containerName, tmp, mirrorBinPath); err != nil {
 		return fmt.Errorf("push %s: %w", mirrorBinPath, err)
 	}
-	if _, err := incus.Exec(containerName, "chmod", "0755", mirrorBinPath); err != nil {
-		return err
-	}
-	return nil
-}
-
-func pushUnit(containerName string) error {
-	body, err := ahjoruntime.FeatureFS.ReadFile("feature/ahjo-mirror.service")
-	if err != nil {
-		return fmt.Errorf("read embedded unit file: %w", err)
-	}
-	tmp, err := writeTempFile("ahjo-mirror-service-*", body, 0o644)
-	if err != nil {
-		return err
-	}
-	defer os.Remove(tmp)
-	if _, err := incus.FilePush(containerName, tmp, mirrorUnitContainerPath); err != nil {
-		return fmt.Errorf("push %s: %w", mirrorUnitContainerPath, err)
+	if _, err := quietContainerExec(containerName, "chmod", "0755", mirrorBinPath); err != nil {
+		return fmt.Errorf("chmod %s: %w", mirrorBinPath, err)
 	}
 	return nil
 }
@@ -658,7 +933,7 @@ func writeTempFile(pattern string, body []byte, mode os.FileMode) (string, error
 	return tmp.Name(), nil
 }
 
-// embeddedDaemonBinary returns the host-arch-matched daemon binary from
+// embeddedDaemonBinary returns the host-arch-matched watcher binary from
 // the FeatureFS embed (FeatureFS already includes both arches via the
 // existing `//go:embed all:feature` pattern). The host arch determines
 // the container arch (Lima VM matches host on macOS; bare-metal Linux is
@@ -672,37 +947,6 @@ func embeddedDaemonBinary() ([]byte, error) {
 	return b, nil
 }
 
-// reconcileNoSkiplistDropIn writes or removes the systemd drop-in based
-// on the flag. The drop-in form keeps the base unit untouched and reverts
-// cleanly on the next activation.
-func reconcileNoSkiplistDropIn(containerName string, noSkiplist bool) error {
-	if !noSkiplist {
-		// Remove (tolerant of not-found).
-		_, _ = incus.Exec(containerName, "rm", "-f", mirrorDropInPath)
-		return nil
-	}
-	if _, err := incus.Exec(containerName, "mkdir", "-p", mirrorDropInDir); err != nil {
-		return err
-	}
-	dropIn := "[Service]\nEnvironment=" + mirrorNoSkiplistFlag + "\n"
-	tmp, err := os.CreateTemp("", "ahjo-mirror-flags-*.conf")
-	if err != nil {
-		return err
-	}
-	defer os.Remove(tmp.Name())
-	if _, err := tmp.WriteString(dropIn); err != nil {
-		tmp.Close()
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		return err
-	}
-	if _, err := incus.FilePush(containerName, tmp.Name(), mirrorDropInPath); err != nil {
-		return err
-	}
-	return nil
-}
-
 // skiplistPresence runs a single bounded `find` inside the container to
 // surface any skiplisted directories that exist in /repo. The `-prune`
 // keeps the find cheap on node_modules-heavy trees (we never descend
@@ -714,7 +958,7 @@ func skiplistPresence(containerName string, noSkiplist bool) ([]string, error) {
 	// Build args: find /repo -maxdepth 4 -type d \( -name X -o -name Y … \) -prune -print
 	args := []string{"find", mirrorRepoPath, "-maxdepth", "4", "-type", "d", "("}
 	skipNames := []string{
-		".git", "node_modules", ".next", ".nuxt", ".svelte-kit", ".turbo",
+		"node_modules", ".next", ".nuxt", ".svelte-kit", ".turbo",
 		"__pycache__", ".venv", "venv", ".pytest_cache", ".ruff_cache", ".mypy_cache",
 	}
 	for i, n := range skipNames {
@@ -724,11 +968,11 @@ func skiplistPresence(containerName string, noSkiplist bool) ([]string, error) {
 		args = append(args, "-name", n)
 	}
 	args = append(args, ")", "-prune", "-print")
-	out, err := incus.Exec(containerName, args...)
+	out, err := quietContainerExec(containerName, args...)
 	if err != nil {
 		return nil, err
 	}
-	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+	lines := strings.Split(strings.TrimSpace(out), "\n")
 	var matched []string
 	for _, l := range lines {
 		l = strings.TrimSpace(l)
@@ -740,13 +984,11 @@ func skiplistPresence(containerName string, noSkiplist bool) ([]string, error) {
 	return matched, nil
 }
 
-// stopAndRemoveMirror is the pre-destroy hook: if `containerName` has a
-// mirror device, disable+stop the unit (best-effort, ok if container is
-// already stopped), remove the device, and revert the host target to its
-// pre-mirror state. Idempotent / tolerant of "no such device" — safe to call
-// before every destroy. Per memory project_ahjo_mirror_lifecycle_coupling.md:
-// destroy paths auto-stop the mirror so the user is never left with a stale
-// device pointing at a gone container.
+// stopAndRemoveMirror is the pre-destroy hook: if the configured mirror is on
+// containerName, stop it and revert the host target to its pre-mirror state.
+// Idempotent — safe to call before every destroy — so the user is never left
+// with a daemon retrying against a container that is gone. It also clears a
+// legacy bind-mount mirror on the container.
 //
 // Revert (not just snapshot-and-hint) so `ahjo rm` / `shell --update` don't
 // leave the mirror's files dirtying the host dir: mirrored content originates
@@ -754,60 +996,64 @@ func skiplistPresence(containerName string, noSkiplist bool) ([]string, error) {
 // manual host-side edits in the target, which are discarded, matching the
 // no-confirmation revert policy of `mirror off`.
 func stopAndRemoveMirror(containerName string) error {
-	has, err := incus.HasDevice(containerName, mirrorDeviceName)
-	if err != nil || !has {
-		return nil
+	if reg, err := registry.Load(); err == nil {
+		for i := range reg.Branches {
+			if reg.Branches[i].IncusName == containerName {
+				if _, err := removeLegacyMirror(reg, &reg.Branches[i]); err != nil {
+					fmt.Fprintf(cobraOutErr(), "warn: remove legacy mirror on %s: %v\n", containerName, err)
+				}
+			}
+		}
 	}
-	if err := teardownMirrorDevice(containerName); err != nil {
+	st, err := mirror.LoadState()
+	if err != nil || st == nil || st.Container != containerName {
 		return err
 	}
-	// Resolve the target/slug now — this is the last moment before the registry
-	// row is dropped. The git snapshot lives in the target's own .git, so the
-	// revert works even though the container is about to go away.
-	target, slug := mirrorTargetForContainer(containerName)
-	if target == "" || !decideRevert(false, target, slug) {
-		return nil
-	}
-	if err := mirror.Revert(target, slug); err != nil {
-		return fmt.Errorf("revert %s: %w", target, err)
-	}
-	fmt.Printf("mirror: reverted %s to its pre-mirror state\n", target)
-	return nil
-}
-
-// mirrorTargetForContainer resolves the host mirror target (expanded) and branch
-// slug for the branch whose container is containerName, or ("","") when it can't
-// be found. The git snapshot lives in the target's own .git, independent of the
-// container, so this stays valid right up until the registry row is dropped.
-func mirrorTargetForContainer(containerName string) (target, slug string) {
-	reg, err := registry.Load()
-	if err != nil {
-		return "", ""
-	}
-	for i := range reg.Branches {
-		b := &reg.Branches[i]
-		if b.IncusName != containerName {
-			continue
-		}
-		repo := reg.FindRepo(b.Repo)
-		if repo == nil || repo.MacMirrorTarget == "" {
-			return "", ""
-		}
-		return paths.Expand(repo.MacMirrorTarget), b.Slug
-	}
-	return "", ""
+	_, err = stopActiveMirror(false)
+	return err
 }
 
 // quietContainerExec runs `incus exec <container> -- <argv…>` capturing
-// both stdout and stderr; the stderr stays in the returned error rather
-// than leaking to the user's terminal. Used by the binary/unit probes
-// in reconcileDaemonAssets where a missing-file failure is expected on
-// first activation.
+// stdout; stderr is dropped rather than leaking to the user's terminal (a
+// missing-file failure is expected on first activation). What runs is inside
+// the container and therefore untrusted — the host daemon calls this before
+// every watcher start — so it is bounded in both time and output size: a
+// replaced binary can neither hang the caller nor balloon its memory.
 func quietContainerExec(container string, argv ...string) (string, error) {
-	args := append([]string{"exec", container, "--"}, argv...)
-	cmd := exec.Command("incus", args...)
-	out, err := cmd.Output()
-	return string(out), err
+	ctx, cancel := context.WithTimeout(context.Background(), containerProbeTimeout)
+	defer cancel()
+	args := append([]string{"exec", container, "-T", "--"}, argv...)
+	cmd := exec.CommandContext(ctx, "incus", args...)
+	out := &cappedBuffer{max: containerProbeMaxOutput}
+	cmd.Stdout = out
+	err := cmd.Run()
+	if err == nil && out.overflow {
+		err = fmt.Errorf("incus exec %s %s: output exceeds %d bytes", container, argv[0], containerProbeMaxOutput)
+	}
+	return out.b.String(), err
+}
+
+const (
+	containerProbeTimeout   = 30 * time.Second
+	containerProbeMaxOutput = 1 << 20
+)
+
+// cappedBuffer keeps the first max bytes written and discards the rest
+// (reporting success, so the writer is not blocked or failed).
+type cappedBuffer struct {
+	b        strings.Builder
+	max      int
+	overflow bool
+}
+
+func (c *cappedBuffer) Write(p []byte) (int, error) {
+	if room := c.max - c.b.Len(); room > 0 {
+		c.b.Write(p[:min(room, len(p))])
+	}
+	if c.b.Len() >= c.max {
+		c.overflow = true
+	}
+	return len(p), nil
 }
 
 func primaryAlias(b *registry.Branch) string {

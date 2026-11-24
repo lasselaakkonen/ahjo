@@ -8,6 +8,7 @@ import (
 
 	"github.com/lasselaakkonen/ahjo/internal/ahjostate"
 	"github.com/lasselaakkonen/ahjo/internal/incus"
+	"github.com/lasselaakkonen/ahjo/internal/mirror"
 	"github.com/lasselaakkonen/ahjo/internal/ports"
 	"github.com/lasselaakkonen/ahjo/internal/registry"
 )
@@ -74,7 +75,7 @@ func refreshAhjoStateByName(containerName, slug, alias, mirrorTarget string) {
 
 // gatherAhjoState collects the container's live bridge state into an
 // ahjostate.State, format-agnostic — the caller renders it to markdown and JSON.
-// Mirror on/off comes from the mirror disk device; expose from ports.json;
+// Mirror on/off comes from the host-side mirror state file; expose from ports.json;
 // forward from live proxy devices — the same sources `ls` reads.
 func gatherAhjoState(containerName, slug, alias, mirrorTarget string) (ahjostate.State, error) {
 	st := ahjostate.State{
@@ -84,13 +85,16 @@ func gatherAhjoState(containerName, slug, alias, mirrorTarget string) (ahjostate
 		MirrorRepo: mirrorRepoPath,
 	}
 
-	has, err := incus.HasDevice(containerName, mirrorDeviceName)
+	ms, err := mirror.LoadState()
 	if err != nil {
-		return ahjostate.State{}, fmt.Errorf("query mirror device: %w", err)
+		return ahjostate.State{}, fmt.Errorf("read mirror state: %w", err)
 	}
-	st.MirrorOn = has
-	if has {
-		st.MirrorHostTarget = mirrorTarget
+	if ms != nil && !ms.Stopping && ms.Container == containerName {
+		st.MirrorOn = true
+		st.MirrorHostTarget = ms.Target
+		if st.MirrorHostTarget == "" {
+			st.MirrorHostTarget = mirrorTarget
+		}
 	}
 
 	pp, err := ports.Load()

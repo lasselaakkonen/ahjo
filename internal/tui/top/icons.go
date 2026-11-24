@@ -25,7 +25,7 @@ var (
 const blank = "  "
 
 // renderReplicationIcon shows whether this row's container holds the
-// active mirror device, and if so whether ahjo-mirror.service is alive.
+// configured mirror, and if so whether the host-side mirror daemon is alive.
 // Mirroring is one-way (VM → host); the left arrow reads as "pushing
 // out". Off rows render blank so the column doesn't shout at the user
 // for every non-mirrored container.

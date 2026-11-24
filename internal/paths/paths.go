@@ -150,10 +150,31 @@ func MirrorSnapshotsDir() string { return filepath.Join(AhjoDir(), "mirror-snaps
 // MirrorSnapshotDir is the per-slug subdirectory under MirrorSnapshotsDir.
 func MirrorSnapshotDir(slug string) string { return filepath.Join(MirrorSnapshotsDir(), slug) }
 
+// MirrorRunDir holds the host-side mirror daemon's runtime files: the state
+// file (source of truth for "a mirror is configured"), the daemon lock (held
+// = daemon alive), its status file and its log. VM-local like the snapshots.
+func MirrorRunDir() string { return filepath.Join(AhjoDir(), "mirror") }
+
+// MirrorStatePath is written by the CLI under the ahjo lockfile.
+func MirrorStatePath() string { return filepath.Join(MirrorRunDir(), "state.json") }
+
+// MirrorDaemonLockPath is flock-ed by the daemon for its whole lifetime.
+func MirrorDaemonLockPath() string { return filepath.Join(MirrorRunDir(), "daemon.lock") }
+
+// MirrorStatusPath is written by the daemon (phase, version).
+func MirrorStatusPath() string { return filepath.Join(MirrorRunDir(), "status.json") }
+
+// MirrorLogPath is the daemon's log, tailed by `ahjo mirror logs`.
+func MirrorLogPath() string { return filepath.Join(MirrorRunDir(), "daemon.log") }
+
+// MirrorLegacySweptPath marks that the one-time removal of pre-host-writer
+// mirrors (a writable /mirror disk device + in-container unit) has run.
+func MirrorLegacySweptPath() string { return filepath.Join(MirrorRunDir(), "legacy-swept") }
+
 // EnsureSkeleton creates the ~/.ahjo/ directory tree (idempotent).
 func EnsureSkeleton() error {
 	for _, d := range []string{
-		AhjoDir(), HostKeysDir(), RepoEnvDir(), MirrorSnapshotsDir(),
+		AhjoDir(), HostKeysDir(), RepoEnvDir(), MirrorSnapshotsDir(), MirrorRunDir(),
 	} {
 		if err := os.MkdirAll(d, 0o755); err != nil {
 			return fmt.Errorf("mkdir %s: %w", d, err)

@@ -57,10 +57,14 @@ func gitAvailable() error {
 	return nil
 }
 
-// runGit runs git against target with the safe.directory override prepended,
-// returning trimmed stdout. On failure it surfaces git's stderr.
+// runGit runs git against target with the safe.directory override and the
+// hardening overrides prepended, returning trimmed stdout. On failure it
+// surfaces git's stderr. The target receives container-authored files, so no
+// git call here may honour fsmonitor/hooks config or a bare-repo-shaped dir.
 func runGit(target string, env []string, args ...string) (string, error) {
-	full := append([]string{"-C", target, "-c", "safe.directory=" + target}, args...)
+	full := []string{"-C", target, "-c", "safe.directory=" + target}
+	full = append(full, git.HardenedConfigArgs()...)
+	full = append(full, args...)
 	cmd := exec.Command("git", full...)
 	if len(env) > 0 {
 		cmd.Env = append(os.Environ(), env...)
@@ -78,16 +82,27 @@ func runGit(target string, env []string, args ...string) (string, error) {
 	return strings.TrimSpace(stdout.String()), nil
 }
 
+// refExists reports whether ref exists in target's repository. It is gated on
+// IsGitWorkTree so refs inside anything that is not a real `.git`-backed work
+// tree (e.g. a repository assembled by the container) never count.
 func refExists(target, ref string) bool {
+	if _, ok := IsGitWorkTree(target); !ok {
+		return false
+	}
 	_, err := runGit(target, nil, "show-ref", "--verify", "--quiet", ref)
 	return err == nil
 }
 
 // IsGitWorkTree reports whether target is inside a git work tree, returning the
-// resolved toplevel.
+// resolved toplevel. The toplevel must hold a `.git` entry: the mirror never
+// writes a `.git` component, so its presence proves the repository predates
+// (or is independent of) anything the container sent.
 func IsGitWorkTree(target string) (string, bool) {
 	root, err := runGit(target, nil, "rev-parse", "--show-toplevel")
-	if err != nil {
+	if err != nil || root == "" {
+		return "", false
+	}
+	if _, err := os.Lstat(filepath.Join(root, ".git")); err != nil {
 		return "", false
 	}
 	return root, true
@@ -140,10 +155,10 @@ func TargetDirty(target string) (summary string, dirty bool, err error) {
 // off snapshot artifacts (not live re-detection), so it stays correct after the
 // tree has been mirrored over.
 func RevertPossible(target, slug string) bool {
-	if refExists(target, snapshotRef(slug, "worktree")) {
+	if hasEmptyMarker(slug) {
 		return true
 	}
-	return hasEmptyMarker(slug)
+	return refExists(target, snapshotRef(slug, "worktree"))
 }
 
 // ListSnapshots returns the slugs that have a pre-mirror snapshot for target,
@@ -204,6 +219,12 @@ func ListSnapshots(target string) ([]string, error) {
 // target's own .git, so a later Revert can reconstruct the exact pre-mirror
 // staged/unstaged split. Idempotent: a pre-existing worktree ref is reused.
 func CaptureGit(target, slug string) error {
+	// A git-mode capture supersedes any empty marker left for this slug by an
+	// earlier session; Revert consults the marker first, so a stale one would
+	// turn the next revert into a wipe of this work tree.
+	if err := os.RemoveAll(paths.MirrorSnapshotDir(slug)); err != nil {
+		return err
+	}
 	wtRef := snapshotRef(slug, "worktree")
 	if refExists(target, wtRef) {
 		fmt.Println("mirror: reusing existing pre-mirror snapshot")
@@ -340,15 +361,17 @@ func listEmptyMarkerSlugs(target string) ([]string, error) {
 }
 
 // Revert restores target to its captured pre-mirror state and consumes the
-// snapshot. Git-mode refs win over the empty marker; with neither present it is
-// a no-op. It must run only after the daemon is stopped and the mirror device
-// removed (the CLI enforces that ordering).
+// snapshot. The empty marker — which lives under ~/.ahjo, out of the
+// container's reach — is consulted first: it records that the target held no
+// repository at capture time, so nothing found in the target afterwards may
+// steer the revert into git. With neither snapshot present it is a no-op. It
+// must run only after the host daemon is stopped (the CLI enforces that).
 func Revert(target, slug string) error {
-	if refExists(target, snapshotRef(slug, "worktree")) {
-		return revertGit(target, slug)
-	}
 	if hasEmptyMarker(slug) {
 		return revertEmpty(target, slug)
+	}
+	if refExists(target, snapshotRef(slug, "worktree")) {
+		return revertGit(target, slug)
 	}
 	return nil
 }
@@ -422,6 +445,11 @@ func warnIfHeadMoved(target, slug string) {
 }
 
 func revertEmpty(target, slug string) error {
+	// The marker records which directory was empty. Wiping any other one
+	// would be data loss, so a mismatch is an error, not a best effort.
+	if recorded := emptyMarkerTarget(slug); recorded != "" && !samePath(recorded, target) {
+		return fmt.Errorf("refusing to empty %q: the pre-mirror snapshot for %q was taken of %q", target, slug, recorded)
+	}
 	entries, err := os.ReadDir(target)
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err

@@ -1,17 +1,18 @@
-// Package mirror provides shared helpers for the in-container `ahjo-mirror`
-// daemon (cmd/ahjo-mirror) and for unit tests that pin git-faithful gitignore
-// parity. The daemon itself is Linux-only; this package compiles everywhere
-// because the helpers are pure Go (filesystem walking + go-git gitignore).
+// Package mirror implements `ahjo mirror`: a one-way push of a container's
+// /repo into a host directory.
+//
+// The in-container half (cmd/ahjo-mirror, untrusted) watches /repo and emits
+// a frame stream on stdout (proto.go). The host half (hostdaemon.go,
+// receiver.go) reads that stream through `incus exec` and is the only thing
+// that ever writes the target; nothing of the host is mounted into the
+// container. This file holds the watcher-side filters: the static skiplist
+// and the git-faithful gitignore matcher.
 package mirror
 
 import (
 	"bufio"
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"errors"
-	"fmt"
-	"io"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -42,16 +43,12 @@ var SkipDirNames = map[string]bool{
 	".mypy_cache":   true,
 }
 
-// ErrUnsupportedFileType is returned by CopyFile for sockets, devices, fifos.
-var ErrUnsupportedFileType = errors.New("unsupported file type")
-
-// ErrUnsafeSymlink is returned by CopyFile when a repo symlink's target would
-// escape the mirror root once followed (absolute, or `../`-traversing out of
-// dstRoot). The mirror replicates container-controlled repo contents onto a
-// host-side dir, so a symlink like `x -> /etc/passwd` would otherwise plant a
-// host symlink pointing at an arbitrary file. Unlike ErrUnsupportedFileType,
-// callers should log this — it flags a planting attempt, not a benign skip.
-var ErrUnsafeSymlink = errors.New("symlink target escapes mirror root")
+// ErrUnsafeSymlink is returned by ValidateSymlink when a repo symlink's target
+// would leave the mirror root or reach `.git`. The mirror replicates
+// container-controlled repo contents onto a host-side dir, so a symlink like
+// `x -> /etc/passwd` would otherwise plant a host symlink pointing at an
+// arbitrary file.
+var ErrUnsafeSymlink = errors.New("unsafe symlink")
 
 // LoadIgnoreMatcher walks `root`, reads `.gitignore` from each kept directory
 // and `.git/info/exclude` once, and builds a single git-faithful matcher. The
@@ -72,7 +69,7 @@ func LoadIgnoreMatcher(root string, skipNoSkiplist bool) (gitignore.Matcher, err
 		if !d.IsDir() {
 			return nil
 		}
-		if !skipNoSkiplist && p != root && SkipDirNames[d.Name()] {
+		if p != root && (IsDotGit(d.Name()) || (!skipNoSkiplist && SkipDirNames[d.Name()])) {
 			return filepath.SkipDir
 		}
 		rel, err := filepath.Rel(root, p)
@@ -132,121 +129,6 @@ func IsIgnored(m gitignore.Matcher, rel string, isDir bool) bool {
 		return false
 	}
 	return m.Match(parts, isDir)
-}
-
-// CopyFile copies srcPath to dstPath using lstat-first dispatch.
-//   - Regular file → tempfile in dstPath's dir, io.Copy, fchmod, atomic rename.
-//   - Symlink     → readlink, target-containment check, os.Symlink.
-//   - Anything else → ErrUnsupportedFileType (caller logs and skips).
-//
-// When fastSkip is true AND the destination already exists with matching
-// size+mtime (regular file) or matching link target (symlink), the copy is
-// skipped. The bootstrap walk passes fastSkip=true so repeated bootstraps are
-// cheap; live event handling passes fastSkip=false because the event itself
-// is the "something changed" signal.
-//
-// dstRoot is the mirror's destination root (dstPath always lives under it);
-// symlink targets that would escape it are rejected with ErrUnsafeSymlink.
-// Caller is responsible for ensuring dstPath's parent dir exists.
-func CopyFile(srcPath, dstPath, dstRoot string, fastSkip bool) error {
-	srcInfo, err := os.Lstat(srcPath)
-	if err != nil {
-		return err
-	}
-	mode := srcInfo.Mode()
-	switch {
-	case mode.IsRegular():
-		return copyRegular(srcPath, dstPath, srcInfo, fastSkip)
-	case mode&os.ModeSymlink != 0:
-		return copySymlink(srcPath, dstPath, dstRoot, fastSkip)
-	default:
-		return ErrUnsupportedFileType
-	}
-}
-
-func copyRegular(srcPath, dstPath string, srcInfo os.FileInfo, fastSkip bool) error {
-	if fastSkip {
-		if dstInfo, err := os.Lstat(dstPath); err == nil && dstInfo.Mode().IsRegular() &&
-			dstInfo.Size() == srcInfo.Size() && dstInfo.ModTime().Equal(srcInfo.ModTime()) {
-			return nil
-		}
-	}
-	src, err := os.OpenFile(srcPath, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
-	if err != nil {
-		return fmt.Errorf("open src %s: %w", srcPath, err)
-	}
-	defer src.Close()
-
-	dstDir := filepath.Dir(dstPath)
-	tmp, err := tempName(dstDir, filepath.Base(dstPath))
-	if err != nil {
-		return err
-	}
-	out, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_EXCL, srcInfo.Mode().Perm())
-	if err != nil {
-		return fmt.Errorf("create tmp %s: %w", tmp, err)
-	}
-	if _, err := io.Copy(out, src); err != nil {
-		out.Close()
-		_ = os.Remove(tmp)
-		return fmt.Errorf("copy %s -> %s: %w", srcPath, tmp, err)
-	}
-	if err := out.Chmod(srcInfo.Mode().Perm()); err != nil {
-		out.Close()
-		_ = os.Remove(tmp)
-		return fmt.Errorf("fchmod %s: %w", tmp, err)
-	}
-	if err := out.Close(); err != nil {
-		_ = os.Remove(tmp)
-		return fmt.Errorf("close %s: %w", tmp, err)
-	}
-	// Preserve mtime so fastSkip works on the next bootstrap.
-	_ = os.Chtimes(tmp, srcInfo.ModTime(), srcInfo.ModTime())
-	if err := os.Rename(tmp, dstPath); err != nil {
-		_ = os.Remove(tmp)
-		return fmt.Errorf("rename %s -> %s: %w", tmp, dstPath, err)
-	}
-	return nil
-}
-
-func copySymlink(srcPath, dstPath, dstRoot string, fastSkip bool) error {
-	target, err := os.Readlink(srcPath)
-	if err != nil {
-		return fmt.Errorf("readlink %s: %w", srcPath, err)
-	}
-	// Reject targets that escape the mirror root once followed. An absolute
-	// target, or a relative one that `../`-climbs out of dstRoot, would plant
-	// a host-side symlink pointing at a file the container shouldn't reach.
-	// Same Rel-based containment idiom as oci.go's extractTar.
-	resolved := target
-	if !filepath.IsAbs(resolved) {
-		resolved = filepath.Join(filepath.Dir(dstPath), target)
-	}
-	rel, err := filepath.Rel(dstRoot, filepath.Clean(resolved))
-	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		return fmt.Errorf("%w: %s -> %s", ErrUnsafeSymlink, dstPath, target)
-	}
-	if fastSkip {
-		if cur, err := os.Readlink(dstPath); err == nil && cur == target {
-			return nil
-		}
-	}
-	// os.Symlink fails if dstPath exists; remove it first. Tolerate ENOENT.
-	if err := os.Remove(dstPath); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("remove existing %s: %w", dstPath, err)
-	}
-	if err := os.Symlink(target, dstPath); err != nil {
-		return fmt.Errorf("symlink %s -> %s: %w", dstPath, target, err)
-	}
-	return nil
-}
-
-func tempName(dir, base string) (string, error) {
-	var b [8]byte
-	if _, err := rand.Read(b[:]); err != nil {
-		return "", err
-	}
-	return filepath.Join(dir, "."+base+".ahjo-mirror.tmp."+hex.EncodeToString(b[:])), nil
 }
 
 // InstallSignalHandler returns a context that cancels on SIGTERM/SIGINT so

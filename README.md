@@ -142,7 +142,7 @@ Or similarly from TUI.
   - [common-utils](https://github.com/devcontainers/features/tree/main/src/common-utils) devcontainer Feature (provides `jq`, `curl`, `unzip`, `gnupg`, `ca-certificates`, UID-1000 `ubuntu` user with sudo, en_US locale, and a bunch of other base CLI utilities)
   - [git](https://github.com/devcontainers/features/tree/main/src/git) devcontainer Feature (provides `git`)
   - [github-cli](https://github.com/devcontainers/features/tree/main/src/github-cli) devcontainer Feature (provides `gh`)
-  - `claude`, plus sshd-as-a-service and the `ahjo-mirror` daemon from [install.sh](internal/ahjoruntime/feature/install.sh)
+  - `claude`, plus sshd-as-a-service and the `ahjo-mirror` watcher from [install.sh](internal/ahjoruntime/feature/install.sh)
   - `rg`, `fd`, `eza`, `httpie`, `make`, `yq`, `ast-grep`, `rtk` from [install.sh](internal/ahjodevtools/feature/install.sh)
 
 Language toolchains (Node, Python, Go, Rust, …) are NOT in the base image. They come from either your repo's `.ahjo/ahjocontainer.json` or `--container-config <name>` at repo-add time (see [Container tech stack setup](#container-tech-stack-setup)).
@@ -214,6 +214,16 @@ ahjo rm myacc/repo@feat/twiddle-with-ui
 You can mirror the changes from inside the repo to a dir on the host machine. You likely want to mirror the changes to a dir, which has the same git repo in it already.
 
 Mirroring replicates ONLY created and changed files, it DOES NOT replicate deletions.
+
+How it is kept safe: the container never sees the host directory. A watcher inside the container reports changed files, and a daemon on the host (in the VM on macOS) is the only thing that writes the target. That daemon treats everything the container sends as untrusted:
+
+- nothing is written outside the target, and nothing is written through a symlink;
+- a path with a `.git` component is never written (in any spelling, and not even with `--no-skiplist`), and neither is anything that would make a directory look like a git repository (`HEAD` next to `objects/` or `refs/`);
+- symlinks pointing outside the target or at `.git` are refused, and files over 512 MiB are skipped.
+
+The target must be a project directory inside your home directory: the home directory itself, dot-directories directly under it (`~/.ssh`, `~/.config`, …) and `~/Library` are refused.
+
+What this does NOT protect you from: the mirrored files are written by whatever runs in the container. Read the changes before you run them on the host (`npm run …`, `make`, opening the folder in an IDE that auto-runs tasks). As an extra layer, `git config --global safe.bareRepository explicit` on the host is recommended.
 
 ```
 ahjo create myacc/myrepo@newfangled-thing
@@ -471,7 +481,7 @@ sudo ln -sf "$PWD/ahjo" /usr/local/bin/ahjo
 | `ahjo expose <alias> <container-port>` | Manually add an Incus proxy device exposing a container port on `127.0.0.1`. |
 | `ahjo expose <alias> --sync` | Reconcile auto-expose proxy devices to the container's current TCP loopback listeners (skipping `:22` and ports below `[auto_expose].min_port`). Run after starting docker-compose / a dev server inside the container so newly-bound ports surface to the host. Manual `ahjo expose` entries are untouched. |
 | `ahjo forward <alias> <host-port> [<container-port>]` (also `--off`) | Inbound counterpart to `ahjo expose`: pipe a service running on the host *into* the container. Adds a `bind=container` Incus proxy so the host's `127.0.0.1:<host-port>` is reachable on `127.0.0.1:<container-port>` (defaults to the same port) inside the container — letting code/configs that hardcode `localhost:<port>` reach a host app unmodified. On macOS the connect target is the Lima gateway; on Linux it's host loopback directly. Requires a running container; the forward lives until the container stops/restarts or `--off` (keyed on the container port). Also available in `ahjo top` via `f`. |
-| `ahjo mirror <alias> --target <path>` (also `off` / `status` / `logs <alias>`) | One-way push from `/repo` (inside the branch container) to a Mac path via the in-container `ahjo-mirror` daemon. `--target` is sticky per-repo; `--no-skiplist` also mirrors `node_modules` etc. `mirror off` stops the active mirror and reverts the Mac target to its pre-mirror state (`--no-revert` to keep the files); activating on a second container takes the mirror over (off→on). `mirror status` lists mirrors across the registry, `mirror logs <alias>` tails the daemon's journal. |
+| `ahjo mirror <alias> --target <path>` (also `off` / `status` / `logs <alias>`) | One-way push from `/repo` (inside the branch container) to a host path. A watcher in the container reports changes and a host-side daemon is the only writer; no host directory is mounted into the container. `--target` is sticky per-repo; `--no-skiplist` also mirrors `node_modules` etc. `mirror off` stops the active mirror and reverts the Mac target to its pre-mirror state (`--no-revert` to keep the files); activating on a second container takes the mirror over (off→on). `mirror status` lists mirrors across the registry, `mirror logs <alias>` tails the daemon's journal. |
 | `ahjo top` | Open the Miller-columns TUI (repos · worktrees · details) for browsing and acting on containers interactively. |
 | `ahjo ls` | Worktrees with aliases, slug, SSH port, container state, exposed + forwarded ports, creation time. |
 | `ahjo rm <alias> [--force] [--force-default]` | Stop + delete the container, remove the worktree, free ports, drop the registry entry. `--force` skips the `/repo` cleanliness check and removes even with uncommitted/unpushed work; `--force-default` permits removing a repo's default-branch container (after which the repo can't spawn new branches until re-added). |

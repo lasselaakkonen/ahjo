@@ -59,11 +59,11 @@ curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/HEAD/install
 Then, from the repo root:
 
 ```sh
-make generate-mirror                    # build the embedded linux daemon binaries (gitignored)
+make generate-mirror                    # build the embedded linux watcher binaries (gitignored)
 make hooks                              # activate pre-commit + pre-push
 ```
 
-`generate-mirror` cross-compiles the two `ahjo-mirror` daemons into
+`generate-mirror` cross-compiles the two `ahjo-mirror` watchers into
 `internal/ahjoruntime/feature/`, where the host CLI's `//go:embed` picks
 them up. The bytes change on every build (Go embeds a fresh BuildID per
 compile), so they're kept out of git — every `make build`, hook run, and
@@ -80,7 +80,7 @@ on first failure.
 | `pre-push`   | `make generate-mirror`, `go test -race ./...`                         | ~15s      |
 
 Both hooks call `make generate-mirror` first so the gitignored
-`ahjo-mirror.linux-{amd64,arm64}` daemons (embedded into the host CLI
+`ahjo-mirror.linux-{amd64,arm64}` watchers (embedded into the host CLI
 via `//go:embed`) are present before vet/test compile. The make rule is
 incremental — no-op when binaries are already newer than their Go sources.
 

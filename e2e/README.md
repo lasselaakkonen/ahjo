@@ -74,7 +74,7 @@ teardown can't poison the next one.
 | 3.2 | `ahjo gc` / `ahjo gc --older-than 0` | default 24h window reports `no candidates` (the branch is seconds old); `--older-than 0` reports the branch as a **dry-run** candidate; the branch container still **Running** afterward (report mode never deletes; the default/COW-source branch is always excluded) |
 | 4 | `ahjo forward … :<p>` then `--off` | `ahjo-forward-<p>` proxy `listen=tcp:127.0.0.1:<p>`; absent after `--off` |
 | 5 | `ahjo expose … :<p>`, then `expose … --sync` | `ahjo-expose-<p>` proxy `connect=tcp:127.0.0.1:<p>`; `--sync` runs cleanly and **leaves the manual expose device intact** (sync only reconciles auto-expose entries, never manual ones) |
-| 6 | `ahjo mirror … --target`, `status`, `logs`, `off --no-revert`, `revert` | `mirror` disk device + `ahjo-mirror.service` active + host target populated; **a file edited inside the container appears on the host** (live watch→push); `status` reports it active; `off --no-revert` removes the device but **keeps** the mirrored file; `mirror revert <target>` then restores the pre-mirror snapshot, **removing** that kept file (the orphan-recovery path) |
+| 6 | `ahjo mirror … --target`, `status`, `logs`, `off --no-revert`, `revert` | no `mirror` device and no `/mirror` in the container + host target populated + `/repo/.git` never mirrored; **a file edited inside the container appears on the host** (live watch→push); `status` reports it active; `off --no-revert` removes the device but **keeps** the mirrored file; `mirror revert <target>` then restores the pre-mirror snapshot, **removing** that kept file (the orphan-recovery path) |
 | 7 | `ahjo ls`, `ahjo top` | operator confirms the listing + TUI |
 | 8 | `ahjo shell <branch>` | operator confirms attach + `CLAUDE_CODE_OAUTH_TOKEN` in-shell; harness asserts `environment.GH_TOKEN` |
 | 9 | `ahjo ssh <as-alias>` | connects over the generated ssh-config and runs `id -un` → `ubuntu` (machine-asserted; `StrictHostKeyChecking=yes` proves it reached *this* container) |
@@ -185,7 +185,7 @@ assertion works on both hosts unchanged.
   daemon's watch→push path is exercised — not just the initial sync. `off
   --no-revert` is then asserted to *keep* that mirror-added file (a plain `off`
   would revert the target and remove it).
-- **`mirror logs`.** Tails `journalctl --follow` and replaces the process, so it
+- **`mirror logs`.** Tails the host daemon's log (`tail -F`) and replaces the process, so it
   can't be cleanly attached unattended (the operator's Ctrl-C would also hit the
   script). The harness captures a short background window and only **warns** if
   the journal looks empty — it's a best-effort streaming check, not a hard gate.

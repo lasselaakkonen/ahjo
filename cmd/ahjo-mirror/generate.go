@@ -1,6 +1,6 @@
-// Package main: //go:generate hooks for the in-container ahjo-mirror daemon.
+// Package main: //go:generate hooks for the in-container ahjo-mirror watcher.
 //
-// The daemon is Linux-only (runs inside the container). The host CLI embeds
+// The watcher is Linux-only (runs inside the container). The host CLI embeds
 // arch-matched copies via internal/ahjoruntime/feature/, both for the
 // ahjo-runtime Feature install path AND for the on-demand `incus file push`
 // self-heal path.
@@ -14,7 +14,7 @@
 // substitutes them at parse time, leaving `$()` subshells intact (which is
 // why the version is computed inside the same -ldflags string).
 //
-// The `generate` build tag keeps this file out of the daemon binary itself.
+// The `generate` build tag keeps this file out of the watcher binary itself.
 
 //go:build generate
 

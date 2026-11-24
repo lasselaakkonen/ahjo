@@ -402,7 +402,7 @@ func subuidGrantStep() initflow.Step {
 }
 
 // inotifySysctlStep writes /etc/sysctl.d/99-ahjo.conf with two values
-// sized for the v3 ahjo-mirror daemon's worst case (full-tree bootstrap of
+// sized for the v3 ahjo-mirror watcher's worst case (full-tree bootstrap of
 // a 30k-file monorepo, with an agent burst running concurrently). Same
 // code path on Mac (writes inside the Lima VM, where `ahjo init` runs after
 // the macOS-side bringup) and bare-metal Linux (writes on the host).
@@ -433,7 +433,7 @@ func inotifySysctlStep() initflow.Step {
 			}
 			return false, "", nil
 		},
-		Note: "Required so the ahjo-mirror daemon can install one watch per source-tree directory on big monorepos. fs.inotify is not namespace-scoped, so the bump goes on the kernel hosting the containers (Lima VM under macOS, host kernel under bare-metal Linux).",
+		Note: "Required so the ahjo-mirror watcher can install one watch per source-tree directory on big monorepos. fs.inotify is not namespace-scoped, so the bump goes on the kernel hosting the containers (Lima VM under macOS, host kernel under bare-metal Linux).",
 		Show: fmt.Sprintf("write %s with:\n  fs.inotify.max_user_watches=1048576\n  fs.inotify.max_queued_events=65536\nsudo sysctl --system", sysctlPath),
 		Action: func(out io.Writer) error {
 			if err := initflow.RunBash(out, sysctlBody, "sudo tee "+sysctlPath+" >/dev/null"); err != nil {

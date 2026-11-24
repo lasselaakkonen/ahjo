@@ -507,3 +507,143 @@ func TestRevertEmpty_WipesAndRemovesMarker(t *testing.T) {
 		t.Errorf("snapshot marker dir should be removed; stat err = %v", err)
 	}
 }
+
+// TestRevert_MarkerWinsOverPlantedRefs: a target that was empty at capture
+// reverts via the trusted ~/.ahjo marker even if a repository with snapshot
+// refs has appeared inside it since.
+func TestRevert_MarkerWinsOverPlantedRefs(t *testing.T) {
+	requireGit(t)
+	isolate(t)
+	dir := t.TempDir()
+	if err := mirror.CaptureEmpty(dir, "s"); err != nil {
+		t.Fatal(err)
+	}
+	gitC(t, dir, "init", "-q")
+	gitC(t, dir, "config", "user.email", "t@example.com")
+	gitC(t, dir, "config", "user.name", "T")
+	write(t, dir, "a", "x")
+	gitC(t, dir, "add", "a")
+	gitC(t, dir, "commit", "-q", "-m", "c")
+	gitC(t, dir, "update-ref", "refs/ahjo/mirror-snapshot/s/worktree", "HEAD")
+	if err := mirror.Revert(dir, "s"); err != nil {
+		t.Fatal(err)
+	}
+	if entries, _ := os.ReadDir(dir); len(entries) != 0 {
+		t.Errorf("target not emptied; marker did not take precedence (%d entries)", len(entries))
+	}
+}
+
+func TestCaptureGit_ClearsStaleEmptyMarker(t *testing.T) {
+	requireGit(t)
+	isolate(t)
+	dir := newGitRepo(t)
+	write(t, dir, "a", "v1")
+	gitC(t, dir, "add", "a")
+	gitC(t, dir, "commit", "-q", "-m", "c")
+	if err := mirror.CaptureEmpty(dir, "s"); err != nil {
+		t.Fatal(err)
+	}
+	if err := mirror.CaptureGit(dir, "s"); err != nil {
+		t.Fatal(err)
+	}
+	write(t, dir, "a", "mirrored")
+	if err := mirror.Revert(dir, "s"); err != nil {
+		t.Fatal(err)
+	}
+	if !exists(dir, ".git") || read(t, dir, "a") != "v1" {
+		t.Error("stale empty marker turned a git revert into a wipe")
+	}
+}
+
+func TestRevertEmpty_RefusesOtherTarget(t *testing.T) {
+	isolate(t)
+	recorded, other := t.TempDir(), t.TempDir()
+	if err := mirror.CaptureEmpty(recorded, "s"); err != nil {
+		t.Fatal(err)
+	}
+	write(t, other, "keep", "precious")
+	if err := mirror.Revert(other, "s"); err == nil {
+		t.Error("Revert emptied a directory the marker was not taken of")
+	}
+	if !exists(other, "keep") {
+		t.Error("unrelated directory was wiped")
+	}
+}
+
+// TestContainerShapedRepoIsNotTrusted: a directory a container could assemble
+// from plain files (HEAD, config, objects/, refs/ — no `.git`) must not be
+// treated as the target's repository, and its config must not run anything.
+func TestContainerShapedRepoIsNotTrusted(t *testing.T) {
+	requireGit(t)
+	isolate(t)
+	// Build a real repository, then move its guts to the top level.
+	src := newGitRepo(t)
+	write(t, src, "a", "x")
+	gitC(t, src, "add", "a")
+	gitC(t, src, "commit", "-q", "-m", "c")
+	gitC(t, src, "update-ref", "refs/ahjo/mirror-snapshot/s/worktree", "HEAD")
+	dir := t.TempDir()
+	marker := filepath.Join(t.TempDir(), "executed")
+	for _, n := range []string{"HEAD", "objects", "refs"} {
+		if err := os.Rename(filepath.Join(src, ".git", n), filepath.Join(dir, n)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cfg := "[core]\n\trepositoryformatversion = 0\n\tbare = false\n\tworktree = .\n\tfsmonitor = \"touch " + marker + "; false\"\n"
+	write(t, dir, "config", cfg)
+	write(t, dir, "victim", "user data")
+
+	mode, err := mirror.DetectMode(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mode == mirror.ModeGit {
+		t.Error("DetectMode trusted a .git-less repository shape")
+	}
+	if mirror.RevertPossible(dir, "s") {
+		t.Error("RevertPossible honoured refs planted in a .git-less repository shape")
+	}
+	if err := mirror.Revert(dir, "s"); err != nil {
+		t.Fatal(err)
+	}
+	if !exists(dir, "victim") {
+		t.Error("revert ran against the planted repository")
+	}
+	if _, err := os.Stat(marker); err == nil {
+		t.Error("fsmonitor command from the planted config was executed")
+	}
+}
+
+// TestRevert_DoesNotRunHooks is the audit's reproduction, inverted: a hook in
+// the target's .git must not run during capture or revert.
+func TestRevert_DoesNotRunHooks(t *testing.T) {
+	requireGit(t)
+	isolate(t)
+	dir := newGitRepo(t)
+	write(t, dir, "a", "original")
+	gitC(t, dir, "add", "a")
+	gitC(t, dir, "commit", "-q", "-m", "initial")
+	marker := filepath.Join(t.TempDir(), "executed")
+	for _, h := range []string{"reference-transaction", "post-index-change"} {
+		hook := filepath.Join(dir, ".git", "hooks", h)
+		if err := os.MkdirAll(filepath.Dir(hook), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(hook, []byte("#!/bin/sh\nprintf proof > '"+marker+"'\n"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := mirror.CaptureGit(dir, "s"); err != nil {
+		t.Fatal(err)
+	}
+	write(t, dir, "a", "workload change")
+	if err := mirror.Revert(dir, "s"); err != nil {
+		t.Fatal(err)
+	}
+	if read(t, dir, "a") != "original" {
+		t.Error("revert did not restore the file")
+	}
+	if _, err := os.Stat(marker); err == nil {
+		t.Error("a hook in the target's .git was executed")
+	}
+}

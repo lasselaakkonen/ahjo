@@ -782,6 +782,17 @@ func ExecAsContext(ctx context.Context, name string, uid int, env map[string]str
 	return nil
 }
 
+// ExecStreamCommand builds (without starting) a non-interactive `incus exec`
+// of argv inside container as uid, for callers that consume the command's
+// stdout as a byte stream — the mirror daemon reads the in-container
+// watcher's frame stream this way. -T forces non-interactive mode so stdout
+// is a binary-safe pipe; no stdio is wired here, the caller attaches pipes.
+func ExecStreamCommand(ctx context.Context, container string, uid int, argv ...string) *exec.Cmd {
+	args := []string{"exec", container, "-T", "--user", strconv.Itoa(uid), "--cwd", "/", "--"}
+	args = append(args, argv...)
+	return execCommand(ctx, "incus", args...)
+}
+
 // ExecAttach replaces the current process with `incus exec --force-interactive`
 // against name, running argv as the given uid in cwd with optional env. Used
 // for the journalctl-follow path where ahjo has nothing to do post-exit, so
