@@ -47,9 +47,9 @@ These are the *intentional* leaks — every other path is closed.
 | Host keys dir | VM → container, read-only | per-branch sshd keys + `authorized_keys` (single-file bind mount at `/home/ubuntu/.ssh/authorized_keys`) |
 | SSH agent socket | Mac → VM → container | conditional — suppressed when an HTTPS+PAT origin covers the repo; **see "GitHub credentials" below** |
 | Per-repo GH PAT | Mac Keychain (or Linux disk) → VM → container | one `GH_TOKEN` per repo, injected on each relay; **see below** |
-| `/dev/loop-control` + `/dev/loop0..7` | host → container, read-write | opt-in per repo via `customizations.ahjo.nested_incus`; off by default. See **Elevated runtime: `nested_incus`** below. |
+| `/dev/loop-control` + `/dev/loop0..7` | host → container, read-write | opt-in per repo via `customizations.ahjo.nested_incus`, and only after host-side consent (TTY prompt or `--allow-nested-incus`); only loop devices not bound on the host are passed. Off by default. See **Elevated runtime: `nested_incus`** below. |
 | `ahjo mirror` file stream | container → VM → host directory | opt-in, while a mirror is on: file events and contents from `/repo`, written by a host-side daemon into the directory you named. Nothing is mounted into the container. See **Mirror** below. |
-| `security.nesting=true` (Incus config) | host kernel → container | opt-in: enabled automatically when the repo declares `ahjo/docker` in its Features, or when `customizations.ahjo.nested_incus` is set. Off by default. See **Elevated runtime: `security.nesting`** below. |
+| `security.nesting=true` (Incus config) | host kernel → container | opt-in: requested when the repo declares `ahjo/docker` in its Features or sets `customizations.ahjo.nested_incus`, and applied only after host-side consent (TTY prompt, `--allow-nesting` or `--allow-nested-incus`). Off by default. See **Elevated runtime: `security.nesting`** below. |
 
 Nothing else crosses — no `~/.ssh/`, no `~/.gitconfig`, no shell history, no `~/Library`.
 
@@ -225,12 +225,14 @@ path's trust posture is unchanged.
 
 ## Elevated runtime: `security.nesting`
 
-`security.nesting=true` enables Linux user-namespace nesting inside the container, which is required for Docker-in-container (dockerd needs in-userns `CAP_SYS_ADMIN` to manage overlayfs layers) and for nested Incus/LXC workloads. It is **off by default** — ahjo only enables it when the repo's `.ahjo/ahjocontainer.json` declares:
+`security.nesting=true` enables Linux user-namespace nesting inside the container, which is required for Docker-in-container (dockerd needs in-userns `CAP_SYS_ADMIN` to manage overlayfs layers) and for nested Incus/LXC workloads. It is **off by default** — a repo can request it, but ahjo only enables it after the person running `ahjo repo add` approves. The repo declares the request in `.ahjo/ahjocontainer.json`:
 
 - `"ahjo/docker"` in `features` — the built-in Docker Feature sets `customizations.ahjo.nesting: true` in its `devcontainer-feature.json`, which ahjo reads at `repo add` time before starting the container.
 - `customizations.ahjo.nested_incus: true` — the loop-device opt-in for nested Incus; nesting is required to make it useful.
 
-When either path triggers, ahjo applies `security.nesting=true` to the container (stopped), restarts it, and logs `→ security.nesting enabled`. Branch containers cloned via `incus copy` inherit the config flag, so individual branches don't need a restart.
+**Consent.** Repo content is untrusted, so a repo cannot grant itself nesting. When a request is seen, ahjo asks `Allow? [y/N]` on a terminal (only `y` / `yes` approves; anything else, including EOF, aborts `repo add`). Without a terminal it fails with an error naming the flag to pass: `--allow-nesting` for Feature-requested nesting, or `--allow-nested-incus` (which implies nesting) for `nested_incus`. `--yes` / `-y` only skips the GitHub PAT prompt and approves neither. The check runs after Features are resolved and before any Feature `install.sh`, warm install or lifecycle hook, so no repo code has run when you decide. A declined or unapproved request leaves the half-built container behind, as declining a Feature trust prompt does. Auto-detected Docker (a Dockerfile or compose file) is skipped on `--yes` / non-interactive runs unless `--allow-nesting` is passed. `ahjo create` and `ahjo claude` auto-adding a repo pass no flags, so they prompt on a terminal and otherwise tell you to run `ahjo repo add ... --allow-...` first.
+
+Once approved, ahjo applies `security.nesting=true` to the container (stopped), restarts it, and logs `→ security.nesting enabled`. Branch containers cloned via `incus copy` inherit the config flag, so individual branches don't need a restart.
 
 **What this costs.** User-namespace nesting widens the overlayfs kernel attack surface. On bare Linux the container kernel *is* the workstation kernel — a kernel-level escape through the nesting surface compromises the workstation. On macOS via Lima, the Lima VM kernel is the exposed layer; the Mac itself sits behind the `vz` boundary. Repos that never run Docker or nested containers now carry none of this surface by default.
 
@@ -238,7 +240,7 @@ When either path triggers, ahjo applies `security.nesting=true` to the container
 
 ## Elevated runtime: `nested_incus`
 
-A repo can declare `customizations.ahjo.nested_incus: true` in `.ahjo/ahjocontainer.json` to enable nested Incus storage pools, nested LXC, or any other workload that needs loop-mounted block devices. When set, ahjo wires `/dev/loop-control` and `/dev/loop0..7` into the container at `ahjo repo add` time. The setting is per-repo, checked into git (auditable in PR review), and surfaces a `warn:` line every time it takes effect — there is no global override and no CLI flag.
+A repo can declare `customizations.ahjo.nested_incus: true` in `.ahjo/ahjocontainer.json` to request nested Incus storage pools, nested LXC, or any other workload that needs loop-mounted block devices. The request is not honoured on the repo's say-so: `ahjo repo add` asks for confirmation on a terminal, or needs `--allow-nested-incus` when non-interactive (`--yes` does not count). After approval, ahjo wires `/dev/loop-control` and the host's currently unbound `/dev/loop0..7` into the container at `ahjo repo add` time, enables `security.nesting`, and surfaces a `warn:` line. There is no global override.
 
 **What this enables.** `losetup` against an image inside the container, combined with `mount` (already permitted by `security.nesting=true`'s in-userns `CAP_SYS_ADMIN`), means container code can mount *any* block-backed filesystem the host kernel supports — ext4, btrfs, xfs, f2fs, ntfs3, exfat, iso9660, etc. ahjo-in-ahjo is the canonical case: the nested `ahjo init` provisions a btrfs storage pool backed by a `.img` over a loop device.
 
@@ -249,9 +251,13 @@ The exposure matters per host:
 - **Linux bare-metal.** The container kernel *is* the workstation kernel. A container → host kernel escape compromises the workstation.
 - **macOS via Lima.** The container kernel is the Lima VM kernel. The VM holds the forwarded SSH agent socket, the in-VM ahjo state, and per-repo GH tokens. The Mac itself is shielded by the `vz` boundary, but the VM is not "throwaway" — an escape there reads agent traffic and tokens for the lifetime of the running VM.
 
+**Loop device selection.** ahjo's own btrfs storage pool is normally backed by a loop file on one of `/dev/loop0..7`, and a read-write node for it would give the container the root filesystems of every other container. So ahjo passes only loop devices with no backing file (no `/sys/block/loopN/loop/backing_file`); any error while checking counts as bound. `repo add` fails if none is free. Because loop indices are reassigned at every host boot, ahjo also sets `boot.autostart=false` on the container (so Incus does not restart it before ahjo can re-check) and re-checks before every ahjo-initiated start (`shell`, `claude`, `create`, `top`, `repo pull` and similar): while the container is stopped, any passed device that is now bound or gone is removed with a `warn:` line, and newly free ones are added. A device the container bound itself and left bound is treated as foreign and dropped. If a removal fails the container is not started.
+
+**Residual risk.** The passed devices are still host-global. If the host, or another `nested_incus` container, binds one of them *while this container is running*, code in the container can read and write it, and the re-check cannot see that because it only runs at start. Running `incus start` by hand bypasses the re-check entirely. Closing this needs a design that does not share host loop devices at all; that is not implemented.
+
 The `/dev/loopN` pool is also host-shared: all containers compete for the same finite slot range, and `LOOP_CTL_ADD` is uncapped — a buggy or hostile workload can starve sibling containers (and the host's own loop-mounted storage pool) until the host is rebooted.
 
-**When to enable.** Only when the repo legitimately runs nested container runtimes or loop-mounted image tooling, and only if you accept the kernel attack surface bump. ahjo's own repo enables it so ahjo-in-ahjo dogfooding works out of the box. The default is off.
+**When to enable.** Only when the repo legitimately runs nested container runtimes or loop-mounted image tooling, and only if you accept the kernel attack surface bump. ahjo's own repo enables it so ahjo-in-ahjo dogfooding works out of the box. The default is off, and enabling it needs your explicit approval.
 
 ## Out of scope
 
