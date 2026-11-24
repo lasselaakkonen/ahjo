@@ -184,3 +184,55 @@ func mustSet(t *testing.T, path, k, v string) {
 		t.Fatalf("SetAt(%q=%q): %v", k, v, err)
 	}
 }
+
+func TestResolverAt_Precedence(t *testing.T) {
+	p := envPath(t)
+	if err := SetAt(p, "K", "file"); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("K", "proc")
+	r, err := ResolverAt(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v, ok := r("K"); !ok || v != "proc" {
+		t.Errorf("non-empty process env should win, got %q,%v", v, ok)
+	}
+
+	t.Setenv("K", "")
+	if v, ok := r("K"); !ok || v != "file" {
+		t.Errorf("file should beat empty process env, got %q,%v", v, ok)
+	}
+
+	if err := SetAt(p, "E", ""); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("E", "")
+	r, _ = ResolverAt(p)
+	if v, ok := r("E"); !ok || v != "" {
+		t.Errorf("set-but-empty everywhere should be (\"\", true), got %q,%v", v, ok)
+	}
+
+	t.Setenv("ONLYPROC", "")
+	if v, ok := r("ONLYPROC"); !ok || v != "" {
+		t.Errorf("set-but-empty process env, got %q,%v", v, ok)
+	}
+	if v, ok := r("DEFINITELY_UNSET_KEY_XYZ"); ok || v != "" {
+		t.Errorf("unset key, got %q,%v", v, ok)
+	}
+	if got := os.Getenv("K"); got != "" {
+		t.Errorf("resolver must not mutate process env, K=%q", got)
+	}
+}
+
+func TestResolverAt_MissingFile(t *testing.T) {
+	r, err := ResolverAt(envPath(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("P", "x")
+	if v, ok := r("P"); !ok || v != "x" {
+		t.Errorf("got %q,%v", v, ok)
+	}
+}

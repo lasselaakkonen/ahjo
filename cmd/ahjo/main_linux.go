@@ -10,16 +10,11 @@ import (
 	"syscall"
 
 	"github.com/lasselaakkonen/ahjo/internal/cli"
-	"github.com/lasselaakkonen/ahjo/internal/tokenstore"
 )
 
 var version = "dev"
 
 func main() {
-	if err := tokenstore.Load(); err != nil {
-		fmt.Fprintln(os.Stderr, "ahjo: warning: load ~/.ahjo/.env:", err)
-	}
-
 	// Cancel the command's context on the first Ctrl-C / SIGTERM so
 	// long-running ops (image build, repo-add wiring, WaitReady polls)
 	// unwind instead of hanging; a second signal then kills the process

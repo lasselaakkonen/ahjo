@@ -1,7 +1,8 @@
 // Package tokenstore persists KEY=VALUE pairs in ~/.ahjo/.env (and per-repo
 // .env files under ~/.ahjo-shared/repo-env/<slug>.env) so the in-VM ahjo can
-// pick secrets up automatically and forward them into containers via the
-// forward_env mechanism, without requiring the user to edit shellrc.
+// look secrets up on demand (Lookup/Resolver) and forward them into
+// containers via the forward_env mechanism, without requiring the user to
+// edit shellrc. The files are never exported into ahjo's own process env.
 package tokenstore
 
 import (
@@ -21,28 +22,36 @@ const (
 
 func Path() string { return filepath.Join(paths.AhjoDir(), ".env") }
 
-// Load applies KEY=VALUE pairs from ~/.ahjo/.env to the process env, but only
-// for keys that are currently unset. Missing file is not an error.
-func Load() error {
-	f, err := os.Open(Path())
+// Lookup resolves key the way a startup load into the process env would have
+// made os.Getenv behave: a non-empty process env value wins, then
+// ~/.ahjo/.env, then a set-but-empty process env value. It never mutates the
+// process env. A read error on ~/.ahjo/.env is treated as "not in the file".
+func Lookup(key string) (string, bool) {
+	r, _ := Resolver()
+	return r(key)
+}
+
+// Resolver returns a lookup func with the same precedence as Lookup that
+// reads ~/.ahjo/.env once. A read error is returned alongside a resolver
+// that falls back to process env only.
+func Resolver() (func(key string) (string, bool), error) { return ResolverAt(Path()) }
+
+// ResolverAt is Resolver against an explicit env file path.
+func ResolverAt(path string) (func(key string) (string, bool), error) {
+	file, err := ListAt(path)
 	if err != nil {
-		if os.IsNotExist(err) {
-			return nil
-		}
-		return err
+		file = nil
 	}
-	defer f.Close()
-	sc := bufio.NewScanner(f)
-	for sc.Scan() {
-		k, v, ok := parseLine(sc.Text())
-		if !ok {
-			continue
+	return func(key string) (string, bool) {
+		v, ok := os.LookupEnv(key)
+		if ok && v != "" {
+			return v, true
 		}
-		if os.Getenv(k) == "" {
-			os.Setenv(k, v)
+		if fv, found := file[key]; found {
+			return fv, true
 		}
-	}
-	return sc.Err()
+		return v, ok
+	}, err
 }
 
 // SetToken writes CLAUDE_CODE_OAUTH_TOKEN into ~/.ahjo/.env, preserving any

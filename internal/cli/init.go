@@ -282,7 +282,7 @@ Signed-By: /etc/apt/keyrings/zabbly.asc
 		{
 			Title: "Authenticate Claude Code (claude setup-token)",
 			Skip: func() (bool, string, error) {
-				if os.Getenv(tokenstore.TokenEnv) != "" {
+				if v, _ := tokenstore.Lookup(tokenstore.TokenEnv); v != "" {
 					return true, tokenstore.TokenEnv + " already set", nil
 				}
 				return false, "", nil
@@ -310,9 +310,6 @@ Signed-By: /etc/apt/keyrings/zabbly.asc
 				}
 				if err := tokenstore.SetToken(tok); err != nil {
 					return fmt.Errorf("save token: %w", err)
-				}
-				if err := os.Setenv(tokenstore.TokenEnv, tok); err != nil {
-					return err
 				}
 				fmt.Fprintln(out, "  → saved to "+tokenstore.Path())
 				return nil
