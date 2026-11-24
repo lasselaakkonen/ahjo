@@ -69,7 +69,7 @@ func newRepoCmd() *cobra.Command {
 		Use:   "repo",
 		Short: "Manage the repo registry",
 	}
-	cmd.AddCommand(newRepoAddCmd(), newRepoLsCmd(), newRepoRmCmd(), newRepoPullCmd(), newRepoSetTokenCmd())
+	cmd.AddCommand(newRepoAddCmd(), newRepoLsCmd(), newRepoRmCmd(), newRepoPullCmd(), newRepoSetTokenCmd(), newRepoApproveEnvCmd())
 	return cmd
 }
 
