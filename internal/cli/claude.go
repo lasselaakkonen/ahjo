@@ -6,6 +6,7 @@ import (
 	"os"
 
 	"github.com/spf13/cobra"
+	"golang.org/x/term"
 
 	"github.com/lasselaakkonen/ahjo/internal/incus"
 	"github.com/lasselaakkonen/ahjo/internal/paths"
@@ -84,9 +85,8 @@ func isTerminal(f *os.File) bool {
 	if f == nil {
 		return false
 	}
-	fi, err := f.Stat()
-	if err != nil {
-		return false
-	}
-	return fi.Mode()&os.ModeCharDevice != 0
+	// A real tty check: /dev/null is a character device too, and treating
+	// it as a terminal makes prompts read EOF instead of taking the
+	// non-interactive path.
+	return term.IsTerminal(int(f.Fd()))
 }
