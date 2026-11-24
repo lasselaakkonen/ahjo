@@ -3,10 +3,13 @@ package incus
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"reflect"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 )
@@ -30,23 +33,38 @@ type fakeExec struct {
 	runs  []fakeRun
 	n     int
 	Calls [][]string // each entry is {"incus", arg, ...}
+
+	// stdinDir, when set, makes each fake child dump whatever it reads on
+	// stdin to <stdinDir>/stdin-<call index>; see Stdin.
+	stdinDir string
+}
+
+// Stdin returns what call i (0-based) received on stdin ("" if none).
+func (fe *fakeExec) Stdin(i int) string {
+	b, _ := os.ReadFile(filepath.Join(fe.stdinDir, "stdin-"+strconv.Itoa(i)))
+	return string(b)
 }
 
 func (fe *fakeExec) command(ctx context.Context, name string, args ...string) *exec.Cmd {
+	idx := len(fe.Calls)
 	fe.Calls = append(fe.Calls, append([]string{name}, args...))
 	var r fakeRun
 	if fe.n < len(fe.runs) {
 		r = fe.runs[fe.n]
 	}
 	fe.n++
-	return helperCommand(ctx, r)
+	cmd := helperCommand(ctx, r)
+	if fe.stdinDir != "" {
+		cmd.Env = append(cmd.Env, "HELPER_STDIN_FILE="+filepath.Join(fe.stdinDir, "stdin-"+strconv.Itoa(idx)))
+	}
+	return cmd
 }
 
 // withFakeExec swaps execCommand for a recording fake and restores the real
 // seam on cleanup. Pass one fakeRun per expected invocation.
 func withFakeExec(t *testing.T, runs ...fakeRun) *fakeExec {
 	t.Helper()
-	fe := &fakeExec{runs: runs}
+	fe := &fakeExec{runs: runs, stdinDir: t.TempDir()}
 	orig := execCommand
 	execCommand = fe.command
 	t.Cleanup(func() { execCommand = orig })
@@ -78,6 +96,10 @@ func TestHelperProcess(t *testing.T) {
 	}
 	if s := os.Getenv("HELPER_STDERR"); s != "" {
 		fmt.Fprint(os.Stderr, s)
+	}
+	if f := os.Getenv("HELPER_STDIN_FILE"); f != "" {
+		in, _ := io.ReadAll(os.Stdin)
+		_ = os.WriteFile(f, in, 0o600)
 	}
 	code, _ := strconv.Atoi(os.Getenv("HELPER_EXIT"))
 	os.Exit(code)
@@ -511,5 +533,164 @@ func TestSystemctlIsActive(t *testing.T) {
 				t.Fatalf("SystemctlIsActive=%v want %v", got, tt.want)
 			}
 		})
+	}
+}
+
+// TestNetworkArgv pins the argv of the network ACL / network / profile-device
+// wrappers. The kv pairs travel as separate argv entries (incus's multi-key
+// `set` syntax).
+func TestNetworkArgv(t *testing.T) {
+	tests := []struct {
+		name string
+		call func()
+		want []string
+	}{
+		{"NetworkACLExists", func() { _, _ = NetworkACLExists("a") },
+			[]string{"incus", "network", "acl", "list", "--format=json"}},
+		{"NetworkACLCreate", func() { _ = NetworkACLCreate("a") },
+			[]string{"incus", "network", "acl", "create", "a"}},
+		{"NetworkACLReplace", func() { _ = NetworkACLReplace("a", "egress: []\n") },
+			[]string{"incus", "network", "acl", "edit", "a"}},
+		{"NetworkACLGet", func() { _, _ = NetworkACLGet("a", "user.ahjo.rules-hash") },
+			[]string{"incus", "network", "acl", "get", "a", "user.ahjo.rules-hash"}},
+		{"NetworkACLSet", func() { _ = NetworkACLSet("a", "user.x=1", "user.y=2") },
+			[]string{"incus", "network", "acl", "set", "a", "user.x=1", "user.y=2"}},
+		{"NetworkGet", func() { _, _ = NetworkGet("incusbr0", "security.acls") },
+			[]string{"incus", "network", "get", "incusbr0", "security.acls"}},
+		{"NetworkSet", func() {
+			_ = NetworkSet("incusbr0", "security.acls=ahjo-egress", "security.acls.default.egress.action=allow")
+		},
+			[]string{"incus", "network", "set", "incusbr0", "security.acls=ahjo-egress", "security.acls.default.egress.action=allow"}},
+		{"ProfileDeviceGet", func() { _, _ = ProfileDeviceGet("default", "eth0", "security.port_isolation") },
+			[]string{"incus", "profile", "device", "get", "default", "eth0", "security.port_isolation"}},
+		{"ProfileDeviceSet", func() {
+			_ = ProfileDeviceSet("default", "eth0", "security.port_isolation=true", "security.mac_filtering=true")
+		},
+			[]string{"incus", "profile", "device", "set", "default", "eth0", "security.port_isolation=true", "security.mac_filtering=true"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fe := withFakeExec(t, fakeRun{stdout: "[]"})
+			tt.call()
+			if len(fe.Calls) != 1 {
+				t.Fatalf("expected 1 incus call, got %d: %v", len(fe.Calls), fe.Calls)
+			}
+			if !reflect.DeepEqual(fe.Calls[0], tt.want) {
+				t.Fatalf("argv mismatch:\n got %q\nwant %q", fe.Calls[0], tt.want)
+			}
+		})
+	}
+}
+
+func TestNetworkACLExists(t *testing.T) {
+	tests := []struct {
+		name   string
+		stdout string
+		want   bool
+	}{
+		{"present", `[{"name":"other"},{"name":"ahjo-egress"}]`, true},
+		{"absent", `[{"name":"other"}]`, false},
+		{"empty", `[]`, false},
+		{"prefix is not a match", `[{"name":"ahjo-egress-2"}]`, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			withFakeExec(t, fakeRun{stdout: tt.stdout})
+			got, err := NetworkACLExists("ahjo-egress")
+			if err != nil {
+				t.Fatalf("NetworkACLExists: %v", err)
+			}
+			if got != tt.want {
+				t.Fatalf("NetworkACLExists=%v want %v", got, tt.want)
+			}
+		})
+	}
+	t.Run("failure is an error, not absent", func(t *testing.T) {
+		withFakeExec(t, fakeRun{stderr: "Error: permission denied", exit: 1})
+		got, err := NetworkACLExists("ahjo-egress")
+		if err == nil || got {
+			t.Fatalf("got (%v, %v), want (false, error)", got, err)
+		}
+	})
+	t.Run("bad json is an error", func(t *testing.T) {
+		withFakeExec(t, fakeRun{stdout: "not json"})
+		if _, err := NetworkACLExists("x"); err == nil {
+			t.Fatal("expected parse error")
+		}
+	})
+}
+
+func TestNetworkACLReplaceStdin(t *testing.T) {
+	const yaml = "egress:\n- action: drop\n  destination: 10.0.0.0/8\n  state: enabled\n"
+	fe := withFakeExec(t, fakeRun{})
+	if err := NetworkACLReplace("ahjo-egress", yaml); err != nil {
+		t.Fatalf("NetworkACLReplace: %v", err)
+	}
+	if got := fe.Stdin(0); got != yaml {
+		t.Fatalf("stdin mismatch:\n got %q\nwant %q", got, yaml)
+	}
+}
+
+func TestNetworkGettersTrim(t *testing.T) {
+	getters := map[string]func() (string, error){
+		"NetworkACLGet":    func() (string, error) { return NetworkACLGet("a", "k") },
+		"NetworkGet":       func() (string, error) { return NetworkGet("n", "k") },
+		"ProfileDeviceGet": func() (string, error) { return ProfileDeviceGet("p", "d", "k") },
+	}
+	for name, get := range getters {
+		t.Run(name+" trims", func(t *testing.T) {
+			withFakeExec(t, fakeRun{stdout: "  abc123\n"})
+			got, err := get()
+			if err != nil || got != "abc123" {
+				t.Fatalf("got (%q, %v), want (abc123, nil)", got, err)
+			}
+		})
+		t.Run(name+" unset is empty", func(t *testing.T) {
+			withFakeExec(t, fakeRun{stdout: "\n"})
+			got, err := get()
+			if err != nil || got != "" {
+				t.Fatalf("got (%q, %v), want (\"\", nil)", got, err)
+			}
+		})
+	}
+}
+
+// TestNetworkErrorsCarryStderr: a non-zero exit from any wrapper surfaces as an
+// error that includes incus's stderr and the exit code.
+func TestNetworkErrorsCarryStderr(t *testing.T) {
+	calls := map[string]func() error{
+		"NetworkACLCreate":  func() error { return NetworkACLCreate("a") },
+		"NetworkACLReplace": func() error { return NetworkACLReplace("a", "x: y\n") },
+		"NetworkACLGet":     func() error { _, err := NetworkACLGet("a", "k"); return err },
+		"NetworkACLSet":     func() error { return NetworkACLSet("a", "k=v") },
+		"NetworkGet":        func() error { _, err := NetworkGet("n", "k"); return err },
+		"NetworkSet":        func() error { return NetworkSet("n", "k=v") },
+		"ProfileDeviceGet":  func() error { _, err := ProfileDeviceGet("p", "d", "k"); return err },
+		"ProfileDeviceSet":  func() error { return ProfileDeviceSet("p", "d", "k=v") },
+	}
+	for name, call := range calls {
+		t.Run(name, func(t *testing.T) {
+			withFakeExec(t, fakeRun{stderr: "Error: boom-from-incus", exit: 3})
+			err := call()
+			if err == nil {
+				t.Fatal("expected error, got nil")
+			}
+			if !strings.Contains(err.Error(), "boom-from-incus") || !strings.Contains(err.Error(), "exit 3") {
+				t.Fatalf("error lacks stderr/exit code: %v", err)
+			}
+		})
+	}
+}
+
+// TestNetworkSetRequiresPairs: a set with no key=value pairs must not shell out.
+func TestNetworkSetRequiresPairs(t *testing.T) {
+	fe := withFakeExec(t)
+	for _, err := range []error{NetworkACLSet("a"), NetworkSet("n"), ProfileDeviceSet("p", "d")} {
+		if err == nil {
+			t.Fatal("expected error for empty kv")
+		}
+	}
+	if len(fe.Calls) != 0 {
+		t.Fatalf("unexpected incus calls: %v", fe.Calls)
 	}
 }
