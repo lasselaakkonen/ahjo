@@ -1,6 +1,7 @@
 package initflow
 
 import (
+	"fmt"
 	"math/rand/v2"
 	"net/netip"
 	"slices"
@@ -66,27 +67,58 @@ func mergeSpans(ps []netip.Prefix) []span {
 	return out
 }
 
-// effectiveBlockedCount is |blocked \ optIn|, computed by intervals.
-func effectiveBlockedCount(blocked, optIn []netip.Prefix) uint64 {
-	bs := mergeSpans(blocked)
-	os := mergeSpans(optIn)
-	var total uint64
-	for _, b := range bs {
-		total += b.hi - b.lo
-		for _, o := range os {
-			lo, hi := max(b.lo, o.lo), min(b.hi, o.hi)
-			if lo < hi {
-				total -= hi - lo
+// subtractSpans returns the parts of the merged spans a not in the merged
+// spans b.
+func subtractSpans(a, b []span) []span {
+	var out []span
+	for _, s := range a {
+		cur := s.lo
+		for _, o := range b {
+			if o.hi <= cur || o.lo >= s.hi {
+				continue
 			}
+			if o.lo > cur {
+				out = append(out, span{cur, o.lo})
+			}
+			cur = max(cur, o.hi)
 		}
+		if cur < s.hi {
+			out = append(out, span{cur, s.hi})
+		}
+	}
+	return out
+}
+
+// effectiveBlockedCount is |(blocked \ optIn) ∪ hard|, computed by intervals.
+func effectiveBlockedCount(blocked, optIn, hard []netip.Prefix) uint64 {
+	soft := subtractSpans(mergeSpans(blocked), mergeSpans(optIn))
+	hs := mergeSpans(hard)
+	var total uint64
+	for _, h := range hs {
+		total += h.hi - h.lo
+	}
+	for _, r := range subtractSpans(soft, hs) {
+		total += r.hi - r.lo
 	}
 	return total
 }
 
+func addrs(t *testing.T, ss ...string) []netip.Addr {
+	t.Helper()
+	out := make([]netip.Addr, 0, len(ss))
+	for _, s := range ss {
+		a, err := netip.ParseAddr(s)
+		if err != nil {
+			t.Fatalf("ParseAddr(%q): %v", s, err)
+		}
+		out = append(out, a)
+	}
+	return out
+}
+
 func TestAllowedEgressMembership(t *testing.T) {
-	hostAddr := netip.MustParseAddr("203.0.113.7")
-	blocked := BlockedPrefixes([]netip.Addr{hostAddr})
-	allowed := AllowedEgress(blocked, nil)
+	hard := HardBlockedPrefixes(addrs(t, "203.0.113.7"), netip.MustParsePrefix("10.20.30.0/24"))
+	allowed := AllowedEgress(BlockedPrefixes(), nil, hard)
 
 	var outside []string
 	for _, p := range fixedBlockedPrefixes {
@@ -133,30 +165,57 @@ func TestAllowedEgressMembership(t *testing.T) {
 }
 
 func TestAllowedEgressOptIn(t *testing.T) {
-	hostAddr := netip.MustParseAddr("203.0.113.7")
 	tests := []struct {
 		name    string
 		optIn   []string
+		hard    []string
 		allowed []string
 		blocked []string
 	}{
 		{
 			name:    "opt-in /16 inside 10/8",
 			optIn:   []string{"10.1.0.0/16"},
+			hard:    []string{"203.0.113.7/32", "10.20.30.0/24"},
 			allowed: []string{"10.1.2.3", "10.1.0.0", "10.1.255.255"},
 			blocked: []string{"10.0.0.1", "10.2.0.1", "10.0.255.255", "10.20.30.1"},
 		},
 		{
-			name:    "opt-in covering host address",
+			name:    "opt-in covering a public host address keeps the host blocked",
 			optIn:   []string{"203.0.113.0/24"},
-			allowed: []string{"203.0.113.7"},
-			blocked: []string{"192.168.5.2"},
+			hard:    []string{"203.0.113.7/32"},
+			allowed: []string{"203.0.113.6", "203.0.113.8", "203.0.113.0", "203.0.113.255"},
+			blocked: []string{"203.0.113.7", "192.168.5.2"},
 		},
 		{
 			name:    "opt-in /32 for one LAN host",
 			optIn:   []string{"192.168.1.10/32"},
+			hard:    []string{"203.0.113.7/32"},
 			allowed: []string{"192.168.1.10"},
 			blocked: []string{"192.168.1.9", "192.168.1.11", "192.168.5.2"},
+		},
+		{
+			// The corporate-VPN case: 10/8 must not open the incusbr0
+			// gateway (every host listener) or a sibling container.
+			name:    "opt-in 10/8 keeps the bridge subnet blocked",
+			optIn:   []string{"10.0.0.0/8"},
+			hard:    []string{"10.20.30.0/24"},
+			allowed: []string{"10.1.2.3", "10.20.31.1", "10.0.0.1", "10.20.29.255", "10.255.255.255"},
+			blocked: []string{"10.20.30.1", "10.20.30.57", "10.20.30.0", "10.20.30.255"},
+		},
+		{
+			// Inside a Lima VM: the Mac and the VM's own address stay
+			// blocked under a whole-192.168 opt-in.
+			name:    "opt-in 192.168/16 keeps the Mac and the VM blocked",
+			optIn:   []string{"192.168.0.0/16"},
+			hard:    []string{"192.168.5.2/32", "192.168.5.15/32"},
+			allowed: []string{"192.168.5.3", "192.168.1.10", "192.168.5.1", "192.168.5.14", "192.168.5.16"},
+			blocked: []string{"192.168.5.2", "192.168.5.15"},
+		},
+		{
+			name:    "hard block equal to the opt-in",
+			optIn:   []string{"10.20.30.0/24"},
+			hard:    []string{"10.20.30.0/24"},
+			blocked: []string{"10.20.30.0", "10.20.30.1", "10.20.30.255"},
 		},
 	}
 	for _, tt := range tests {
@@ -165,7 +224,7 @@ func TestAllowedEgressOptIn(t *testing.T) {
 			if err != nil {
 				t.Fatalf("ParseOptIn: %v", err)
 			}
-			allowed := AllowedEgress(BlockedPrefixes([]netip.Addr{hostAddr}), optIn)
+			allowed := AllowedEgress(BlockedPrefixes(), optIn, mustPrefixes(t, tt.hard...))
 			for _, a := range tt.allowed {
 				if !inAny(allowed, netip.MustParseAddr(a)) {
 					t.Errorf("%s should be allowed", a)
@@ -185,19 +244,45 @@ func TestAllowedEgressOptIn(t *testing.T) {
 // minimal, covers exactly 2^32 minus the effectively blocked count, and agrees
 // with a direct membership check on random addresses.
 func TestAllowedEgressProperties(t *testing.T) {
-	tests := []struct {
+	type tc struct {
 		name    string
 		blocked []netip.Prefix
 		optIn   []netip.Prefix
-	}{
+		hard    []netip.Prefix
+	}
+	tests := []tc{
 		{
 			name:    "default with host address",
-			blocked: BlockedPrefixes([]netip.Addr{netip.MustParseAddr("203.0.113.7")}),
+			blocked: BlockedPrefixes(),
+			hard:    HardBlockedPrefixes(addrs(t, "203.0.113.7")),
 		},
 		{
 			name:    "default with opt-in",
-			blocked: BlockedPrefixes(nil),
+			blocked: BlockedPrefixes(),
 			optIn:   mustPrefixes(t, "10.1.0.0/16", "192.168.1.10/32"),
+		},
+		{
+			name:    "Lima VM with wide opt-ins",
+			blocked: BlockedPrefixes(),
+			optIn:   mustPrefixes(t, "10.0.0.0/8", "192.168.0.0/16"),
+			hard: HardBlockedPrefixes(addrs(t, "192.168.5.15", "10.20.30.1", "127.0.0.1", "192.168.5.2"),
+				netip.MustParsePrefix("10.20.30.1/24")),
+		},
+		{
+			name:    "hard block equal to an opt-in",
+			blocked: mustPrefixes(t, "10.0.0.0/8"),
+			optIn:   mustPrefixes(t, "10.20.30.0/24"),
+			hard:    mustPrefixes(t, "10.20.30.0/24"),
+		},
+		{
+			name:    "hard block wider than the opt-in and outside the blocked set",
+			blocked: mustPrefixes(t, "10.0.0.0/8"),
+			optIn:   mustPrefixes(t, "10.1.2.0/24"),
+			hard:    mustPrefixes(t, "10.1.0.0/16", "8.8.8.8/32", "8.8.8.8/32"),
+		},
+		{
+			name: "hard blocks only",
+			hard: mustPrefixes(t, "0.0.0.0/32", "255.255.255.255/32", "128.0.0.0/1"),
 		},
 		{
 			name:    "overlapping and duplicate blocks",
@@ -215,7 +300,7 @@ func TestAllowedEgressProperties(t *testing.T) {
 		},
 		{
 			name:    "opt-in outside blocked set",
-			blocked: BlockedPrefixes(nil),
+			blocked: BlockedPrefixes(),
 			optIn:   mustPrefixes(t, "8.8.8.0/24"),
 		},
 		{
@@ -237,11 +322,33 @@ func TestAllowedEgressProperties(t *testing.T) {
 		},
 	}
 	rng := rand.New(rand.NewPCG(1, 2))
+	// Randomized inputs: prefixes of mixed length clustered in a few /8s so
+	// blocks, opt-ins and hard blocks actually overlap.
+	randPrefixes := func(n int, minBits, maxBits int) []netip.Prefix {
+		bases := []uint32{10 << 24, 192<<24 | 168<<16, 203<<24 | 113<<8, rng.Uint32()}
+		out := make([]netip.Prefix, 0, n)
+		for range n {
+			base := bases[rng.IntN(len(bases))]
+			a := u32Addr(uint64(base ^ rng.Uint32()>>uint(8+rng.IntN(24))))
+			bits := minBits + rng.IntN(maxBits-minBits+1)
+			out = append(out, netip.PrefixFrom(a, bits))
+		}
+		return out
+	}
+	for i := range 40 {
+		tests = append(tests, tc{
+			name:    fmt.Sprintf("random %d", i),
+			blocked: slices.Concat(BlockedPrefixes(), randPrefixes(rng.IntN(4), 8, 32)),
+			optIn:   randPrefixes(rng.IntN(5), 8, 32),
+			hard:    randPrefixes(rng.IntN(6), 12, 32),
+		})
+	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			allowed := AllowedEgress(tt.blocked, tt.optIn)
+			allowed := AllowedEgress(tt.blocked, tt.optIn, tt.hard)
 			v4Blocked := normalizeIPv4(tt.blocked)
 			v4OptIn := normalizeIPv4(tt.optIn)
+			v4Hard := normalizeIPv4(tt.hard)
 
 			var total uint64
 			for i, p := range allowed {
@@ -267,7 +374,7 @@ func TestAllowedEgressProperties(t *testing.T) {
 					}
 				}
 			}
-			want := uint64(1)<<32 - effectiveBlockedCount(v4Blocked, v4OptIn)
+			want := uint64(1)<<32 - effectiveBlockedCount(v4Blocked, v4OptIn, v4Hard)
 			if total != want {
 				t.Fatalf("allowed address count = %d, want %d", total, want)
 			}
@@ -277,7 +384,7 @@ func TestAllowedEgressProperties(t *testing.T) {
 			for range 2000 {
 				samples = append(samples, u32Addr(uint64(rng.Uint32())))
 			}
-			for _, p := range slices.Concat(v4Blocked, v4OptIn) {
+			for _, p := range slices.Concat(v4Blocked, v4OptIn, v4Hard) {
 				s := prefixSpan(p)
 				samples = append(samples, u32Addr(s.lo), u32Addr(s.hi-1))
 				if s.lo > 0 {
@@ -288,7 +395,7 @@ func TestAllowedEgressProperties(t *testing.T) {
 				}
 			}
 			for _, a := range samples {
-				want := !inAny(v4Blocked, a) || inAny(v4OptIn, a)
+				want := (!inAny(v4Blocked, a) || inAny(v4OptIn, a)) && !inAny(v4Hard, a)
 				if got := inAny(allowed, a); got != want {
 					t.Fatalf("allowed(%s) = %v, want %v", a, got, want)
 				}
@@ -298,51 +405,111 @@ func TestAllowedEgressProperties(t *testing.T) {
 }
 
 func TestAllowedEgressDeterministic(t *testing.T) {
-	a := BlockedPrefixes([]netip.Addr{netip.MustParseAddr("203.0.113.7"), netip.MustParseAddr("10.20.30.1")})
+	a := BlockedPrefixes()
 	b := slices.Clone(a)
 	slices.Reverse(b)
 	optA := mustPrefixes(t, "10.1.0.0/16", "192.168.1.0/24")
 	optB := slices.Clone(optA)
 	slices.Reverse(optB)
-	if !slices.Equal(AllowedEgress(a, optA), AllowedEgress(b, optB)) {
+	hardA := mustPrefixes(t, "203.0.113.7/32", "10.20.30.0/24", "10.1.2.3/32")
+	hardB := slices.Clone(hardA)
+	slices.Reverse(hardB)
+	if !slices.Equal(AllowedEgress(a, optA, hardA), AllowedEgress(b, optB, hardB)) {
 		t.Fatal("AllowedEgress depends on input order")
 	}
 }
 
 func TestBlockedPrefixes(t *testing.T) {
+	got := BlockedPrefixes()
+	if !slices.IsSortedFunc(got, comparePrefix) || len(got) != len(fixedBlockedPrefixes) {
+		t.Fatalf("BlockedPrefixes = %v, want the fixed set sorted", got)
+	}
+	for _, p := range fixedBlockedPrefixes {
+		if !slices.Contains(got, p) {
+			t.Fatalf("BlockedPrefixes lacks %s", p)
+		}
+	}
+	got[0] = netip.MustParsePrefix("1.2.3.4/32")
+	if slices.Contains(BlockedPrefixes(), got[0]) {
+		t.Fatal("BlockedPrefixes returns a shared slice")
+	}
+}
+
+func TestHardBlockedPrefixes(t *testing.T) {
 	tests := []struct {
-		name      string
-		hostAddrs []string
-		wantExtra []string
+		name    string
+		addrs   []string
+		subnets []string
+		want    []string
 	}{
-		{name: "no host addresses"},
+		{name: "nothing"},
 		{
-			name:      "IPv4 host address added as /32",
-			hostAddrs: []string{"203.0.113.7"},
-			wantExtra: []string{"203.0.113.7/32"},
+			name:  "IPv4 address added as /32",
+			addrs: []string{"203.0.113.7"},
+			want:  []string{"203.0.113.7/32"},
 		},
 		{
-			name:      "4-in-6 unmapped, IPv6 ignored, duplicates collapsed",
-			hostAddrs: []string{"::ffff:198.51.100.9", "2001:db8::1", "fe80::1", "198.51.100.9"},
-			wantExtra: []string{"198.51.100.9/32"},
+			name:  "4-in-6 unmapped, IPv6 ignored, duplicates collapsed",
+			addrs: []string{"::ffff:198.51.100.9", "2001:db8::1", "fe80::1", "198.51.100.9"},
+			want:  []string{"198.51.100.9/32"},
 		},
 		{
-			name:      "host address inside a fixed range still listed",
-			hostAddrs: []string{"192.168.5.15"},
-			wantExtra: []string{"192.168.5.15/32"},
+			name:    "Lima VM: VM, Mac, gateway and bridge subnet, sorted and masked",
+			addrs:   []string{"192.168.5.15", "10.20.30.1", "192.168.5.2", "127.0.0.1"},
+			subnets: []string{"10.20.30.1/24"},
+			want:    []string{"10.20.30.0/24", "10.20.30.1/32", "127.0.0.1/32", "192.168.5.2/32", "192.168.5.15/32"},
+		},
+		{
+			name:    "IPv6 subnet ignored",
+			subnets: []string{"fd42::/64", "10.20.30.0/24"},
+			want:    []string{"10.20.30.0/24"},
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			var addrs []netip.Addr
-			for _, s := range tt.hostAddrs {
-				addrs = append(addrs, netip.MustParseAddr(s))
-			}
-			got := BlockedPrefixes(addrs)
-			want := slices.Concat(fixedBlockedPrefixes, mustPrefixes(t, tt.wantExtra...))
-			slices.SortFunc(want, comparePrefix)
+			got := HardBlockedPrefixes(addrs(t, tt.addrs...), mustPrefixes(t, tt.subnets...)...)
+			want := mustPrefixes(t, tt.want...)
 			if !slices.Equal(got, want) {
-				t.Fatalf("BlockedPrefixes = %v, want %v", got, want)
+				t.Fatalf("HardBlockedPrefixes = %v, want %v", got, want)
+			}
+		})
+	}
+}
+
+func TestOptInHardBlocked(t *testing.T) {
+	tests := []struct {
+		name  string
+		optIn []string
+		hard  []string
+		want  []string
+	}{
+		{name: "no opt-in", hard: []string{"10.20.30.0/24"}},
+		{name: "no overlap", optIn: []string{"10.1.0.0/16"}, hard: []string{"10.20.30.0/24", "203.0.113.7/32"}},
+		{
+			name:  "opt-in covers hard blocks, nested hard blocks collapse",
+			optIn: []string{"10.0.0.0/8", "192.168.0.0/16"},
+			hard:  []string{"10.20.30.1/32", "10.20.30.0/24", "192.168.5.15/32", "192.168.5.2/32", "203.0.113.7/32"},
+			want:  []string{"10.20.30.0/24", "192.168.5.2/32", "192.168.5.15/32"},
+		},
+		{
+			name:  "opt-in inside a hard block reports the opt-in",
+			optIn: []string{"10.20.30.0/28"},
+			hard:  []string{"10.20.30.0/24"},
+			want:  []string{"10.20.30.0/28"},
+		},
+		{
+			name:  "hard block equal to opt-in, reported once",
+			optIn: []string{"10.20.30.0/24", "10.0.0.0/8"},
+			hard:  []string{"10.20.30.0/24"},
+			want:  []string{"10.20.30.0/24"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := OptInHardBlocked(mustPrefixes(t, tt.optIn...), mustPrefixes(t, tt.hard...))
+			want := mustPrefixes(t, tt.want...)
+			if !slices.Equal(got, want) {
+				t.Fatalf("OptInHardBlocked = %v, want %v", got, want)
 			}
 		})
 	}
@@ -467,7 +634,7 @@ func TestEgressACLYAML(t *testing.T) {
 	}{
 		{name: "empty allow-list", allowed: nil},
 		{name: "two prefixes", allowed: mustPrefixes(t, "1.0.0.0/8", "8.8.8.0/24")},
-		{name: "real default set", allowed: AllowedEgress(BlockedPrefixes([]netip.Addr{netip.MustParseAddr("203.0.113.7")}), nil)},
+		{name: "real default set", allowed: AllowedEgress(BlockedPrefixes(), nil, HardBlockedPrefixes(addrs(t, "203.0.113.7")))},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

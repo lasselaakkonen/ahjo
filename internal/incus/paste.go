@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/netip"
 	"os"
 	"os/exec"
 )
@@ -53,6 +54,33 @@ func EnsurePasteDaemonProxy(container string) error {
 		return fmt.Errorf("resolve host.lima.internal: %w", err)
 	}
 	return EnsureReverseProxy(container, pasteDaemonProxyDevice, PasteDaemonContainerPort, ip, PasteDaemonContainerPort)
+}
+
+// LimaHostIPv4 returns host.lima.internal (the Mac, seen from the Lima VM) as
+// an IPv4 address, for the egress firewall's hard blocks. It uses the same
+// lookup as the paste daemon and `ahjo forward`; unlike them, a result that is
+// not IPv4 is an error, because the caller blocks it as an IPv4 /32. Callers
+// decide whether they are inside a Lima VM first (lima.IsGuest): on a native
+// Linux host the name does not resolve and there is nothing to block.
+func LimaHostIPv4() (netip.Addr, error) {
+	return limaHostIPv4(resolveLimaHostIP)
+}
+
+// limaHostIPv4 is the testable core of LimaHostIPv4, taking the resolver as a
+// parameter like reverseConnectIP.
+func limaHostIPv4(resolve func() (string, error)) (netip.Addr, error) {
+	s, err := resolve()
+	if err != nil {
+		return netip.Addr{}, err
+	}
+	a, err := netip.ParseAddr(s)
+	if err != nil {
+		return netip.Addr{}, fmt.Errorf("host.lima.internal resolved to %q: %w", s, err)
+	}
+	if a = a.Unmap(); !a.Is4() {
+		return netip.Addr{}, fmt.Errorf("host.lima.internal resolved to %s, want an IPv4 address", a)
+	}
+	return a, nil
 }
 
 // resolveLimaHostIP returns the IPv4 address of host.lima.internal — the
