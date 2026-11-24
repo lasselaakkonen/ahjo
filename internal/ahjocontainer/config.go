@@ -89,8 +89,11 @@ type Customizations struct {
 // AhjoCustomizations is ahjo's per-repo extension namespace, replacing the
 // retired .ahjoconfig schema. The key name (`customizations.ahjo`) is
 // retained from the devcontainer.json schema we used to share — the file
-// path moved but the field layout did not. forward_env feeds into the env
-// envelope at container-attach time; auto_expose overrides the global
+// path moved but the field layout did not. forward_env only *requests*
+// names: a name reaches the env envelope (repo add, attach, background
+// refresh) only if it is in the global config.forward_env or the repo's
+// registry ApprovedForwardEnv — see internal/cli/forwardenv.go. auto_expose
+// overrides the global
 // ~/.ahjo/config.toml [auto_expose] block.
 type AhjoCustomizations struct {
 	ForwardEnv []string             `json:"forward_env"`
