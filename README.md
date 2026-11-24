@@ -475,7 +475,7 @@ sudo ln -sf "$PWD/ahjo" /usr/local/bin/ahjo
 | `ahjo ls` | Worktrees with aliases, slug, SSH port, container state, exposed + forwarded ports, creation time. |
 | `ahjo rm <alias> [--force] [--force-default]` | Stop + delete the container, remove the worktree, free ports, drop the registry entry. `--force` skips the `/repo` cleanliness check and removes even with uncommitted/unpushed work; `--force-default` permits removing a repo's default-branch container (after which the repo can't spawn new branches until re-added). |
 | `ahjo gc [--older-than DUR] [--prune] [--dry-run]` | Report (and optionally remove) stale worktrees. Defaults to dry-run. |
-| `ahjo nuke [-y]` | Tear down everything `init` built so it can be rebuilt: containers, `ahjo-base` + `ahjo-osbase` images (and any leftover `coi-default` from a pre-Phase-1 install), host keys, port allocations. On macOS this also stops + deletes the Lima VM. Keeps `~/.ahjo/{config.toml,profiles}` and registered repos. |
+| `ahjo nuke [-y]` | Tear down everything `init` built so it can be rebuilt: containers, `ahjo-base` + `ahjo-osbase` images (and any leftover `coi-default` from a pre-Phase-1 install), host keys, port allocations. On macOS this also stops + deletes the Lima VM. Keeps `~/.ahjo/{config.toml,profiles}` and registered repos (on macOS, the Mac-side files; the VM's own `~/.ahjo`, including its `config.toml`, goes with the VM). |
 | `ahjo --version` | Print the version baked into the binary. (`ahjo version` also works on macOS; on Linux use the `--version` flag.) |
 
 Global config: `~/.ahjo/config.toml` (optional). See [`internal/config/config.go`](internal/config/config.go) for fields — currently `forward_env`, `port_range`, `auto_expose`, and `network`.
@@ -507,10 +507,19 @@ blocked (see [Network](docs/CONTAINER-ISOLATION.md#network)).
 allow_cidrs = ["10.1.0.0/16"]   # IPv4 only, /8 or longer; default: none
 ```
 
-Run `ahjo update` after editing it; running containers pick the change up on
-their next restart. It is read only from this global file, never from a repo's
-config. Existing installs must run `ahjo update` once to get the network
-restrictions at all.
+On macOS the firewall step runs inside the Lima VM and reads the VM user's
+`~/.ahjo/config.toml`, not the Mac-side file of the same name (they are
+separate and not synced). Edit the one in the VM, for example with
+`limactl shell ahjo -- nano ~/.ahjo/config.toml`; `ahjo nuke` deletes the VM
+and this file with it.
+
+Run `ahjo update` after editing it; no container restart is needed. It is read
+only from this global file, never from a repo's config. Existing installs must
+run `ahjo update` once to get the network restrictions at all. The firewall
+applies to running containers right away, and the first time it is applied
+Incus may re-attach each running container's network interface, which drops
+open connections: run `ahjo update` when no container is mid-task, and restart
+a container if it loses network.
 
 ## Per-repo config (ahjocontainer.json)
 
@@ -615,7 +624,7 @@ Containers can reach only the public internet; private ranges (`10/8`, `172.16/1
 allow_cidrs = ["10.1.0.0/16"]
 ```
 
-Then run `ahjo update` and restart the container. To reach a single service on your Mac, use `ahjo forward <alias> <host-port>` instead of opening a range.
+On macOS, edit the file inside the VM (`limactl shell ahjo -- nano ~/.ahjo/config.toml`), not the Mac-side `~/.ahjo/config.toml`. Then run `ahjo update`; no restart is needed, though if this is the first time the firewall is applied, restart any container that loses network. The host, the `incusbr0` subnet and (on macOS) the Mac stay blocked even inside an opted-in range; to reach a single service on your Mac, use `ahjo forward <alias> <host-port>`.
 
 If you installed ahjo before this restriction existed, run `ahjo update` once to apply it; `ahjo doctor` warns while it is missing.
 
