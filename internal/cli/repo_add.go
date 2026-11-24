@@ -365,7 +365,7 @@ func repoAddSetup(ctx context.Context, slug, primary string, aliases []string, s
 	approvedEnv := promptForwardEnvConsent(
 		primary, pendingEnv, !yes && isTerminal(os.Stdin),
 		func(k string) bool { v, ok := lookup(k); return ok && v != "" },
-		os.Stdin, cobraOut(),
+		stdin, cobraOut(), // the gate's reader: one stdin buffer for every prompt
 	)
 	hostEnv := resolveForwardEnv(
 		forwardEnvKeys(cfg.ForwardEnv, append(allowedEnv, approvedEnv...)), nil, lookup,
