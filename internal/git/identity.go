@@ -7,6 +7,8 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+
+	"github.com/lasselaakkonen/ahjo/internal/tokenstore"
 )
 
 // Identity is the git author identity ahjo seeds inside a fresh branch
@@ -112,7 +114,14 @@ func fromGH() (Identity, error) {
 	if _, err := exec.LookPath("gh"); err != nil {
 		return Identity{}, errGHUnavailable
 	}
-	out, err := exec.Command("gh", "api", "user").Output()
+	cmd := exec.Command("gh", "api", "user")
+	// ~/.ahjo/.env is no longer exported into ahjo's process env, so a
+	// GH_TOKEN stored only there (`ahjo env set GH_TOKEN`) has to be handed
+	// to this one child explicitly. Lookup prefers a non-empty process value.
+	if tok, ok := tokenstore.Lookup(tokenstore.GHTokenEnv); ok && tok != "" {
+		cmd.Env = append(os.Environ(), tokenstore.GHTokenEnv+"="+tok)
+	}
+	out, err := cmd.Output()
 	if err != nil {
 		return Identity{}, errGHUnavailable
 	}
