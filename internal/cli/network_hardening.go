@@ -36,6 +36,11 @@ type egressInputs struct {
 	// LimaHost is host.lima.internal inside a Lima VM; invalid (the zero
 	// Addr) on a native Linux host.
 	LimaHost netip.Addr
+	// LimaGateways are the IPv4 default-route gateways inside a Lima VM, all
+	// of which are the Mac (the vzNAT gateway, typically 192.168.64.1, and
+	// usually host.lima.internal too). Nil on a native Linux host, where the
+	// default gateway is the user's router and theirs to opt in.
+	LimaGateways []netip.Addr
 	// BridgeIPv4 is incusbr0's raw bridgeIPv4Key value.
 	BridgeIPv4 string
 	// AllowCIDRs is the user's network.allow_cidrs.
@@ -44,8 +49,9 @@ type egressInputs struct {
 
 // egressDesired is the ACL content the step converges on.
 type egressDesired struct {
-	HostAddrs []netip.Addr
-	LimaHost  netip.Addr
+	HostAddrs    []netip.Addr
+	LimaHost     netip.Addr
+	LimaGateways []netip.Addr
 	// BridgeSubnet is incusbr0's subnet, masked (10.20.30.0/24).
 	BridgeSubnet netip.Prefix
 	OptIn        []netip.Prefix
@@ -94,6 +100,7 @@ func computeEgressDesired(in egressInputs) (egressDesired, error) {
 	if in.LimaHost.IsValid() {
 		addrs = append(addrs, in.LimaHost)
 	}
+	addrs = append(addrs, in.LimaGateways...)
 	blocked := initflow.BlockedPrefixes()
 	hard := initflow.HardBlockedPrefixes(addrs, subnet)
 	allowed := initflow.AllowedEgress(blocked, optIn, hard)
@@ -101,6 +108,7 @@ func computeEgressDesired(in egressInputs) (egressDesired, error) {
 	return egressDesired{
 		HostAddrs:        in.HostAddrs,
 		LimaHost:         in.LimaHost,
+		LimaGateways:     in.LimaGateways,
 		BridgeSubnet:     subnet,
 		OptIn:            optIn,
 		Blocked:          blocked,
@@ -135,6 +143,16 @@ func (d egressDesired) hardBlockSummary() string {
 	if d.LimaHost.IsValid() {
 		parts = append(parts, "host.lima.internal "+d.LimaHost.String())
 	}
+	// host.lima.internal is usually also a default gateway; name it once.
+	var gws []netip.Addr
+	for _, g := range d.LimaGateways {
+		if g != d.LimaHost && !slices.Contains(gws, g) {
+			gws = append(gws, g)
+		}
+	}
+	if len(gws) > 0 {
+		parts = append(parts, "Mac gateways "+joinAddrs(gws))
+	}
 	return "  → always blocked, even inside network.allow_cidrs: " + strings.Join(parts, "; ")
 }
 
@@ -145,12 +163,17 @@ func (d egressDesired) optInHardBlockedLine() string {
 	if len(d.OptInHardBlocked) == 0 {
 		return ""
 	}
+	what := "host addresses and the " + incus.BridgeNetwork + " subnet"
+	if d.LimaHost.IsValid() || len(d.LimaGateways) > 0 {
+		what = "host addresses, the Mac and the " + incus.BridgeNetwork + " subnet"
+	}
 	return "  → network.allow_cidrs covers " + joinPrefixes(d.OptInHardBlocked) +
-		", which stays blocked (host addresses and the " + incus.BridgeNetwork + " subnet); reach a host service with `ahjo forward`"
+		", which stays blocked (" + what + "); reach a host service with `ahjo forward`"
 }
 
 // loadEgressDesired reads config, host addresses, incusbr0's address and,
-// inside a Lima VM, host.lima.internal, and computes the target.
+// inside a Lima VM, host.lima.internal and the VM's default gateways, and
+// computes the target.
 func loadEgressDesired() (egressDesired, error) {
 	cfg, err := config.Load()
 	if err != nil {
@@ -169,6 +192,13 @@ func loadEgressDesired() (egressDesired, error) {
 	if lima.IsGuest() {
 		if in.LimaHost, err = incus.LimaHostIPv4(); err != nil {
 			return egressDesired{}, fmt.Errorf("resolve host.lima.internal inside the Lima VM: %w", err)
+		}
+		// Every default gateway of the VM is the Mac (the vzNAT gateway is
+		// not host.lima.internal), and a broad opt-in such as 192.168.0.0/16
+		// would otherwise expose every Mac service bound to 0.0.0.0. None at
+		// all is fine; failing to read them is not.
+		if in.LimaGateways, err = initflow.DefaultGatewaysIPv4(); err != nil {
+			return egressDesired{}, fmt.Errorf("read default gateways inside the Lima VM: %w", err)
 		}
 	}
 	return computeEgressDesired(in)
@@ -269,7 +299,7 @@ func networkHardeningShow(allowCIDRs []string, cfgErr error) string {
 	fmt.Fprintf(&b, "incus profile device set %s %s %s\n",
 		incus.DefaultProfile, incus.BridgeNIC, strings.Join(kvArgs(incus.HardenedNICKeys()), " "))
 	fmt.Fprintf(&b, "blocked: %s\n", joinPrefixes(initflow.BlockedPrefixes()))
-	fmt.Fprintf(&b, "always blocked, even inside an opt-in: the %s subnet, every IPv4 address on a host interface, host.lima.internal (read when the step runs)\n",
+	fmt.Fprintf(&b, "always blocked, even inside an opt-in: the %s subnet, every IPv4 address on a host interface and, inside a Lima VM, the Mac at host.lima.internal and every default gateway (read when the step runs)\n",
 		incus.BridgeNetwork)
 	switch {
 	case cfgErr != nil:
