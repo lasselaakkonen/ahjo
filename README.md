@@ -344,7 +344,7 @@ Add the `ahjo/docker` built-in Feature to your `.ahjo/ahjocontainer.json`:
 }
 ```
 
-This installs Docker Engine and the Compose plugin via `get.docker.com` and enables the kernel capability Docker needs (`security.nesting`) after you approve it: `ahjo repo add` asks `Allow? [y/N]` on a terminal, and non-interactive runs (scripts, `--yes`) need `--allow-nesting`, otherwise `repo add` fails. `--yes` does not approve it. No other config — no `customizations.ahjo.nested_incus`, no `privileged`, no bind mounts.
+This installs Docker Engine and the Compose plugin via `get.docker.com` and enables the kernel capability Docker needs (`security.nesting`) after you approve it: `ahjo repo add` asks `Allow? [y/N]` on a terminal, and runs without a terminal (scripts, CI) need `--allow-nesting`, otherwise `repo add` fails. `--yes` does not approve it; on a terminal you are still asked. No other config — no `customizations.ahjo.nested_incus`, no `privileged`, no bind mounts.
 
 Options: `version` (default `latest`), `channel` (`stable`/`test`), `daemon_args` (merged into `daemon.json` as a JSON fragment).
 
