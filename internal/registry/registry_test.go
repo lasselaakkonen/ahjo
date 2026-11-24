@@ -1,8 +1,12 @@
 package registry
 
 import (
+	"bytes"
+	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/BurntSushi/toml"
 )
 
 func TestAliasToSlugCaps(t *testing.T) {
@@ -135,5 +139,29 @@ func TestBranchHostKeysSlug(t *testing.T) {
 				t.Fatalf("HostKeysSlug() = %q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestRepoApprovedForwardEnvRoundTrip(t *testing.T) {
+	in := &Registry{Repos: []Repo{
+		{Name: "a", ApprovedForwardEnv: []string{"FOO", "BAR"}},
+		{Name: "b"},
+	}}
+	var buf bytes.Buffer
+	if err := toml.NewEncoder(&buf).Encode(in); err != nil {
+		t.Fatal(err)
+	}
+	if n := strings.Count(buf.String(), "approved_forward_env"); n != 1 {
+		t.Errorf("approved_forward_env should appear once (omitempty), got %d:\n%s", n, buf.String())
+	}
+	var out Registry
+	if _, err := toml.Decode(buf.String(), &out); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(out.Repos[0].ApprovedForwardEnv, []string{"FOO", "BAR"}) {
+		t.Errorf("round trip lost names: %v", out.Repos[0].ApprovedForwardEnv)
+	}
+	if len(out.Repos[1].ApprovedForwardEnv) != 0 {
+		t.Errorf("unexpected names on repo b: %v", out.Repos[1].ApprovedForwardEnv)
 	}
 }
