@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sort"
 	"strings"
 
 	"github.com/lasselaakkonen/ahjo/internal/ahjocontainer"
@@ -49,6 +50,12 @@ import (
 // pass enforces it consistently). Within a row, probes are any-match
 // (Docker fires on any of Dockerfile / compose.y*ml).
 //
+// nesting marks rows whose Features request security.nesting (ahjo/docker).
+// Those rows are never auto-accepted on --yes / non-TTY stdin unless
+// --allow-nesting (or --allow-nested-incus) was passed, and their prompt
+// says so; TestDetectTable_NestingMatchesBuiltins keeps the flag in sync
+// with the built-in Features' metadata.
+//
 // `bun.lockb` intentionally absent: no bundled stack ships bun, so
 // detecting it would suggest nothing and warm-installing it would
 // fail. Re-add the row when a `bun` stack lands.
@@ -58,6 +65,7 @@ type detectEntry struct {
 	stack    string
 	features map[string]interface{}
 	cmd      []string
+	nesting  bool
 }
 
 var detectTable = []detectEntry{
@@ -138,6 +146,7 @@ var detectTable = []detectEntry{
 		probes:   []string{"Dockerfile", "compose.yaml", "compose.yml", "docker-compose.yaml", "docker-compose.yml"},
 		name:     "docker",
 		features: map[string]interface{}{"ahjo/docker": map[string]interface{}{}},
+		nesting:  true,
 	},
 }
 
@@ -253,16 +262,25 @@ func detectStacks(containerName string) ([]detectMatch, error) {
 // Empty input defaults to yes (the prompt advertises `[Y/n]`).
 // autoYes — set on non-TTY stdin or when --yes was passed — accepts
 // every match without reading stdin, matching today's "scripted
-// invocations never hang" ergonomic. When every match is declined,
-// the caller falls through to the generic picker.
-func promptStackDetections(matches []detectMatch, in *os.File, out io.Writer, autoYes bool) ([]detectMatch, error) {
+// invocations never hang" ergonomic, except rows that need
+// security.nesting: those are skipped (with a line saying so) unless
+// allowNesting is set, because accepting them would only make the
+// later nesting gate abort the whole repo add. When every match is
+// declined, the caller falls through to the generic picker.
+func promptStackDetections(matches []detectMatch, in *os.File, out io.Writer, autoYes, allowNesting bool) ([]detectMatch, error) {
 	if len(matches) == 0 {
 		return nil, nil
 	}
 
 	if autoYes {
-		accepted := make([]detectMatch, len(matches))
-		copy(accepted, matches)
+		accepted := make([]detectMatch, 0, len(matches))
+		for _, m := range matches {
+			if m.entry.nesting && !allowNesting {
+				fmt.Fprintf(out, "→ skipping %s (needs security.nesting; pass --allow-nesting)\n", strings.Join(detectFeatureKeys(m.entry), ", "))
+				continue
+			}
+			accepted = append(accepted, m)
+		}
 		return accepted, nil
 	}
 
@@ -294,7 +312,8 @@ func promptStackDetections(matches []detectMatch, in *os.File, out io.Writer, au
 // shape: stack-backed rows announce both the stack name and the
 // warm-install command; Feature-backed rows (Docker) drop the
 // warm-install phrase entirely so the prompt doesn't lie about running
-// nothing.
+// nothing. Rows that need security.nesting say so, so the separate
+// [y/N] nesting confirmation that follows is not a surprise.
 func promptLine(m detectMatch) string {
 	e := m.entry
 	if len(e.cmd) > 0 {
@@ -302,16 +321,26 @@ func promptLine(m detectMatch) string {
 			m.hit, e.name, strings.Join(e.cmd, " "))
 	}
 	if e.features != nil {
-		feats := make([]string, 0, len(e.features))
-		for k := range e.features {
-			feats = append(feats, k)
+		note := ""
+		if e.nesting {
+			note = " (needs security.nesting)"
 		}
-		return fmt.Sprintf("Found %s. Install the %s Feature(s)? [Y/n]: ",
-			m.hit, strings.Join(feats, ", "))
+		return fmt.Sprintf("Found %s. Install the %s Feature(s)%s? [Y/n]: ",
+			m.hit, strings.Join(detectFeatureKeys(e), ", "), note)
 	}
 	// Stack with no warm-install cmd (no bundled row uses this shape
 	// today, but the rendering stays honest if one ever does).
 	return fmt.Sprintf("Found %s. Apply ahjo's %q stack? [Y/n]: ", m.hit, e.name)
+}
+
+// detectFeatureKeys returns e's Feature keys, sorted for stable output.
+func detectFeatureKeys(e detectEntry) []string {
+	feats := make([]string, 0, len(e.features))
+	for k := range e.features {
+		feats = append(feats, k)
+	}
+	sort.Strings(feats)
+	return feats
 }
 
 // anyNestedIncus reports whether any config in confs opts into nested

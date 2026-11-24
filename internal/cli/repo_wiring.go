@@ -191,7 +191,9 @@ func attachPasteShim(containerName string) error {
 // user-namespace / overlayfs kernel attack surface; on bare Linux it backs
 // directly onto the real host kernel. It is enabled on a per-repo basis only
 // when the repo declares `ahjo/docker` (via its Feature metadata) or sets
-// `customizations.ahjo.nested_incus` — see repo_add.go's needsNesting gate.
+// `customizations.ahjo.nested_incus`, and only after the host-side user
+// approves it (TTY prompt or --allow-nesting / --allow-nested-incus) — see
+// elevationGate in elevation.go and its use in repoAddSetup.
 //
 // `incus copy` carries these keys to branch containers, so the default
 // container's wireBranchContainer call covers the whole repo.

@@ -30,6 +30,34 @@ func TestFindCreateAlias(t *testing.T) {
 	}
 }
 
+// TestFindRepoAddURL pins that the bool consent flags (--allow-nesting,
+// --allow-nested-incus) are skipped like any other bool flag, so they
+// pass through the shim's relay untouched and never get mistaken for the
+// URL.
+func TestFindRepoAddURL(t *testing.T) {
+	const u = "https://github.com/x/y.git"
+	cases := []struct {
+		name string
+		rest []string
+		want string
+	}{
+		{"plain", []string{u}, u},
+		{"--allow-nesting before url", []string{"--allow-nesting", u}, u},
+		{"--allow-nested-incus before url", []string{"--allow-nested-incus", u}, u},
+		{"both flags before url", []string{"--allow-nesting", "--allow-nested-incus", u}, u},
+		{"flags after url", []string{u, "--allow-nesting", "--allow-nested-incus"}, u},
+		{"with --yes and --as", []string{"-y", "--allow-nesting", "--as", "alias", u}, u},
+		{"only flags", []string{"--allow-nesting"}, ""},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := findRepoAddURL(c.rest); got != c.want {
+				t.Fatalf("findRepoAddURL(%v) = %q, want %q", c.rest, got, c.want)
+			}
+		})
+	}
+}
+
 func TestIsBareOwnerRepo(t *testing.T) {
 	cases := []struct {
 		in   string

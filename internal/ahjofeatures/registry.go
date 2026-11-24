@@ -10,9 +10,9 @@
 //
 // security.nesting is NOT always-on. A built-in Feature that requires
 // nesting (e.g. ahjo/docker) declares `customizations.ahjo.nesting: true`
-// in its devcontainer-feature.json; ahjo reads that at repo-add time and
-// enables nesting on the container before warm-install and lifecycle hooks
-// run. This keeps the userns/overlayfs kernel attack surface closed for
+// in its devcontainer-feature.json; ahjo reads that at repo-add time and,
+// once the user approves (TTY prompt or --allow-nesting), enables nesting
+// on the container before warm-install and lifecycle hooks run. This keeps the userns/overlayfs kernel attack surface closed for
 // repos that don't run Docker or nested container workloads.
 //
 // Built-in Features must NOT declare `dependsOn` on upstream OCI

@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"fmt"
@@ -31,6 +32,7 @@ func newRepoAddCmd() *cobra.Command {
 	var asAlias string
 	var yes bool
 	var containerConfig string
+	var elev elevationFlags
 	cmd := &cobra.Command{
 		Use:   "add <git-url>",
 		Short: "Register a repo: clone it inside a fresh ahjo-base container at /repo and warm-install dependencies",
@@ -60,26 +62,35 @@ registry. --yes and non-TTY stdin approve nothing; approve later with
 ` + "`ahjo repo approve-env <alias> KEY...`" + `. Names in the global forward_env
 (config.toml) need no approval.
 
+Container privilege bumps need your consent, never just the repo's: a
+Feature that requests security.nesting (e.g. ahjo/docker, also suggested
+when a Dockerfile or compose file is detected) and
+customizations.ahjo.nested_incus (host loop devices + security.nesting)
+each prompt [y/N] on a terminal. Off a terminal they fail unless
+--allow-nesting / --allow-nested-incus is passed; --yes approves neither.
+
 ` + containerConfigHelpBlock,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runRepoAdd(cmd.Context(), args[0], asAlias, defaultBase, yes, containerConfig)
+			return runRepoAdd(cmd.Context(), args[0], asAlias, defaultBase, yes, containerConfig, elev)
 		},
 	}
 	cmd.Flags().StringVar(&defaultBase, "default-base", "", "default branch to base new branches on (default: detect from the remote's HEAD)")
 	cmd.Flags().StringVar(&asAlias, "as", "", "additional alias for this repo (must not collide with any existing alias)")
-	cmd.Flags().BoolVarP(&yes, "yes", "y", false, "skip the GitHub PAT prompt (the repo is added without a per-repo GH_TOKEN; set one later with `ahjo repo set-token`) and approve none of the repo's forward_env names (approve later with `ahjo repo approve-env`)")
+	cmd.Flags().BoolVarP(&yes, "yes", "y", false, "skip the GitHub PAT prompt (the repo is added without a per-repo GH_TOKEN; set one later with `ahjo repo set-token`) and approve none of the repo's forward_env names (approve later with `ahjo repo approve-env`); does not approve --allow-nesting / --allow-nested-incus")
 	cmd.Flags().StringVar(&containerConfig, "container-config", "", containerConfigFlagShort)
+	cmd.Flags().BoolVar(&elev.AllowNesting, "allow-nesting", false, "allow security.nesting when the repo's Features request it (e.g. ahjo/docker) without prompting")
+	cmd.Flags().BoolVar(&elev.AllowNestedIncus, "allow-nested-incus", false, "allow customizations.ahjo.nested_incus (host loop devices + security.nesting) without prompting")
 	return cmd
 }
 
-func runRepoAdd(ctx context.Context, input, asAlias, defaultBase string, yes bool, containerConfig string) error {
+func runRepoAdd(ctx context.Context, input, asAlias, defaultBase string, yes bool, containerConfig string, elev elevationFlags) error {
 	src := parseRepoSource(input)
 	slug, primary, aliases, err := repoAddPlan(src.canonicalURL(), asAlias)
 	if err != nil {
 		return err
 	}
-	return repoAddSetup(ctx, slug, primary, aliases, src, defaultBase, yes, containerConfig)
+	return repoAddSetup(ctx, slug, primary, aliases, src, defaultBase, yes, containerConfig, elev)
 }
 
 // repoSource captures how a repo's clone URL should be derived. An explicit
@@ -191,7 +202,11 @@ func repoAddPlan(url, asAlias string) (slug, primary string, aliases []string, e
 // Lockfile is acquired only for the final registry write; the long
 // container/network operations run unlocked so concurrent ahjo invocations
 // (e.g. `ahjo top` refresh) aren't starved.
-func repoAddSetup(ctx context.Context, slug, primary string, aliases []string, src repoSource, defaultBase string, yes bool, containerConfig string) error {
+//
+// elev carries --allow-nesting / --allow-nested-incus. security.nesting and
+// nested_incus are only granted through the elevationGate built below (flag
+// or an explicit TTY "yes"); --yes never approves them.
+func repoAddSetup(ctx context.Context, slug, primary string, aliases []string, src repoSource, defaultBase string, yes bool, containerConfig string, elev elevationFlags) error {
 	cfg, err := config.Load()
 	if err != nil {
 		return err
@@ -289,9 +304,21 @@ func repoAddSetup(ctx context.Context, slug, primary string, aliases []string, s
 		return err
 	}
 
-	dcConfs, err := repoAddResolveConfigs(containerName, containerConfig, yes)
+	dcConfs, err := repoAddResolveConfigs(containerName, containerConfig, yes, elev)
 	if err != nil {
 		return err
+	}
+
+	// One consent gate for the whole run, sharing a single stdin buffer
+	// with the Feature trust prompt (applyRepoFeatures' bufio.NewReader
+	// returns this reader as-is) so neither prompt swallows the other's
+	// input.
+	stdin := bufio.NewReader(os.Stdin)
+	gate := &elevationGate{
+		flags:       elev,
+		interactive: isTerminal(os.Stdin),
+		in:          stdin,
+		out:         cobraOut(),
 	}
 
 	// Apply containerEnv via Incus's `environment.<KEY>` config keys so
@@ -308,7 +335,12 @@ func repoAddSetup(ctx context.Context, slug, primary string, aliases []string, s
 		}
 	}
 
+	// nested_incus is confirmed before Features, warm install and
+	// lifecycle hooks, so no repo code has run yet when the user decides.
 	if anyNestedIncus(dcConfs) {
+		if err := gate.confirmNestedIncus(); err != nil {
+			return err
+		}
 		if err := wireLoopDevices(containerName); err != nil {
 			return fmt.Errorf("wire loop devices: %w", err)
 		}
@@ -360,16 +392,19 @@ func repoAddSetup(ctx context.Context, slug, primary string, aliases []string, s
 	// fetch / resolve / apply pass for the combined set.
 	featuresNesting, consent, err := applyRepoFeatures(
 		ctx, containerName, mergeFeaturesForApply(dcConfs),
-		featureConsentForNew, os.Stdin, cobraOut(),
+		featureConsentForNew, gate.confirmNesting, stdin, cobraOut(),
 	)
 	if err != nil {
 		return err
 	}
 
 	// Enable security.nesting when a Feature (ahjo/docker) or nested_incus
-	// requires it, then restart so the change is in effect before
-	// warm-install and lifecycle hooks run. This lets postCreateCommand run
-	// `docker compose up` or similar without nesting being absent.
+	// requires it — both triggers have been approved through the gate by
+	// now (confirmNesting inside applyRepoFeatures, confirmNestedIncus
+	// above; either aborts repo add on decline) — then restart so the
+	// change is in effect before warm-install and lifecycle hooks run.
+	// This lets postCreateCommand run `docker compose up` or similar
+	// without nesting being absent.
 	//
 	// `incus copy` carries instance config to branch containers, so enabling
 	// nesting on the default container here propagates automatically — no
@@ -567,7 +602,12 @@ func cloneRepo(ctx context.Context, containerName, slug, primary string, src rep
 // apply multiple stacks to a monorepo (node + go + docker etc.); the
 // single-config paths wrap into a 1-element slice so the caller's
 // apply-in-series block treats both shapes uniformly. Empty result == bare.
-func repoAddResolveConfigs(containerName, containerConfig string, yes bool) ([]*ahjocontainer.Config, error) {
+//
+// With autoYes (--yes or non-TTY stdin), detection rows that need
+// security.nesting (Docker) are skipped unless elev allows nesting, so a
+// scripted add of a repo with a Dockerfile still succeeds instead of
+// aborting at the nesting gate.
+func repoAddResolveConfigs(containerName, containerConfig string, yes bool, elev elevationFlags) ([]*ahjocontainer.Config, error) {
 	if has, err := ahjocontainer.HasLegacyAhjoconfig(containerName); err != nil {
 		return nil, fmt.Errorf("probe legacy .ahjoconfig: %w", err)
 	} else if has {
@@ -605,7 +645,7 @@ func repoAddResolveConfigs(containerName, containerConfig string, yes bool) ([]*
 				return nil, err
 			}
 			autoYes := yes || !isTerminal(os.Stdin)
-			accepted, err := promptStackDetections(matches, os.Stdin, cobraOut(), autoYes)
+			accepted, err := promptStackDetections(matches, os.Stdin, cobraOut(), autoYes, elev.allowsNesting())
 			if err != nil {
 				return nil, err
 			}

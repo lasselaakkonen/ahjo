@@ -6,6 +6,10 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	"github.com/lasselaakkonen/ahjo/internal/ahjofeatures"
+	"github.com/lasselaakkonen/ahjo/internal/devcontainer"
+	"github.com/lasselaakkonen/ahjo/internal/stacks"
 )
 
 // TestDetectTable_BunRemoved guards the canonical mapping: bun.lockb
@@ -162,6 +166,7 @@ func dockerMatch() detectMatch {
 			probes:   []string{"Dockerfile"},
 			name:     "docker",
 			features: map[string]interface{}{"ahjo/docker": map[string]interface{}{}},
+			nesting:  true,
 		},
 		hit: "Dockerfile",
 	}
@@ -178,7 +183,7 @@ func names(ms []detectMatch) []string {
 func TestPromptStackDetections(t *testing.T) {
 	t.Run("no matches returns empty", func(t *testing.T) {
 		var out bytes.Buffer
-		got, err := promptStackDetections(nil, nil, &out, false)
+		got, err := promptStackDetections(nil, nil, &out, false, false)
 		if err != nil || len(got) != 0 {
 			t.Fatalf("got (%v, %v), want (nil, nil)", names(got), err)
 		}
@@ -189,7 +194,7 @@ func TestPromptStackDetections(t *testing.T) {
 
 	t.Run("single match accepted with empty input (default Y)", func(t *testing.T) {
 		var out bytes.Buffer
-		got, err := promptStackDetections([]detectMatch{nodeMatch()}, pipeIn(t, "\n"), &out, false)
+		got, err := promptStackDetections([]detectMatch{nodeMatch()}, pipeIn(t, "\n"), &out, false, false)
 		if err != nil || len(got) != 1 || got[0].entry.name != "node" {
 			t.Fatalf("got (%v, %v), want ([node], nil)", names(got), err)
 		}
@@ -200,7 +205,7 @@ func TestPromptStackDetections(t *testing.T) {
 
 	t.Run("single match declined returns empty", func(t *testing.T) {
 		var out bytes.Buffer
-		got, err := promptStackDetections([]detectMatch{nodeMatch()}, pipeIn(t, "n\n"), &out, false)
+		got, err := promptStackDetections([]detectMatch{nodeMatch()}, pipeIn(t, "n\n"), &out, false, false)
 		if err != nil || len(got) != 0 {
 			t.Fatalf("got (%v, %v), want (nil, nil)", names(got), err)
 		}
@@ -211,7 +216,7 @@ func TestPromptStackDetections(t *testing.T) {
 		got, err := promptStackDetections(
 			[]detectMatch{nodeMatch(), rustMatch()},
 			pipeIn(t, "y\ny\n"),
-			&out, false,
+			&out, false, false,
 		)
 		if err != nil {
 			t.Fatalf("err: %v", err)
@@ -226,7 +231,7 @@ func TestPromptStackDetections(t *testing.T) {
 		got, err := promptStackDetections(
 			[]detectMatch{nodeMatch(), rustMatch()},
 			pipeIn(t, "n\ny\n"),
-			&out, false,
+			&out, false, false,
 		)
 		if err != nil {
 			t.Fatalf("err: %v", err)
@@ -241,7 +246,7 @@ func TestPromptStackDetections(t *testing.T) {
 		got, err := promptStackDetections(
 			[]detectMatch{nodeMatch(), dockerMatch()},
 			pipeIn(t, "y\ny\n"),
-			&out, false,
+			&out, false, false,
 		)
 		if err != nil {
 			t.Fatalf("err: %v", err)
@@ -268,7 +273,7 @@ func TestPromptStackDetections(t *testing.T) {
 		var out bytes.Buffer
 		got, err := promptStackDetections(
 			[]detectMatch{nodeMatch(), rustMatch()},
-			nil, &out, true,
+			nil, &out, true, false,
 		)
 		if err != nil {
 			t.Fatalf("err: %v", err)
@@ -280,11 +285,136 @@ func TestPromptStackDetections(t *testing.T) {
 
 	t.Run("unrecognized response errors", func(t *testing.T) {
 		var out bytes.Buffer
-		_, err := promptStackDetections([]detectMatch{nodeMatch()}, pipeIn(t, "maybe\n"), &out, false)
+		_, err := promptStackDetections([]detectMatch{nodeMatch()}, pipeIn(t, "maybe\n"), &out, false, false)
 		if err == nil {
 			t.Fatalf("expected error on unrecognized response")
 		}
 	})
+}
+
+func TestPromptStackDetections_NestingRows(t *testing.T) {
+	t.Run("auto-yes without allowNesting drops the docker row and keeps the rest", func(t *testing.T) {
+		var out bytes.Buffer
+		got, err := promptStackDetections(
+			[]detectMatch{nodeMatch(), dockerMatch(), rustMatch()},
+			nil, &out, true, false,
+		)
+		if err != nil {
+			t.Fatalf("err: %v", err)
+		}
+		if want := []string{"node", "rust"}; !equalStrings(names(got), want) {
+			t.Fatalf("got %v, want %v", names(got), want)
+		}
+		want := "→ skipping ahjo/docker (needs security.nesting; pass --allow-nesting)"
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("missing skip line %q; output: %q", want, out.String())
+		}
+	})
+
+	t.Run("auto-yes with allowNesting keeps the docker row", func(t *testing.T) {
+		var out bytes.Buffer
+		got, err := promptStackDetections(
+			[]detectMatch{nodeMatch(), dockerMatch()},
+			nil, &out, true, true,
+		)
+		if err != nil {
+			t.Fatalf("err: %v", err)
+		}
+		if want := []string{"node", "docker"}; !equalStrings(names(got), want) {
+			t.Fatalf("got %v, want %v", names(got), want)
+		}
+		if strings.Contains(out.String(), "skipping") {
+			t.Fatalf("nothing should be skipped with allowNesting; output: %q", out.String())
+		}
+	})
+
+	t.Run("interactive prompt still offers the docker row", func(t *testing.T) {
+		var out bytes.Buffer
+		got, err := promptStackDetections([]detectMatch{dockerMatch()}, pipeIn(t, "y\n"), &out, false, false)
+		if err != nil {
+			t.Fatalf("err: %v", err)
+		}
+		if want := []string{"docker"}; !equalStrings(names(got), want) {
+			t.Fatalf("got %v, want %v", names(got), want)
+		}
+	})
+}
+
+func TestPromptLine_MentionsNesting(t *testing.T) {
+	if got := promptLine(dockerMatch()); !strings.Contains(got, "(needs security.nesting)") {
+		t.Fatalf("docker prompt should mention nesting: %q", got)
+	}
+	m := dockerMatch()
+	m.entry.nesting = false
+	m.entry.features = map[string]interface{}{"ahjo/prek": map[string]interface{}{}}
+	if got := promptLine(m); strings.Contains(got, "nesting") {
+		t.Fatalf("non-nesting Feature prompt must not mention nesting: %q", got)
+	}
+	if got := promptLine(nodeMatch()); strings.Contains(got, "nesting") {
+		t.Fatalf("stack prompt must not mention nesting: %q", got)
+	}
+}
+
+// TestDetectTable_NestingMatchesBuiltins keeps detectEntry.nesting in sync
+// with the embedded built-in Features' metadata: a row is marked nesting
+// exactly when one of its Features (directly, or via its bundled stack) is
+// an `ahjo/*` built-in declaring customizations.ahjo.nesting. Drift in
+// either direction would either auto-apply a nesting Feature on --yes
+// (aborting at the gate) or skip a harmless row.
+func TestDetectTable_NestingMatchesBuiltins(t *testing.T) {
+	builtinNests := func(key string) bool {
+		t.Helper()
+		name, ok := strings.CutPrefix(key, "ahjo/")
+		if !ok {
+			return false // OCI Features cannot request nesting
+		}
+		if i := strings.IndexAny(name, ":@"); i >= 0 {
+			name = name[:i]
+		}
+		materialize, ok := ahjofeatures.Lookup(name)
+		if !ok {
+			t.Fatalf("detect row references unknown built-in %q", key)
+		}
+		dir := t.TempDir()
+		if err := materialize(dir); err != nil {
+			t.Fatalf("materialize %s: %v", key, err)
+		}
+		meta, err := devcontainer.ReadMetadata(dir, key)
+		if err != nil {
+			t.Fatalf("read metadata %s: %v", key, err)
+		}
+		return meta.Customizations.Ahjo.Nesting
+	}
+
+	sawNesting := false
+	for i, e := range detectTable {
+		feats := e.features
+		if e.stack != "" {
+			cfg, found, err := stacks.Load(e.stack)
+			if err != nil || !found {
+				t.Fatalf("detectTable[%d]: load stack %q: found=%v err=%v", i, e.stack, found, err)
+			}
+			feats = cfg.Features
+		}
+		want := false
+		for k := range feats {
+			if builtinNests(k) {
+				want = true
+			}
+		}
+		if e.nesting != want {
+			t.Errorf("detectTable[%d] (%s, probes %v): nesting = %v, want %v from Feature metadata", i, e.name, e.probes, e.nesting, want)
+		}
+		sawNesting = sawNesting || e.nesting
+	}
+	if !sawNesting {
+		t.Fatal("expected at least one nesting row (ahjo/docker); test would be vacuous otherwise")
+	}
+	for _, e := range detectTable {
+		if _, ok := e.features["ahjo/docker"]; ok && !e.nesting {
+			t.Fatalf("the ahjo/docker row must set nesting")
+		}
+	}
 }
 
 // TestDetectMatches_DedupeByName covers the workspace-supersedes-module

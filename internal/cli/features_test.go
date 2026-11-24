@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -12,7 +13,7 @@ import (
 
 func TestApplyRepoFeatures_Noop(t *testing.T) {
 	// nil cfg → no-op, no consent recorded.
-	_, consent, err := applyRepoFeatures(context.Background(), "x", nil, nil, strings.NewReader(""), &bytes.Buffer{})
+	_, consent, err := applyRepoFeatures(context.Background(), "x", nil, nil, nil, strings.NewReader(""), &bytes.Buffer{})
 	if err != nil {
 		t.Fatalf("nil cfg should be no-op: %v", err)
 	}
@@ -22,7 +23,7 @@ func TestApplyRepoFeatures_Noop(t *testing.T) {
 
 	// Empty Features → also no-op.
 	cfg := &ahjocontainer.Config{}
-	_, consent, err = applyRepoFeatures(context.Background(), "x", cfg, nil, strings.NewReader(""), &bytes.Buffer{})
+	_, consent, err = applyRepoFeatures(context.Background(), "x", cfg, nil, nil, strings.NewReader(""), &bytes.Buffer{})
 	if err != nil {
 		t.Fatalf("empty features should be no-op: %v", err)
 	}
@@ -42,7 +43,7 @@ func TestApplyRepoFeatures_DeclinedTrustAborts(t *testing.T) {
 	}
 	in := strings.NewReader("n\n")
 	out := &bytes.Buffer{}
-	_, _, err := applyRepoFeatures(context.Background(), "x", cfg, nil, in, out)
+	_, _, err := applyRepoFeatures(context.Background(), "x", cfg, nil, nil, in, out)
 	if err == nil {
 		t.Fatal("expected error on declined trust")
 	}
@@ -66,7 +67,7 @@ func TestApplyRepoFeatures_CuratedAutoTrustNoPrompt(t *testing.T) {
 	}
 	in := strings.NewReader("")
 	out := &bytes.Buffer{}
-	_, _, err := applyRepoFeatures(context.Background(), "x", cfg, nil, in, out)
+	_, _, err := applyRepoFeatures(context.Background(), "x", cfg, nil, nil, in, out)
 	// Expected: error during fetch (no real registry); but the prompt
 	// must NOT have been shown.
 	if err == nil {
@@ -96,7 +97,8 @@ func TestApplyRepoFeatures_BuiltinAutoTrustNoPrompt(t *testing.T) {
 	}
 	in := strings.NewReader("")
 	out := &bytes.Buffer{}
-	_, _, err := applyRepoFeatures(context.Background(), "x", cfg, nil, in, out)
+	approve := func([]string) error { return nil }
+	_, _, err := applyRepoFeatures(context.Background(), "x", cfg, nil, approve, in, out)
 	if err == nil {
 		t.Fatal("expected Apply to fail without a real container")
 	}
@@ -119,7 +121,7 @@ func TestApplyRepoFeatures_UnknownBuiltin(t *testing.T) {
 	}
 	in := strings.NewReader("")
 	out := &bytes.Buffer{}
-	_, _, err := applyRepoFeatures(context.Background(), "x", cfg, nil, in, out)
+	_, _, err := applyRepoFeatures(context.Background(), "x", cfg, nil, nil, in, out)
 	if err == nil {
 		t.Fatal("expected unknown built-in to error")
 	}
@@ -140,7 +142,7 @@ func TestApplyRepoFeatures_PriorConsentSkipsPrompt(t *testing.T) {
 	prior := map[string]bool{"ghcr.io/acme/*": true}
 	in := strings.NewReader("")
 	out := &bytes.Buffer{}
-	_, _, err := applyRepoFeatures(context.Background(), "x", cfg, prior, in, out)
+	_, _, err := applyRepoFeatures(context.Background(), "x", cfg, prior, nil, in, out)
 	if err == nil {
 		t.Fatal("expected fetch error")
 	}
@@ -149,6 +151,99 @@ func TestApplyRepoFeatures_PriorConsentSkipsPrompt(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "previously trusted") {
 		t.Fatalf("expected `previously trusted` line; output:\n%s", out.String())
+	}
+}
+
+func TestApplyRepoFeatures_NestingConfirmedBeforeApply(t *testing.T) {
+	// ahjo/docker requests security.nesting. The callback must run after
+	// Resolve (so it sees the resolved ref) and before any Feature is
+	// applied; its error must abort with no apply output written.
+	cfg := &ahjocontainer.Config{
+		Features: map[string]any{
+			"ahjo/docker": map[string]any{},
+			"ahjo/prek":   map[string]any{},
+		},
+	}
+	out := &bytes.Buffer{}
+	var gotRefs []string
+	calls := 0
+	deny := errors.New("nesting denied by test")
+	_, _, err := applyRepoFeatures(context.Background(), "x", cfg, nil,
+		func(refs []string) error {
+			calls++
+			gotRefs = refs
+			return deny
+		},
+		strings.NewReader(""), out)
+	if !errors.Is(err, deny) {
+		t.Fatalf("err = %v, want the callback's error", err)
+	}
+	if calls != 1 {
+		t.Fatalf("callback called %d times, want 1", calls)
+	}
+	if want := []string{"ahjo/docker"}; !equalStrings(gotRefs, want) {
+		t.Fatalf("requestedBy = %v, want %v", gotRefs, want)
+	}
+	if strings.Contains(out.String(), "(apply)") {
+		t.Fatalf("no Feature may be applied before nesting is confirmed; output:\n%s", out.String())
+	}
+}
+
+func TestApplyRepoFeatures_NestingNilCallbackDenies(t *testing.T) {
+	cfg := &ahjocontainer.Config{
+		Features: map[string]any{"ahjo/docker": map[string]any{}},
+	}
+	out := &bytes.Buffer{}
+	_, _, err := applyRepoFeatures(context.Background(), "x", cfg, nil, nil, strings.NewReader(""), out)
+	if err == nil {
+		t.Fatal("nil confirmNesting must deny, not silently proceed")
+	}
+	if !strings.Contains(err.Error(), "security.nesting") || !strings.Contains(err.Error(), "ahjo/docker") {
+		t.Fatalf("error should name security.nesting and the Feature; got: %v", err)
+	}
+	if strings.Contains(out.String(), "(apply)") {
+		t.Fatalf("no Feature may be applied when nesting is denied; output:\n%s", out.String())
+	}
+}
+
+func TestApplyRepoFeatures_NoNestingFeatureSkipsCallback(t *testing.T) {
+	// ahjo/prek does not request nesting: the callback must not be called
+	// and the pipeline proceeds to Apply (which fails without a real
+	// container — that failure is expected and not what's under test).
+	cfg := &ahjocontainer.Config{
+		Features: map[string]any{"ahjo/prek": map[string]any{}},
+	}
+	out := &bytes.Buffer{}
+	called := false
+	_, _, _ = applyRepoFeatures(context.Background(), "x", cfg, nil,
+		func([]string) error { called = true; return nil },
+		strings.NewReader(""), out)
+	if called {
+		t.Fatal("confirmNesting must not be called when no Feature requests nesting")
+	}
+	if !strings.Contains(out.String(), "feature ahjo/prek (apply)") {
+		t.Fatalf("expected the pipeline to reach Apply; output:\n%s", out.String())
+	}
+}
+
+func TestFeaturesRequestingNesting_SortedBuiltinsOnly(t *testing.T) {
+	mk := func(reg, repo string, nesting bool) devcontainer.FetchedFeature {
+		ff := devcontainer.FetchedFeature{
+			Ref:      devcontainer.FeatureRef{Registry: reg, Repository: repo},
+			Metadata: &devcontainer.Metadata{},
+		}
+		ff.Metadata.Customizations.Ahjo.Nesting = nesting
+		return ff
+	}
+	ffs := []devcontainer.FetchedFeature{
+		mk("ahjo", "zeta", true),
+		mk("ghcr.io", "acme/evil", true),
+		mk("ahjo", "prek", false),
+		mk("ahjo", "docker", true),
+	}
+	got := featuresRequestingNesting(ffs)
+	if want := []string{"ahjo/docker", "ahjo/zeta"}; !equalStrings(got, want) {
+		t.Fatalf("got %v, want %v", got, want)
 	}
 }
 
