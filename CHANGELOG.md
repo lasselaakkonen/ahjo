@@ -19,6 +19,26 @@
 - `nested_incus` no longer passes every `/dev/loop0..7` into the container. Only loop devices with no backing file are passed, so the device backing ahjo's btrfs storage pool (and other bound loop devices) is no longer exposed read-write. `repo add` fails if no unbound device exists.
 - Containers with loop devices get `boot.autostart=false`, and ahjo re-checks the devices before each ahjo-initiated start, dropping any that are now bound on the host.
 - Residual risk, not fixed: a passed device that the host or another container binds while the container is running is still readable and writable from inside it, and `incus start` run by hand skips the re-check.
+- Closed the bypasses of the SSH-agent auto-suppression. The agent
+  is now withheld from an HTTPS+PAT repo on every route, not just the proxy
+  device attached by `ahjo shell`/`ahjo claude`:
+  - `ahjo ssh` and `ahjo ide` no longer get the agent through a hardcoded
+    `ForwardAgent yes` in the generated ssh-config; each host follows the
+    policy, and `forward_ssh_agent = false` now applies there too.
+  - `ahjo repo add` no longer attaches the agent during setup (Features,
+    warm-install, `onCreate`/`postCreate` hooks), and the stopped base container
+    no longer keeps the device.
+  - The `ssh-agent` device is stripped before every container start, and
+    `ahjo repo set-token` removes it from the repo's existing containers.
+  - `https://GitHub.com/...`, `https://github.com:443/...` and
+    `https://user@github.com/...` origins are recognised as HTTPS GitHub.
+  - macOS: `ahjo create` on a registered repo now passes the Keychain PAT, and
+    `--container-config <value>` is no longer mistaken for the repo alias.
+- The suppression decision is recorded per repo as `has_token` in the registry.
+  Repos added before this change pick it up on their next `ahjo shell`/`claude`/
+  `create` or `ahjo repo set-token`; until then their ssh-config entry keeps
+  `ForwardAgent yes`. Set `forward_ssh_agent = true` to restore the old
+  behaviour (agent in `ahjo ssh`/`ahjo ide` sessions and during `repo add`).
 
 ### Changed (mirror)
 
