@@ -316,6 +316,7 @@ func TestAliasExtractionForTokenRelays(t *testing.T) {
 		{"rm alias", firstNonFlag([]string{"o/r@feat"}), "o/r@feat"},
 		{"rm skips bool flags", firstNonFlag([]string{"--force", "--force-default", "o/r@feat"}), "o/r@feat"},
 		{"rm help only", firstNonFlag([]string{"--help"}), ""},
+		{"claude container-config value", firstNonFlag([]string{"--container-config", "node", "o/r@feat"}), "o/r@feat"},
 		{"create registered branch alias form", findCreateAlias([]string{"--no-fetch", "o/r", "feat"}), "o/r"},
 	}
 	for _, c := range cases {
@@ -365,6 +366,28 @@ func TestKeychainEnvForAlias_MissesReturnNil(t *testing.T) {
 		env, err := keychainEnvForAlias(alias)
 		if err != nil || env != nil {
 			t.Fatalf("keychainEnvForAlias(%q) = %v, %v; want nil, nil", alias, env, err)
+		}
+	}
+}
+
+// A branch alias that does not exist yet (shell/claude auto-create it in the
+// VM) must still resolve to the registered repo's slug.
+func TestResolveAliasSlug(t *testing.T) {
+	withRepoAliases(t, "known/repo\tknown-repo", "known/repo@main\tknown-repo")
+	cases := []struct {
+		alias, slug string
+		ok          bool
+	}{
+		{"known/repo", "known-repo", true},
+		{"known/repo@main", "known-repo", true},
+		{"known/repo@new-branch", "known-repo", true},
+		{"other/repo@new-branch", "", false},
+		{"@x", "", false},
+	}
+	for _, c := range cases {
+		slug, ok := resolveAliasSlug(c.alias)
+		if slug != c.slug || ok != c.ok {
+			t.Errorf("resolveAliasSlug(%q) = %q, %v; want %q, %v", c.alias, slug, ok, c.slug, c.ok)
 		}
 	}
 }
