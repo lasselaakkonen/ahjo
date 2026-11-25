@@ -31,6 +31,8 @@ const defaultDiskGiB = 100
 // CPU/RAM are soft upper bounds rather than dedicated reservations and the
 // disk image is sparse; createVMStep explains this before prompting so the
 // user can comfortably size near their machine's totals.
+const vmTemplate = "ubuntu-24.04"
+
 func createVMStep(yes bool) initflow.Step {
 	return initflow.Step{
 		Title:     fmt.Sprintf("Create %q VM (vz + rosetta + writable mount + vzNAT)", vmName),
@@ -58,14 +60,17 @@ func createVMStep(yes bool) initflow.Step {
 				"--vm-type=vz", "--rosetta",
 				"--mount-writable", "--network=vzNAT",
 				"--set=.ssh.forwardAgent=true",
-				"template:ubuntu-lts",
+				// Pinned: `ubuntu-lts` follows the newest LTS, and the in-VM
+				// bring-up (Zabbly "noble" suite, ahjo-base on ubuntu/24.04)
+				// only works on 24.04.
+				"template:" + vmTemplate,
 			}
 			fmt.Fprintf(out, "  > limactl start --tty=false \\\n"+
 				"  --name=%s --cpus=%d --memory=%d --disk=%d \\\n"+
 				"  --vm-type=vz --rosetta --mount-writable --network=vzNAT \\\n"+
 				"  --set='.ssh.forwardAgent=true' \\\n"+
-				"  template:ubuntu-lts\n",
-				vmName, cpus, mem, disk)
+				"  template:%s\n",
+				vmName, cpus, mem, disk, vmTemplate)
 			return initflow.RunShellEnv(out, lima.Env(), "", cmd...)
 		},
 	}
