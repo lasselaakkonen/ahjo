@@ -71,6 +71,10 @@
 - `ahjo init` reads the pasted Claude OAuth token with masked input, and its
   "wrong prefix" error no longer echoes the first characters of the token.
 
+### Fixed
+
+- `ahjo top` on macOS showed gh's "not logged in" error in the `pr:` row for repos with a stored PAT. Since the PAT stopped being persisted on the container, the PR lookup ran without it. `top` now reads the repo's PAT from the Keychain (once per session) and relays it to the PR lookup the same way `ahjo shell` does.
+
 ### Changed (mirror)
 
 - Upgrade: the first ahjo command after updating stops any mirror of the old design, removes its `mirror` device and unit, and reverts the target. Run `ahjo mirror <alias>` again to resume. A process in that container that still holds a file open under `/mirror` may keep it until the container restarts.

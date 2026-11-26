@@ -49,11 +49,14 @@ type Deps struct {
 	// line; the previous snapshot is left in place.
 	LoadSnapshot func() (Snapshot, error)
 
-	// LoadBranchStatus fetches git+PR status for one branch slug. Same
+	// LoadBranchStatus fetches git+PR status for one branch. Same
 	// platform split as LoadSnapshot: in-VM runs `git status` + `gh pr
 	// list` inside the container; on the Mac the in-VM ahjo handles
-	// both via the hidden `ahjo branch-status` subcommand.
-	LoadBranchStatus func(slug string) (BranchStatus, error)
+	// both via the hidden `ahjo branch-status` subcommand. It takes the
+	// whole registry row (a copy, safe to use off the UI goroutine) rather
+	// than just the slug because the Mac side needs br.Repo to read the
+	// repo's PAT from the Keychain and relay it for `gh`.
+	LoadBranchStatus func(br registry.Branch) (BranchStatus, error)
 
 	// RefreshAhjoState re-renders and pushes one running container's
 	// ~/.ahjo snapshot (the state Claude + the statusline read). The TUI
