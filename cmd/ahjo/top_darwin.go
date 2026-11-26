@@ -9,12 +9,14 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
 
 	tea "charm.land/bubbletea/v2"
 
 	"github.com/lasselaakkonen/ahjo/internal/ide"
 	"github.com/lasselaakkonen/ahjo/internal/lima"
 	"github.com/lasselaakkonen/ahjo/internal/registry"
+	"github.com/lasselaakkonen/ahjo/internal/relayenv"
 	"github.com/lasselaakkonen/ahjo/internal/terminal"
 	"github.com/lasselaakkonen/ahjo/internal/tui/top"
 )
@@ -154,16 +156,85 @@ func macLoadSnapshot() (top.Snapshot, error) {
 // `ahjo branch-status <slug>` into the VM. The git+gh subprocesses inside
 // the container can take a few hundred ms; the TUI rate-limits per-branch
 // fetches via branchStatusStaleness so holding arrow keys can't fan out.
-func macLoadBranchStatus(slug string) (top.BranchStatus, error) {
+//
+// `gh pr list` inside the container needs the repo's PAT, which on macOS
+// lives only in the login Keychain. The in-VM ahjo can't read it, so — as the
+// shim does for shell/claude/create — we read it here and hand it over
+// through a 0600 relay file (internal/relayenv); only the file's basename
+// crosses the limactl argv. A Keychain miss relays nothing (public repos
+// work without a token). A Keychain error doesn't block the git half of the
+// status; it is prefixed onto the PR error so the user sees why gh failed.
+func macLoadBranchStatus(br registry.Branch) (top.BranchStatus, error) {
 	var bs top.BranchStatus
-	out, stderr, err := runLima("ahjo", "branch-status", slug)
+	env, tokErr := topRepoTokens.get(br.Repo)
+	argv := []string{"ahjo", "branch-status", br.Slug}
+	relayName := ""
+	if len(env) > 0 {
+		name, err := relayenv.Write(env)
+		if err != nil {
+			tokErr = fmt.Errorf("relay token: %w", err)
+		} else {
+			relayName = name
+			argv = append([]string{"env", relayenv.EnvVar + "=" + name}, argv...)
+		}
+	}
+	out, stderr, err := topRunLima(argv...)
+	if relayName != "" {
+		// The in-VM ahjo deletes the file on read; this covers a relay that
+		// died before consuming it.
+		relayenv.Remove(relayName)
+	}
 	if err != nil {
-		return bs, fmt.Errorf("branch-status %s: %w (%s)", slug, err, strings.TrimSpace(stderr))
+		return bs, fmt.Errorf("branch-status %s: %w (%s)", br.Slug, err, strings.TrimSpace(stderr))
 	}
 	if err := json.Unmarshal(out, &bs); err != nil {
 		return bs, fmt.Errorf("decode branch-status: %w", err)
 	}
+	if tokErr != nil && bs.PRErr != "" {
+		bs.PRErr = tokErr.Error() + "; " + bs.PRErr
+	}
 	return bs, nil
+}
+
+// topRunLima is runLima, swappable in tests.
+var topRunLima = runLima
+
+// topRepoTokens caches Keychain reads for the lifetime of the `ahjo top`
+// process. The TUI re-fetches every running branch's status every
+// branchStatusStaleness, and each uncached read would spawn `security` (and,
+// before the user clicks "Always Allow", a Keychain dialog). Hits, misses and
+// errors are all cached, so a denied dialog isn't re-raised on every tick; a
+// token stored or rotated while top is open is picked up on the next launch.
+var topRepoTokens = &repoTokenCache{}
+
+type repoTokenCache struct {
+	mu      sync.Mutex
+	entries map[string]repoTokenEntry
+}
+
+type repoTokenEntry struct {
+	env []string
+	err error
+}
+
+// get returns the GH_TOKEN env pair for repoSlug (nil on a miss or an empty
+// slug). The lock is held across the Keychain read so concurrent fetches for
+// branches of the same repo trigger a single `security` call.
+func (c *repoTokenCache) get(repoSlug string) ([]string, error) {
+	if repoSlug == "" {
+		return nil, nil
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if e, ok := c.entries[repoSlug]; ok {
+		return e.env, e.err
+	}
+	env, err := keychainEnvForSlug(repoSlug)
+	if c.entries == nil {
+		c.entries = map[string]repoTokenEntry{}
+	}
+	c.entries[repoSlug] = repoTokenEntry{env: env, err: err}
+	return env, err
 }
 
 // macToggleExpose shells `ahjo top-toggle-expose <slug>` into the VM and

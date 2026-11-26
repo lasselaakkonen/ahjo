@@ -407,9 +407,10 @@ func (m *model) maybeRefreshBranchStatus() tea.Cmd {
 			continue
 		}
 		slug := br.Slug
+		row := br
 		m.inFlightStatus[slug] = true
 		cmds = append(cmds, func() tea.Msg {
-			bs, err := m.deps.LoadBranchStatus(slug)
+			bs, err := m.deps.LoadBranchStatus(row)
 			if err != nil {
 				bs.FetchedAt = time.Now()
 				bs.GitErr = err.Error()

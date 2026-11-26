@@ -35,8 +35,10 @@ func newTopCmd() *cobra.Command {
 				IDEs:                 idesForTop,
 				Terminals:            terminalsForTop,
 				LoadSnapshot:         loadSnapshotInVM,
-				LoadBranchStatus:     fetchBranchStatusInVM,
-				RefreshAhjoState:     refreshAhjoStateForTopSlug,
+				LoadBranchStatus: func(br registry.Branch) (top.BranchStatus, error) {
+					return fetchBranchStatusInVM(br.Slug)
+				},
+				RefreshAhjoState: refreshAhjoStateForTopSlug,
 			}
 			_, err := tea.NewProgram(top.New(deps)).Run()
 			return err
